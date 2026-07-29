@@ -5,6 +5,9 @@ data/
 *.db-wal
 *.sqlite
 
+# Claude Code settings
+.claude/
+
 # Python cache
 __pycache__/
 *.pyc
