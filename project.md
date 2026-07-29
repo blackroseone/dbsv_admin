@@ -1,0 +1,244 @@
+# 数据库运维工具（DB Tool）
+
+## 开发人：顾云波
+
+> 📌 **阅读提示**：阅读本文件时，请同时阅读以下四个文件以获取完整信息：
+> - `version_update.md` — 版本更新记录
+> - `code_desc.md` — 代码结构文档
+> - `tables_desc.md` — 数据库表结构
+> - `deploy.md` — 部署指南
+
+## 项目概述
+
+面向 DBA 的 Web 端数据库运维平台，集成知识库管理、AI 问答、SQL 工具、操作手册、命令速查、集群拓扑可视化、日志分析等功能。基于 Flask + 原生 HTML/CSS/JS 构建，UI 为中文。
+
+## 技术栈
+
+| 层级 | 技术 |
+|------|------|
+| 后端 | Python Flask，应用工厂模式，Blueprint 分模块 |
+| 数据库 | SQLite（WAL 模式，支持并发读） |
+| 前端 | 原生 HTML/CSS/JS，单页应用，模块化 JS 架构 |
+| AI | OpenAI 兼容 API（支持多模型配置管理） |
+| RAG | sentence-transformers（moka-ai/m3e-base）+ numpy 余弦相似度 |
+| 主题 | CSS 变量系统，支持亮色/暗色主题切换，localStorage 持久化 |
+
+## 目录结构
+
+> 📌 配套文档：
+> - `version_update.md` — 版本更新记录
+> - `code_desc.md` — 代码结构文档（函数/API 详细说明）
+> - `tables_desc.md` — 数据库表结构
+> - `deploy.md` — 部署指南（含依赖清单）
+
+```
+db-tool/
+    app.py                  # 应用工厂 + 启动入口
+    utils.py                # 工具函数（文件解析、LLM 调用）
+    deploy.md               # 部署指南（含依赖清单）
+    PROJECT.md              # 本文件
+
+    db/                     # 数据库层
+        __init__.py
+        database.py         # SQLite 连接管理、表初始化、全部 CRUD
+        migration.py        # JSON → SQLite 自动迁移（首次启动执行）
+
+    routes/                 # API 路由（Blueprint）
+        __init__.py         # Blueprint 统一导出
+        knowledge.py        # 知识库文件管理 + 收藏夹
+        qa.py               # 知识问答（支持向量检索 RAG）
+        sql_tools.py        # SQL 审核 / 格式化 / 转换 / 执行计划分析
+        log_analysis.py     # 日志分析（多轮 LLM 分析 + RAG 增强）
+        manuals.py           # 操作手册上传下载
+        commands.py          # 命令速查（按数据库类型）
+        topology.py          # 集群拓扑 CRUD
+        config.py            # LLM API 配置（支持多模型管理）
+        dashboard.py         # 仪表盘统计 + 日志 + 快捷键
+        agent.py             # 智能运维Agent核心引擎（ReAct循环 + SSE流式）
+        agent_connections.py # SSH/数据库连接管理
+
+    agent/                  # 智能运维Agent模块
+        __init__.py
+        harness.py           # 安全约束框架（SQL白名单 + 命令白名单）
+        skills.py            # 领域知识与操作指南（6个内置技能）
+        state.py             # Agent状态管理（ReAct状态机）
+        tools.py             # MCP风格工具定义（5个标准化工具）
+        engine.py            # Agent核心引擎（ReAct循环 + 知识库增强）
+
+    rag/                    # 向量检索模块
+        __init__.py
+        embedder.py          # 文本分块、向量嵌入、相似度检索
+
+    static/
+        css/style.css        # 样式（含暗色主题 CSS 变量系统）
+        js/                  # 前端模块化 JS
+            app.js           # 入口文件：主题、导航、初始化、仪表盘
+            utils.js         # 通用工具函数（showToast、escapeHtml 等）
+            api.js           # API 封装（apiGet、apiPost、apiPut、apiDelete）
+            knowledge.js     # 知识库模块
+            qa.js            # 知识问答模块（含流式输出）
+            sql-tools.js     # SQL 工具模块
+            log-analysis.js  # 日志分析模块
+            manuals.js       # 操作手册模块
+            commands.js      # 命令速查模块
+            topology.js      # 集群拓扑模块
+            agent.js         # 智能运维Agent模块（ReAct循环可视化）
+
+    templates/
+        index.html           # 单页应用 HTML
+
+    data/                   # 运行时数据（自动创建）
+        db_tool.db           # SQLite 数据库
+        knowledge/           # 按数据库类型分目录存储知识库文件
+        manuals/             # 操作手册文件
+        commands/            # 命令库 JSON 文件
+        models/              # sentence-transformers 模型缓存
+        json_backup/         # 迁移前的 JSON 文件备份
+```
+
+## 数据库表结构
+
+| 表名 | 用途 |
+|------|------|
+| config | 键值对配置（API 地址、密钥、模型名、多模型配置等） |
+| db_types | 数据库类型定义（MySQL、Oracle 等） |
+| knowledge_files | 知识库文件元数据 + 解析后的文本内容 |
+| qa_history | 问答历史记录 |
+| favorites | 文件收藏 |
+| log_analysis_tasks | 日志分析任务 |
+| log_analysis_files | 日志分析文件 |
+| resource_pools | 资源池信息 |
+| clusters | 集群信息（属于某个资源池） |
+| servers | 物理机（含 CPU、内存、机房等字段） |
+| instances | 实例 |
+| tenants | 租户（实例集群） |
+| tenant_instances | 租户实例关联 |
+| instance_relations | 实例间关系 |
+| embeddings | 文本块向量嵌入（RAG 用） |
+| operation_logs | 操作日志 |
+| feature_config | 功能配置开关 |
+| agent_ssh_connections | SSH连接配置（目标服务器） |
+| agent_db_connections | 数据库连接配置（用于SQL查询） |
+| agent_sessions | Agent会话 |
+| agent_steps | Agent执行步骤（ReAct过程记录） |
+| agent_skills | Agent Skills（操作指南/领域知识） |
+
+## 八大功能模块
+
+### 1. 知识库（/api/knowledge/*）
+- 按数据库类型组织文件
+- 支持上传 txt/md/pdf/docx/xlsx/html 等格式
+- 上传时自动解析文件正文内容存入数据库
+- 全文搜索 + 标签过滤
+- 收藏夹功能
+
+### 2. 知识问答（/api/qa/*）
+- 对话式界面，调用 LLM 回答数据库问题
+- RAG 增强：优先用向量检索知识库内容作为上下文
+- **数据库类型自动识别**：选择"自动选择"时，系统会从问题中自动识别数据库类型并切换到对应知识库
+- 问题模板（报错处理、语法查询、性能问题等）
+- 对话历史持久化
+- **支持模型切换**：可在多个已配置模型中选择
+
+### 3. SQL 工具（/api/sql/*）
+- SQL 审核：检查语法、性能、安全性、最佳实践
+- SQL 格式化：美化 SQL 语句
+- SQL 转换：跨数据库方言翻译（如 MySQL → Oracle）
+- 执行计划分析：粘贴 EXPLAIN 结果，AI 分析瓶颈和索引建议
+- **支持模型切换**：可在多个已配置模型中选择
+
+### 4. 操作手册（/api/manuals/*）
+- 上传管理 SOP 文档
+- 支持下载和删除
+- 支持 txt/log/sql/py/sh 等文本文件预览
+
+### 5. 命令速查（/api/commands）
+- 按数据库类型的命令速查表
+- 内置 MySQL、Oracle、达梦、OceanBase 默认命令
+- 支持添加自定义分类和命令
+- 支持删除自定义命令（鼠标悬停浮现删除按钮）
+- 点击复制到剪贴板
+- 跨库搜索命令
+
+### 6. 集群拓扑（/api/topology/*）
+- 集群管理（增删改查）
+- 节点管理（支持 CPU、内存、机房信息展示）
+- 实例管理（主/从/CN/DN/GTM 角色）
+- **统计视图**：聚合展示所有集群的宏观数据（集群数、服务器数、实例数、租户数），支持按集群/数据中心/数据库类型/环境筛选
+- **拓扑视图**：HTML 渲染拓扑图，按机房层级分组展示
+- 支持单机/主从/双主/集群/分布式拓扑类型
+- **机房层级分组展示**
+- 集群名称点击重命名
+- 节点设备类型：非信创物理机/非信创虚拟机/海光物理机/海光虚拟机/鲲鹏物理机/鲲鹏虚拟机
+- 节点角色：计算节点/存储节点/监控节点
+
+### 7. API 配置（/api/config/*）
+- **多模型配置管理**：支持添加、编辑、删除多个 LLM 模型
+- **功能配置开关**：为8个模块添加开关，控制导航栏显示/隐藏
+- 模型切换：知识问答和 SQL 工具中可选择不同模型
+- 连接测试
+
+### 8. 日志分析（/api/log-analysis/*）
+- 多轮渐进式 LLM 分析：意图识别 → 日志筛选 → 根因分析 → 报告生成
+- SSE 流式输出：实时展示分析进度和每个步骤的耗时
+- 知识库 RAG 增强：根据选择的数据库类型查询对应知识库
+- 支持上传多份日志文件（.txt, .log, .md, .csv 等格式）
+- 分析任务历史记录，支持查看历史报告
+- 支持数据库类型选择，提高分析准确性
+- 结构化报告：包含问题根因、影响范围、解决方案、预防措施、关注指标
+
+### 9. 智能运维Agent（/api/agent/*）
+- **ReAct 循环引擎**：Thought → Action → Observation → Conclusion 自主决策
+- **Harness 安全约束框架**：SQL 白名单 + 命令白名单，禁止危险操作
+- **Skills 领域知识**：6 个内置技能（慢查询诊断、Oracle RAC 检查、备份检查、MySQL 性能分析、AWR 分析、达梦状态检查）
+- **知识库增强**：执行前自动检索知识库，无足够知识时发出警告
+- **SSE 流式输出**：实时展示思考过程、工具执行、观察结果
+- **SSH/数据库连接管理**：支持配置多个目标服务器和数据库连接
+- **只读模式**：默认只读，禁止任何修改数据的操作
+- **置信度标注**：🟢高/🟡中/🔴低 三级置信度标识
+
+## 支持的数据库类型
+
+默认：MySQL、Oracle、达梦(DM)、GoldenDB、OceanBase、TDSQL、GaussDB
+可通过 API 自定义添加更多类型。
+
+## RAG 工作流程
+
+```
+用户提问 → Embedder 计算查询向量
+         → 从 embeddings 表检索最相似的 top-5 文本块
+         → 拼接为上下文 + 系统提示词
+         → 发送给 LLM 生成回答
+```
+
+如果 sentence-transformers 未安装或向量索引为空，自动回退到关键词匹配检索。
+
+### RAG 分块策略
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| chunk_size | 2000 | 每块目标字符数 |
+| overlap | 100 | 相邻块重叠字符数 |
+| chunks 限制 | 无限制 | 不截断，确保大文件完整索引 |
+| 相似度阈值 | 0.55 | 余弦相似度阈值 |
+| 模型 | moka-ai/m3e-base | 中文语义理解更优 |
+
+## 开发注意事项
+
+重构后的 JS 采用模块化设计，每个模块职责单一：
+
+| 文件 | 职责 |
+|------|------|
+| `app.js` | 入口文件：主题切换、导航、初始化、仪表盘、通用函数 |
+| `utils.js` | 通用工具函数（showToast、escapeHtml、formatFileSize 等） |
+| `api.js` | API 请求封装（apiGet、apiPost、apiPut、apiDelete） |
+| `knowledge.js` | 知识库模块（文件列表、上传、搜索、收藏） |
+| `qa.js` | 知识问答模块（对话、流式输出、历史记录） |
+| `sql-tools.js` | SQL 工具模块（审核、格式化、转换、执行计划） |
+| `log-analysis.js` | 日志分析模块（多轮 LLM 分析、SSE 流式输出） |
+| `manuals.js` | 操作手册模块（列表、上传、预览） |
+| `commands.js` | 命令速查模块（分类、命令、删除、搜索） |
+| `topology.js` | 集群拓扑模块（集群、节点、实例、租户管理） |
+| `agent.js` | 智能运维Agent模块（ReAct循环可视化、SSH/DB连接管理） |
+| `config.js` | 系统配置模块（模型管理、数据库类型、日志） |
+

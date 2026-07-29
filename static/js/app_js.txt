@@ -1,0 +1,2968 @@
+/**
+ * 数据库运维工具 - 前端入口文件
+ */
+
+// ==================== 全局变量 ====================
+let currentModule = 'knowledge';
+let dbTypes = [];
+let currentClusterId = null;
+let topologyNetwork = null;
+
+// ==================== 主题切换 ====================
+function initTheme() {
+    const savedTheme = localStorage.getItem('db-tool-theme');
+    if (savedTheme === 'dark') {
+        document.documentElement.setAttribute('data-theme', 'dark');
+        updateThemeUI(true);
+    } else {
+        document.documentElement.removeAttribute('data-theme');
+        updateThemeUI(false);
+    }
+}
+
+function toggleTheme() {
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    if (isDark) {
+        document.documentElement.removeAttribute('data-theme');
+        localStorage.setItem('db-tool-theme', 'light');
+        updateThemeUI(false);
+    } else {
+        document.documentElement.setAttribute('data-theme', 'dark');
+        localStorage.setItem('db-tool-theme', 'dark');
+        updateThemeUI(true);
+    }
+}
+
+function updateThemeUI(isDark) {
+    const themeIcon = document.getElementById('theme-icon');
+    const themeText = document.getElementById('theme-text');
+    if (themeIcon && themeText) {
+        themeIcon.textContent = isDark ? '☀️' : '🌙';
+        themeText.textContent = isDark ? '亮色模式' : '暗色模式';
+    }
+}
+
+// ==================== 初始化 ====================
+document.addEventListener('DOMContentLoaded', function() {
+    initTheme();
+    initNavigation();
+    initKeyboardShortcuts();
+    loadDBTypes();
+    loadConfig();
+    loadQATemplates();
+    updateSidebarStats();
+    loadQAHistory();
+    loadDashboard();
+    initManuals();
+});
+
+// 更新侧边栏统计信息
+async function updateSidebarStats() {
+    try {
+        const response = await fetch('/api/stats');
+        const stats = await response.json();
+
+        const knowledgeCount = document.getElementById('sidebar-knowledge-count');
+        const clusterCount = document.getElementById('sidebar-cluster-count');
+
+        if (knowledgeCount) {
+            knowledgeCount.textContent = stats.knowledge_files || 0;
+        }
+        if (clusterCount) {
+            clusterCount.textContent = stats.clusters_count || 0;
+        }
+    } catch (error) {
+        console.error('更新侧边栏统计失败:', error);
+    }
+}
+
+// ==================== 导航功能 ====================
+function initNavigation() {
+    const navItems = document.querySelectorAll('.nav-item');
+    navItems.forEach(item => {
+        item.addEventListener('click', function() {
+            const module = this.dataset.module;
+            switchModule(module);
+        });
+    });
+}
+
+function switchModule(module) {
+    // 更新导航状态
+    document.querySelectorAll('.nav-item').forEach(item => {
+        item.classList.remove('active');
+    });
+    const navItem = document.querySelector(`[data-module="${module}"]`);
+    if (navItem) {
+        navItem.classList.add('active');
+    }
+
+    // 更新内容区显示
+    document.querySelectorAll('.module').forEach(m => {
+        m.style.display = 'none';
+    });
+    const moduleDiv = document.getElementById(`module-${module}`);
+    if (moduleDiv) {
+        moduleDiv.style.display = 'block';
+    }
+
+    currentModule = module;
+
+    // 加载对应模块数据
+    if (module === 'dashboard') {
+        loadDashboard();
+    } else if (module === 'topology') {
+        loadClusters();
+    } else if (module === 'config') {
+        loadDBTypesPage();
+        loadLogs();
+    } else if (module === 'manuals') {
+        loadManuals();
+    } else if (module === 'commands') {
+        loadCommands();
+    }
+}
+
+// ==================== 数据库类型加载 ====================
+async function loadDBTypes() {
+    try {
+        const response = await fetch('/api/db-types');
+        const data = await response.json();
+        dbTypes = data.types;
+
+        // 填充所有下拉框
+        const selects = [
+            'knowledge-db-type', 'qa-db-type', 'sql-db-type',
+            'sql-source-db', 'sql-target-db', 'explain-db-type',
+            'commands-db-type', 'cluster-db-type'
+        ];
+
+        selects.forEach(selectId => {
+            const select = document.getElementById(selectId);
+            if (!select) return;
+
+            // 保留第一个选项
+            const firstOption = select.options[0];
+            select.innerHTML = '';
+            select.appendChild(firstOption);
+
+            dbTypes.forEach(type => {
+                const option = document.createElement('option');
+                option.value = type.id;
+                option.textContent = `${type.icon || ''} ${type.name}`;
+                select.appendChild(option);
+            });
+
+            // 默认选择 oracle（如果存在）
+            const hasOracle = dbTypes.find(t => t.id === 'oracle');
+            if (hasOracle) {
+                select.value = 'oracle';
+            }
+        });
+
+        // 加载模型列表到下拉框
+        await loadModelSelects();
+
+        // 绑定事件
+        document.getElementById('knowledge-db-type').addEventListener('change', loadFileList);
+        document.getElementById('knowledge-tag').addEventListener('change', loadFileList);
+        document.getElementById('commands-db-type').addEventListener('change', loadCommands);
+
+        // 默认加载知识库和命令速查
+        loadFileList();
+        loadCommands();
+    } catch (error) {
+        console.error('加载数据库类型失败:', error);
+    }
+}
+
+// 加载模型列表到所有模型选择下拉框
+async function loadModelSelects() {
+    try {
+        const response = await fetch('/api/config/llm/models');
+        const data = await response.json();
+        const models = data.models || [];
+
+        const selectIds = ['qa-model-select', 'sql-model-select'];
+        selectIds.forEach(selectId => {
+            const select = document.getElementById(selectId);
+            if (!select) return;
+
+            // 保留第一个选项
+            const firstOption = select.options[0];
+            select.innerHTML = '';
+            select.appendChild(firstOption);
+
+            models.forEach(model => {
+                const option = document.createElement('option');
+                option.value = model.id;
+                option.textContent = model.display_name || model.model_name;
+                if (model.is_default) {
+                    option.textContent += ' (默认)';
+                    option.selected = true;
+                }
+                select.appendChild(option);
+            });
+        });
+    } catch (error) {
+        console.error('加载模型列表失败:', error);
+    }
+}
+
+// ==================== 知识库模块 ====================
+const TAG_MAP = {
+    'install': { name: '安装部署', icon: '📦', color: '#4CAF50' },
+    'maintain': { name: '日常运维', icon: '🔧', color: '#2196F3' },
+    'troubleshoot': { name: '故障处理', icon: '🚨', color: '#f44336' },
+    'performance': { name: '性能优化', icon: '⚡', color: '#FF9800' },
+    'backup': { name: '备份恢复', icon: '💾', color: '#9C27B0' },
+    'security': { name: '安全管理', icon: '🔒', color: '#607D8B' },
+    'upgrade': { name: '升级迁移', icon: '🔄', color: '#795548' },
+    'case': { name: '故障案例', icon: '📋', color: '#E91E63' }
+};
+
+function renderTags(tags) {
+    // 处理 tags 可能是字符串或数组的情况
+    let tagsArray = tags;
+    if (typeof tags === 'string') {
+        try {
+            tagsArray = JSON.parse(tags);
+        } catch (e) {
+            tagsArray = [];
+        }
+    }
+    if (!tagsArray || !Array.isArray(tagsArray) || tagsArray.length === 0) {
+        return '<span class="tag-empty">未分类</span>';
+    }
+    return tagsArray.map(tag => {
+        const info = TAG_MAP[tag] || { name: tag, icon: '🏷️', color: '#999' };
+        return `<span class="tag-badge" style="background-color: ${info.color}20; color: ${info.color}; border: 1px solid ${info.color}40;">${info.icon} ${info.name}</span>`;
+    }).join(' ');
+}
+
+async function loadFileList() {
+    const dbType = document.getElementById('knowledge-db-type').value;
+    const tag = document.getElementById('knowledge-tag').value;
+    const tbody = document.getElementById('file-list');
+
+    if (!dbType) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty-message">请选择数据库类型查看文件</td></tr>';
+        return;
+    }
+
+    try {
+        const url = `/api/knowledge/files/${dbType}?tag=${tag}`;
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (data.files.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="empty-message">暂无文件</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = data.files.map((file, index) => {
+            // 确保 tags 是数组
+            let tags = file.tags;
+            if (typeof tags === 'string') {
+                try { tags = JSON.parse(tags); } catch(e) { tags = []; }
+            }
+            if (!Array.isArray(tags)) tags = [];
+
+            return `
+            <tr>
+                <td>${escapeHtml(file.name)}</td>
+                <td>${formatFileSize(file.size)}</td>
+                <td>${renderTags(tags)}</td>
+                <td>${file.modified || ''}</td>
+                <td class="actions">
+                    <button class="btn btn-sm btn-secondary" onclick="editFileTags(${index})">🏷️ 标签</button>
+                    ${file.can_preview ? `<button class="btn btn-sm btn-secondary" onclick="previewFile('${dbType}', '${escapeHtml(file.name)}')">预览</button>` : ''}
+                    <button class="btn btn-sm btn-primary" onclick="downloadFile('${dbType}', '${escapeHtml(file.name)}')">下载</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteFile('${dbType}', '${escapeHtml(file.name)}')">删除</button>
+                </td>
+            </tr>
+            `;
+        }).join('');
+
+        // 保存文件列表数据供编辑使用
+        window.currentFileList = data.files;
+        window.currentDbType = dbType;
+    } catch (error) {
+        showToast('加载文件列表失败', 'error');
+    }
+}
+
+// 编辑文件标签（通过索引）
+function editFileTags(index) {
+    const file = window.currentFileList[index];
+    if (!file) return;
+    showTagDialog(window.currentDbType, file.name, file.tags || []);
+}
+
+// 显示标签编辑对话框
+function showTagDialog(dbType, filename, currentTags) {
+    const tagOptions = Object.entries(TAG_MAP).map(([id, info]) => {
+        const checked = currentTags.includes(id) ? 'checked' : '';
+        return `<label class="tag-option">
+            <input type="checkbox" value="${id}" ${checked}> ${info.icon} ${info.name}
+        </label>`;
+    }).join('');
+
+    const dialogHtml = `
+        <div class="modal" id="modal-tags" style="display: flex">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>编辑标签 - ${escapeHtml(filename)}</h3>
+                    <button class="modal-close" onclick="closeModal('modal-tags')">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="tag-checkboxes">
+                        ${tagOptions}
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="closeModal('modal-tags')">取消</button>
+                    <button class="btn btn-primary" onclick="saveFileTags('${dbType}', '${escapeHtml(filename)}')">保存</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    // 移除旧对话框（如果有）
+    const oldModal = document.getElementById('modal-tags');
+    if (oldModal) oldModal.remove();
+
+    // 添加新对话框
+    document.body.insertAdjacentHTML('beforeend', dialogHtml);
+}
+
+// 保存文件标签
+async function saveFileTags(dbType, filename) {
+    const checkboxes = document.querySelectorAll('#modal-tags input[type="checkbox"]:checked');
+    const tags = Array.from(checkboxes).map(cb => cb.value);
+
+    try {
+        const response = await fetch(`/api/knowledge/tags/${dbType}/${encodeURIComponent(filename)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tags })
+        });
+
+        if (response.ok) {
+            showToast('标签更新成功', 'success');
+            closeModal('modal-tags');
+            loadFileList();
+        } else {
+            showToast('标签更新失败', 'error');
+        }
+    } catch (error) {
+        showToast('标签更新失败', 'error');
+    }
+}
+
+async function searchKnowledge() {
+    const dbType = document.getElementById('knowledge-db-type').value;
+    const keyword = document.getElementById('knowledge-search').value.trim();
+
+    if (!dbType) {
+        showToast('请先选择数据库类型', 'error');
+        return;
+    }
+
+    if (!keyword) {
+        document.getElementById('search-results').style.display = 'none';
+        loadFileList();
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/knowledge/files/${dbType}?keyword=${encodeURIComponent(keyword)}`);
+        const data = await response.json();
+
+        const resultsDiv = document.getElementById('search-results');
+        const resultsList = document.getElementById('search-results-list');
+
+        if (data.search_results && data.search_results.length > 0) {
+            resultsDiv.style.display = 'block';
+            resultsList.innerHTML = data.search_results.map(result => `
+                <div class="search-result-item">
+                    <div class="filename">📄 ${escapeHtml(result.filename)}</div>
+                    <div class="context">${escapeHtml(result.context)}</div>
+                </div>
+            `).join('');
+        } else {
+            resultsDiv.style.display = 'block';
+            resultsList.innerHTML = '<div class="empty-message">未找到匹配内容</div>';
+        }
+    } catch (error) {
+        showToast('搜索失败', 'error');
+    }
+}
+
+// 文件上传（支持多文件和文件夹）
+async function uploadFiles(files) {
+    const dbType = document.getElementById('knowledge-db-type').value;
+    if (!dbType) {
+        showToast('请先选择数据库类型', 'error');
+        return;
+    }
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const file of files) {
+        // 检查文件类型
+        const ext = file.name.split('.').pop().toLowerCase();
+        const allowedExts = ['txt', 'md', 'pdf', 'docx', 'xlsx', 'xls', 'doc', 'html', 'htm'];
+        if (!allowedExts.includes(ext)) {
+            failCount++;
+            continue;
+        }
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            const response = await fetch(`/api/knowledge/upload/${dbType}`, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (response.ok) {
+                successCount++;
+            } else {
+                failCount++;
+            }
+        } catch (error) {
+            failCount++;
+        }
+    }
+
+    if (successCount > 0) {
+        showToast(`成功上传 ${successCount} 个文件${failCount > 0 ? `，${failCount} 个失败` : ''}`, 'success');
+        loadFileList();
+        updateSidebarStats();
+    } else if (failCount > 0) {
+        showToast(`上传失败，${failCount} 个文件不支持`, 'error');
+    }
+}
+
+document.getElementById('file-input').addEventListener('change', async function(e) {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+    await uploadFiles(files);
+    this.value = '';
+});
+
+document.getElementById('folder-input').addEventListener('change', async function(e) {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+    await uploadFiles(files);
+    this.value = '';
+});
+
+// 扫描知识库目录中的新文件
+async function scanKnowledgeFiles() {
+    try {
+        showToast('正在扫描知识库目录...', 'info');
+        const response = await fetch('/api/knowledge/scan', {
+            method: 'POST'
+        });
+        const data = await response.json();
+        if (response.ok) {
+            showToast(data.message, 'success');
+            loadFileList();
+            updateSidebarStats();
+        } else {
+            showToast(data.error || '扫描失败', 'error');
+        }
+    } catch (error) {
+        showToast('扫描失败', 'error');
+    }
+}
+
+// 重建知识库索引（带进度条）
+function reindexKnowledge() {
+    const progressDiv = document.getElementById('reindex-progress');
+    const progressBar = document.getElementById('progress-bar');
+    const progressStatus = document.getElementById('progress-status');
+    const progressText = document.getElementById('progress-text');
+
+    // 显示进度条
+    progressDiv.style.display = 'block';
+    progressBar.style.width = '0%';
+    progressStatus.textContent = '正在重建索引...';
+    progressText.textContent = '0/0';
+
+    // 使用 EventSource 接收流式进度（GET 请求）
+    const eventSource = new EventSource('/api/knowledge/reindex/stream');
+
+    eventSource.onmessage = function(event) {
+        if (event.data === '[DONE]') {
+            eventSource.close();
+            // 3秒后隐藏进度条
+            setTimeout(() => {
+                progressDiv.style.display = 'none';
+            }, 3000);
+            return;
+        }
+
+        try {
+            const data = JSON.parse(event.data);
+
+            if (data.total > 0) {
+                const percent = Math.round((data.processed / data.total) * 100);
+                progressBar.style.width = percent + '%';
+                progressText.textContent = `${data.processed}/${data.total}`;
+            }
+
+            if (data.status) {
+                progressStatus.textContent = data.status;
+            }
+
+            if (data.done) {
+                showToast(data.message, 'success');
+                eventSource.close();
+                // 完成后更新文件列表
+                loadFileList();
+                setTimeout(() => {
+                    progressDiv.style.display = 'none';
+                }, 3000);
+            }
+        } catch (e) {
+            console.error('解析进度数据失败:', e);
+        }
+    };
+
+    eventSource.onerror = function(error) {
+        console.error('SSE 连接错误:', error);
+        eventSource.close();
+        progressDiv.style.display = 'none';
+        showToast('重建索引失败', 'error');
+    };
+}
+
+async function downloadFile(dbType, filename) {
+    window.open(`/api/knowledge/download/${dbType}/${filename}`);
+}
+
+async function deleteFile(dbType, filename) {
+    if (!confirm(`确定要删除文件 "${filename}" 吗？`)) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/knowledge/delete/${dbType}/${filename}`, {
+            method: 'DELETE'
+        });
+
+        const data = await response.json();
+        if (response.ok) {
+            showToast('删除成功', 'success');
+            loadFileList();
+        } else {
+            showToast(data.error || '删除失败', 'error');
+        }
+    } catch (error) {
+        showToast('删除失败', 'error');
+    }
+}
+
+// ==================== 知识问答模块 ====================
+async function loadQATemplates() {
+    try {
+        const response = await fetch('/api/qa/templates');
+        const data = await response.json();
+
+        const select = document.getElementById('qa-template');
+        data.templates.forEach(template => {
+            const option = document.createElement('option');
+            option.value = template.id;
+            option.textContent = template.name;
+            option.dataset.template = template.template;
+            select.appendChild(option);
+        });
+    } catch (error) {
+        console.error('加载问题模板失败:', error);
+    }
+}
+
+function applyTemplate() {
+    const select = document.getElementById('qa-template');
+    const option = select.options[select.selectedIndex];
+    if (option.value && option.dataset.template) {
+        document.getElementById('qa-question').value = option.dataset.template;
+    }
+}
+
+// 全局变量用于控制流式输出
+let currentAbortController = null;
+let isStreaming = false;
+
+// 停止流式输出
+function stopStreaming() {
+    if (currentAbortController) {
+        currentAbortController.abort();
+        currentAbortController = null;
+    }
+    isStreaming = false;
+    document.getElementById('qa-send-btn').disabled = false;
+    document.getElementById('qa-stop-btn').style.display = 'none';
+}
+
+async function sendQuestion() {
+    const dbType = document.getElementById('qa-db-type').value;
+    const question = document.getElementById('qa-question').value.trim();
+    const useRag = document.getElementById('qa-use-rag').checked;
+    const modelId = document.getElementById('qa-model-select').value;
+
+    if (!dbType) {
+        showToast('请选择数据库类型', 'error');
+        return;
+    }
+
+    if (!question) {
+        showToast('请输入问题', 'error');
+        return;
+    }
+
+    const chatContainer = document.getElementById('qa-chat');
+
+    // 移除欢迎消息
+    const welcomeMsg = chatContainer.querySelector('.welcome-message');
+    if (welcomeMsg) {
+        welcomeMsg.remove();
+    }
+
+    // 添加用户消息
+    chatContainer.innerHTML += `
+        <div class="chat-message user">
+            <div class="chat-bubble">${escapeHtml(question)}</div>
+        </div>
+    `;
+
+    // 添加助手消息容器（流式更新）
+    const msgId = 'msg-' + Date.now();
+    chatContainer.innerHTML += `
+        <div class="chat-message assistant" id="${msgId}">
+            <div class="chat-bubble markdown-content"><span class="typing-cursor">▊</span></div>
+        </div>
+    `;
+
+    // 清空输入框
+    document.getElementById('qa-question').value = '';
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+
+    // 禁用发送按钮，显示停止按钮
+    document.getElementById('qa-send-btn').disabled = true;
+    document.getElementById('qa-stop-btn').style.display = 'inline-block';
+    isStreaming = true;
+
+    // 创建 AbortController
+    currentAbortController = new AbortController();
+
+    let fullAnswer = '';
+
+    try {
+        const response = await fetch('/api/qa/ask/stream', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                db_type: dbType,
+                question: question,
+                use_rag: useRag,
+                model_id: modelId
+            }),
+            signal: currentAbortController.signal
+        });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (isStreaming) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value);
+            const lines = chunk.split('\n');
+
+            for (const line of lines) {
+                if (!isStreaming) break;
+                if (line.startsWith('data: ')) {
+                    const data = line.slice(6).trim();
+                    if (data === '[DONE]') continue;
+
+                    try {
+                        const parsed = JSON.parse(data);
+                        if (parsed.error) {
+                            document.getElementById(msgId).querySelector('.chat-bubble').innerHTML =
+                                `<span style="color: #dc3545;">${escapeHtml(parsed.error)}</span>`;
+                            break;
+                        }
+                        if (parsed.content) {
+                            fullAnswer += parsed.content;
+                            document.getElementById(msgId).querySelector('.chat-bubble').innerHTML =
+                                formatMarkdown(fullAnswer) + '<span class="typing-cursor">▊</span>';
+                            chatContainer.scrollTop = chatContainer.scrollHeight;
+                        }
+                    } catch (e) {
+                        // 忽略解析错误
+                    }
+                }
+            }
+        }
+
+        // 移除光标
+        const msgElement = document.getElementById(msgId);
+        if (msgElement) {
+            if (fullAnswer) {
+                msgElement.querySelector('.chat-bubble').innerHTML = formatMarkdown(fullAnswer) +
+                    (isStreaming ? '' : '<span style="color: #999; font-size: 0.8em;"> [已停止]</span>');
+            } else {
+                msgElement.querySelector('.chat-bubble').innerHTML = '<span style="color: #999;">[已停止]</span>';
+            }
+        }
+
+        // 保存到历史记录
+        if (fullAnswer) {
+            saveToHistory(dbType, question, fullAnswer);
+        }
+    } catch (error) {
+        if (error.name === 'AbortError') {
+            // 用户主动停止
+            const msgElement = document.getElementById(msgId);
+            if (msgElement) {
+                msgElement.querySelector('.chat-bubble').innerHTML = formatMarkdown(fullAnswer) +
+                    '<span style="color: #999; font-size: 0.8em;"> [已停止]</span>';
+            }
+        } else {
+            document.getElementById(msgId).querySelector('.chat-bubble').innerHTML =
+                '<span style="color: #dc3545;">请求失败，请检查网络连接</span>';
+        }
+    }
+
+    // 恢复按钮状态
+    currentAbortController = null;
+    isStreaming = false;
+    document.getElementById('qa-send-btn').disabled = false;
+    document.getElementById('qa-stop-btn').style.display = 'none';
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+}
+
+async function saveToHistory(dbType, question, answer) {
+    try {
+        await fetch('/api/qa/history', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                db_type: dbType,
+                question: question,
+                answer: answer
+            })
+        });
+        // 刷新左侧历史记录
+        loadQAHistory();
+    } catch (error) {
+        console.error('保存历史记录失败:', error);
+    }
+}
+
+// 加载问答历史到左侧
+async function loadQAHistory() {
+    try {
+        const response = await fetch('/api/qa/history');
+        const data = await response.json();
+
+        const historyList = document.getElementById('qa-history-list');
+        if (!historyList) return;
+
+        if (data.conversations && data.conversations.length > 0) {
+            historyList.innerHTML = data.conversations.map(conv => `
+                <div class="qa-history-item">
+                    <div class="history-item-header" onclick="reuseQuestion('${escapeHtml(conv.question)}')">
+                        <div class="history-db">${conv.db_type ? conv.db_type.toUpperCase() : '未分类'}</div>
+                        <button class="btn-delete-history" onclick="event.stopPropagation(); deleteSingleHistory('${conv.id}')" title="删除">×</button>
+                    </div>
+                    <div class="history-question" onclick="reuseQuestion('${escapeHtml(conv.question)}')">${escapeHtml(conv.question)}</div>
+                    <div class="history-time">${conv.created_at || ''}</div>
+                </div>
+            `).join('');
+        } else {
+            historyList.innerHTML = '<div class="empty-message">暂无历史记录</div>';
+        }
+    } catch (error) {
+        console.error('加载历史记录失败:', error);
+    }
+}
+
+// 删除单条历史记录
+async function deleteSingleHistory(id) {
+    try {
+        await fetch(`/api/qa/history/${id}`, { method: 'DELETE' });
+        loadQAHistory();
+    } catch (error) {
+        showToast('删除失败', 'error');
+    }
+}
+
+function reuseQuestion(question) {
+    document.getElementById('qa-question').value = question;
+}
+
+async function deleteHistory(id) {
+    try {
+        await fetch(`/api/qa/history/${id}`, { method: 'DELETE' });
+        showHistory();
+    } catch (error) {
+        showToast('删除失败', 'error');
+    }
+}
+
+// 回车发送
+document.getElementById('qa-question').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendQuestion();
+    }
+});
+
+// 清空对话
+async function clearChat() {
+    const chatContainer = document.getElementById('qa-chat');
+    chatContainer.innerHTML = `
+        <div class="welcome-message">
+            <div class="welcome-icon">🤖</div>
+            <h3>你好！我是数据库知识助手</h3>
+            <p>请选择数据库类型，然后输入你的问题</p>
+            <p>开启"知识库增强"后，我会优先使用知识库中的资料回答</p>
+            <p>支持 Shift+Enter 换行</p>
+        </div>
+    `;
+
+    // 清空历史记录
+    try {
+        await fetch('/api/qa/history', { method: 'DELETE' });
+        showToast('对话已清空', 'success');
+        // 刷新左侧历史记录
+        loadQAHistory();
+    } catch (error) {
+        console.error('清空历史记录失败:', error);
+    }
+}
+
+// ==================== SQL工具模块 ====================
+function switchSqlTab(tab) {
+    // 更新标签按钮状态
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    event.target.classList.add('active');
+
+    // 切换内容显示
+    document.querySelectorAll('.sql-tab-content').forEach(content => {
+        content.classList.remove('active');
+    });
+    document.getElementById(`sql-tab-${tab}`).classList.add('active');
+}
+
+// 通用流式请求函数
+async function streamRequest(url, body, contentDiv, isMarkdown = true) {
+    let fullContent = '';
+    contentDiv.innerHTML = '<span class="typing-cursor">▊</span>';
+
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value);
+            const lines = chunk.split('\n');
+
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    const data = line.slice(6).trim();
+                    if (data === '[DONE]') continue;
+
+                    try {
+                        const parsed = JSON.parse(data);
+                        if (parsed.error) {
+                            contentDiv.innerHTML = `<span style="color: #dc3545;">${escapeHtml(parsed.error)}</span>`;
+                            return fullContent;
+                        }
+                        if (parsed.content) {
+                            fullContent += parsed.content;
+                            if (isMarkdown) {
+                                contentDiv.innerHTML = formatMarkdown(fullContent) + '<span class="typing-cursor">▊</span>';
+                            } else {
+                                contentDiv.textContent = fullContent;
+                            }
+                        }
+                    } catch (e) {
+                        // 忽略解析错误
+                    }
+                }
+            }
+        }
+
+        // 移除光标
+        if (isMarkdown) {
+            contentDiv.innerHTML = formatMarkdown(fullContent);
+        } else {
+            contentDiv.textContent = fullContent;
+        }
+
+        return fullContent;
+    } catch (error) {
+        contentDiv.innerHTML = '<span style="color: #dc3545;">请求失败，请检查网络连接</span>';
+        return '';
+    }
+}
+
+async function reviewSQL() {
+    const dbType = document.getElementById('sql-db-type').value;
+    const sql = document.getElementById('sql-input').value.trim();
+    const modelId = document.getElementById('sql-model-select').value;
+
+    if (!dbType) {
+        showToast('请选择数据库类型', 'error');
+        return;
+    }
+
+    if (!sql) {
+        showToast('请输入SQL语句', 'error');
+        return;
+    }
+
+    const resultDiv = document.getElementById('sql-result');
+    const contentDiv = document.getElementById('sql-review-content');
+
+    resultDiv.style.display = 'block';
+    await streamRequest('/api/sql/review/stream', { db_type: dbType, sql: sql, model_id: modelId }, contentDiv, true);
+}
+
+function clearSQL() {
+    document.getElementById('sql-input').value = '';
+    document.getElementById('sql-result').style.display = 'none';
+}
+
+async function formatSQL() {
+    const sql = document.getElementById('sql-format-input').value.trim();
+
+    if (!sql) {
+        showToast('请输入SQL语句', 'error');
+        return;
+    }
+
+    const resultDiv = document.getElementById('sql-format-result');
+    const contentDiv = document.getElementById('sql-format-content');
+
+    resultDiv.style.display = 'block';
+    await streamRequest('/api/sql/format/stream', { sql: sql }, contentDiv, false);
+}
+
+async function convertSQL() {
+    const sourceDb = document.getElementById('sql-source-db').value;
+    const targetDb = document.getElementById('sql-target-db').value;
+    const sql = document.getElementById('sql-convert-input').value.trim();
+
+    if (!sourceDb || !targetDb) {
+        showToast('请选择源数据库和目标数据库', 'error');
+        return;
+    }
+
+    if (!sql) {
+        showToast('请输入SQL语句', 'error');
+        return;
+    }
+
+    const resultDiv = document.getElementById('sql-convert-result');
+    const contentDiv = document.getElementById('sql-convert-content');
+
+    resultDiv.style.display = 'block';
+    await streamRequest('/api/sql/convert/stream', {
+        sql: sql,
+        source_db: sourceDb,
+        target_db: targetDb
+    }, contentDiv, false);
+}
+
+async function analyzeExplain() {
+    const dbType = document.getElementById('explain-db-type').value;
+    const explainResult = document.getElementById('explain-input').value.trim();
+
+    if (!dbType) {
+        showToast('请选择数据库类型', 'error');
+        return;
+    }
+
+    if (!explainResult) {
+        showToast('请输入执行计划结果', 'error');
+        return;
+    }
+
+    const resultDiv = document.getElementById('explain-result');
+    const contentDiv = document.getElementById('explain-content');
+
+    resultDiv.style.display = 'block';
+    await streamRequest('/api/sql/explain/stream', {
+        db_type: dbType,
+        explain_result: explainResult
+    }, contentDiv, true);
+}
+
+// ==================== 运维手册模块 ====================
+document.getElementById('manual-input').addEventListener('change', async function(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const response = await fetch('/api/manuals/upload', {
+            method: 'POST',
+            body: formData
+        });
+
+        const data = await response.json();
+        if (response.ok) {
+            showToast('上传成功', 'success');
+            loadManuals();
+        } else {
+            showToast(data.error || '上传失败', 'error');
+        }
+    } catch (error) {
+        showToast('上传失败', 'error');
+    }
+
+    this.value = '';
+});
+
+// ==================== 运维手册模块 ====================
+// 保存当前选中的手册
+window.currentManual = '';
+
+async function loadManuals() {
+    try {
+        const response = await fetch('/api/manuals');
+        const data = await response.json();
+        const listDiv = document.getElementById('manual-list');
+
+        if (data.manuals.length === 0) {
+            listDiv.innerHTML = '<div class="empty-message">暂无手册，点击"上传"开始</div>';
+            return;
+        }
+
+        listDiv.innerHTML = data.manuals.map(file => `
+            <div class="manual-item ${window.currentManual === file.name ? 'active' : ''}" onclick="viewManual('${escapeHtml(file.name)}')">
+                <div class="manual-name">${escapeHtml(file.name)}</div>
+                <div class="manual-size">${formatFileSize(file.size)}</div>
+            </div>
+        `).join('');
+    } catch (error) {
+        showToast('加载手册列表失败', 'error');
+    }
+}
+
+// 查看手册内容
+async function viewManual(filename) {
+    window.currentManual = filename;
+    const contentDiv = document.getElementById('manual-content');
+    const toolbar = document.getElementById('manual-toolbar');
+    const toolbarTitle = document.getElementById('manual-toolbar-title');
+
+    // 更新选中状态
+    document.querySelectorAll('.manual-item').forEach(item => {
+        item.classList.remove('active');
+    });
+    if (event && event.currentTarget) {
+        event.currentTarget.classList.add('active');
+    }
+
+    // 显示工具栏
+    toolbar.style.display = 'flex';
+    toolbarTitle.textContent = filename;
+
+    // 检查文件类型
+    const lowerFilename = filename.toLowerCase();
+    const isMarkdown = lowerFilename.endsWith('.md');
+    const isText = lowerFilename.endsWith('.txt') || lowerFilename.endsWith('.log') || lowerFilename.endsWith('.sql') || lowerFilename.endsWith('.py') || lowerFilename.endsWith('.sh');
+
+    if (isMarkdown || isText) {
+        // 尝试预览文件
+        try {
+            const response = await fetch(`/api/manuals/preview/${encodeURIComponent(filename)}`);
+            const data = await response.json();
+
+            if (response.ok) {
+                if (isMarkdown) {
+                    contentDiv.innerHTML = `<div class="markdown-content">${formatMarkdown(data.content)}</div>`;
+                } else {
+                    // 纯文本文件，使用预格式化文本显示
+                    contentDiv.innerHTML = `<div class="text-content"><pre style="white-space: pre-wrap; word-wrap: break-word; font-family: 'Consolas', 'Monaco', monospace; line-height: 1.6;">${escapeHtml(data.content)}</pre></div>`;
+                }
+            } else {
+                contentDiv.innerHTML = `<div class="empty-message">无法加载文件内容</div>`;
+            }
+        } catch (error) {
+            contentDiv.innerHTML = `<div class="empty-message">加载失败</div>`;
+        }
+    } else {
+        // 不支持预览的文件格式
+        contentDiv.innerHTML = `
+            <div class="welcome-message">
+                <div class="welcome-icon">📄</div>
+                <h3>${escapeHtml(filename)}</h3>
+                <p>该文件格式不支持在线预览</p>
+                <p>请点击上方"下载"按钮查看文件</p>
+            </div>
+        `;
+    }
+}
+
+// 下载当前手册
+function downloadCurrentManual() {
+    if (window.currentManual) {
+        window.open(`/api/manuals/${encodeURIComponent(window.currentManual)}`);
+    }
+}
+
+// 删除当前手册
+async function deleteCurrentManual() {
+    if (!window.currentManual) return;
+    if (!confirm(`确定要删除 "${window.currentManual}" 吗？`)) return;
+
+    try {
+        const response = await fetch(`/api/manuals/${encodeURIComponent(window.currentManual)}`, { method: 'DELETE' });
+        if (response.ok) {
+            showToast('删除成功', 'success');
+            window.currentManual = '';
+            document.getElementById('manual-toolbar').style.display = 'none';
+            document.getElementById('manual-content').innerHTML = `
+                <div class="welcome-message">
+                    <div class="welcome-icon">📋</div>
+                    <h3>运维手册</h3>
+                    <p>选择左侧的手册查看内容</p>
+                    <p>支持 Markdown 格式渲染</p>
+                </div>
+            `;
+            loadManuals();
+        } else {
+            showToast('删除失败', 'error');
+        }
+    } catch (error) {
+        showToast('删除失败', 'error');
+    }
+}
+
+// ==================== 常用命令库模块 ====================
+// 保存当前分类供添加命令使用
+window.currentCommandCategory = '';
+
+async function loadCommands() {
+    const dbType = document.getElementById('commands-db-type').value;
+    const container = document.getElementById('commands-container');
+
+    if (!dbType) {
+        container.innerHTML = '<div class="empty-message">请选择数据库类型查看常用命令</div>';
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/commands?db_type=${dbType}`);
+        const data = await response.json();
+
+        if (data.commands && data.commands.length > 0) {
+            container.innerHTML = data.commands.map(category => `
+                <div class="command-category">
+                    <div class="command-category-header">
+                        <h4>${escapeHtml(category.category)}</h4>
+                        <button class="btn btn-sm btn-secondary" onclick="showAddCommandDialog('${escapeHtml(category.category)}')">➕ 添加命令</button>
+                    </div>
+                    ${category.commands.map(cmd => `
+                        <div class="command-item">
+                            <div class="cmd-info">
+                                <div class="cmd-name">${escapeHtml(cmd.name)}</div>
+                                <div class="cmd-desc">${escapeHtml(cmd.desc)}</div>
+                            </div>
+                            <code class="cmd-text" onclick="copyText('${escapeHtml(cmd.cmd)}')" title="点击复制">
+                                ${escapeHtml(cmd.cmd)}
+                            </code>
+                        </div>
+                    `).join('')}
+                </div>
+            `).join('');
+        } else {
+            container.innerHTML = '<div class="empty-message">暂无命令数据，点击"添加分类"开始</div>';
+        }
+    } catch (error) {
+        showToast('加载命令失败', 'error');
+    }
+}
+
+function copyText(text) {
+    navigator.clipboard.writeText(text).then(() => {
+        showToast('已复制到剪贴板', 'success');
+    }).catch(() => {
+        showToast('复制失败', 'error');
+    });
+}
+
+// 显示添加分类对话框
+function showAddCategoryDialog() {
+    const dbType = document.getElementById('commands-db-type').value;
+    if (!dbType) {
+        showToast('请先选择数据库类型', 'error');
+        return;
+    }
+    document.getElementById('category-name').value = '';
+    document.getElementById('modal-add-category').style.display = 'flex';
+}
+
+// 添加分类
+async function addCategory() {
+    const dbType = document.getElementById('commands-db-type').value;
+    const categoryName = document.getElementById('category-name').value.trim();
+
+    if (!categoryName) {
+        showToast('请输入分类名称', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/commands/category', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                db_type: dbType,
+                category_name: categoryName
+            })
+        });
+
+        const data = await response.json();
+        if (response.ok) {
+            showToast('分类添加成功', 'success');
+            closeModal('modal-add-category');
+            loadCommands();
+        } else {
+            showToast(data.error || '添加失败', 'error');
+        }
+    } catch (error) {
+        showToast('添加失败', 'error');
+    }
+}
+
+// 显示添加命令对话框
+function showAddCommandDialog(category) {
+    const dbType = document.getElementById('commands-db-type').value;
+    if (!dbType) {
+        showToast('请先选择数据库类型', 'error');
+        return;
+    }
+    window.currentCommandCategory = category;
+    document.getElementById('command-name').value = '';
+    document.getElementById('command-cmd').value = '';
+    document.getElementById('command-desc').value = '';
+    document.getElementById('modal-add-command').style.display = 'flex';
+}
+
+// 添加命令
+async function addCommand() {
+    const dbType = document.getElementById('commands-db-type').value;
+    const category = window.currentCommandCategory;
+    const name = document.getElementById('command-name').value.trim();
+    const cmd = document.getElementById('command-cmd').value.trim();
+    const desc = document.getElementById('command-desc').value.trim();
+
+    if (!name || !cmd) {
+        showToast('请输入命令名称和内容', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/commands/command', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                db_type: dbType,
+                category: category,
+                name: name,
+                cmd: cmd,
+                desc: desc
+            })
+        });
+
+        const data = await response.json();
+        if (response.ok) {
+            showToast('命令添加成功', 'success');
+            closeModal('modal-add-command');
+            loadCommands();
+        } else {
+            showToast(data.error || '添加失败', 'error');
+        }
+    } catch (error) {
+        showToast('添加失败', 'error');
+    }
+}
+
+// ==================== 集群拓扑模块 ====================
+let currentTopologyData = null;
+
+async function loadClusters() {
+    try {
+        const response = await fetch('/api/topology/clusters');
+        const data = await response.json();
+        currentTopologyData = data;
+        const listDiv = document.getElementById('cluster-list');
+
+        if (data.clusters && data.clusters.length > 0) {
+            listDiv.innerHTML = data.clusters.map(cluster => {
+                const dbType = dbTypes.find(t => t.id === cluster.db_type);
+                const envMap = {
+                    'production': '🟢 生产',
+                    'testing': '🟡 测试',
+                    'development': '🔵 开发'
+                };
+                const serverCount = cluster.servers ? cluster.servers.length : 0;
+                const instanceCount = cluster.servers ?
+                    cluster.servers.reduce((sum, s) => sum + (s.instances ? s.instances.length : 0), 0) : 0;
+
+                return `
+                    <div class="cluster-item ${currentClusterId === cluster.id ? 'active' : ''}"
+                         onclick="selectCluster('${cluster.id}')">
+                        <div class="cluster-name">${dbType ? dbType.icon : ''} ${escapeHtml(cluster.name)}</div>
+                        <div class="cluster-info">${envMap[cluster.environment] || cluster.environment} | ${serverCount} 节点 | ${instanceCount} 实例</div>
+                        <div class="cluster-actions">
+                            <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); showAddServerDialog('${cluster.id}')">➕ 添加节点</button>
+                            <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); showAddTenantDi-alog('${cluster.id}')">➕ 添加租户</button>
+                            <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); deleteCluster('${cluster.id}')">删除</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            listDiv.innerHTML = '<div class="empty-message">暂无集群，点击"添加集群"开始</div>';
+        }
+    } catch (error) {
+        showToast('加载集群列表失败', 'error');
+    }
+}
+
+async function selectCluster(clusterId) {
+    currentClusterId = clusterId;
+    loadClusters();
+
+    try {
+        const response = await fetch('/api/topology/clusters');
+        const data = await response.json();
+        const cluster = data.clusters.find(c => c.id === clusterId);
+
+        if (cluster) {
+            renderTopology(cluster);
+        }
+    } catch (error) {
+        showToast('加载集群详情失败', 'error');
+    }
+}
+
+function renderTopology(cluster) {
+    const container = document.getElementById('topology-graph');
+
+    if (!cluster.servers || cluster.servers.length === 0) {
+        container.innerHTML = `
+            <div class="welcome-message">
+                <div class="welcome-icon">🖥️</div>
+                <h3>暂无物理机</h3>
+                <p>点击"➕ 添加节点"添加节点</p>
+            </div>
+        `;
+        return;
+    }
+
+    // 节点类型图标和颜色映射
+    const nodeTypeConfig = {
+        '计算节点': { icon: '🔲', color: '#2196F3', borderColor: '#1976D2' },
+        '存储节点': { icon: '💾', color: '#4CAF50', borderColor: '#388E3C' },
+        '监控系统': { icon: '📊', color: '#FF9800', borderColor: '#F57C00' },
+        '虚拟机': { icon: '🔷', color: '#9C27B0', borderColor: '#7B1FA2' },
+        '海光物理机': { icon: '🔶', color: '#00BCD4', borderColor: '#0097A7' },
+        '海光虚拟机': { icon: '🔷', color: '#00BCD4', borderColor: '#0097A7' },
+        '鲲鹏物理机': { icon: '🔶', color: '#E91E63', borderColor: '#C2185B' },
+        '鲲鹏虚拟机': { icon: '🔷', color: '#E91E63', borderColor: '#C2185B' },
+    };
+
+    // 构建HTML拓扑图
+    let html = `<div class="topology-canvas">`;
+    html += `<div class="topology-title" onclick="editClusterName('${cluster.id}', '${escapeJs(cluster.name)}')" title="点击重命名">${escapeHtml(cluster.name)}</div>`;
+
+    // 集群概览信息
+    const totalCpu = cluster.servers.reduce((sum, s) => sum + (parseInt(s.cpu) || 0), 0);
+    const totalMem = cluster.servers.reduce((sum, s) => sum + (parseInt(s.memory) || 0), 0);
+    const totalInstances = cluster.servers.reduce((sum, s) => sum + (s.instances ? s.instances.length : 0), 0);
+
+    html += `<div class="cluster-summary">`;
+    html += `<span class="summary-item">🖥️ ${cluster.servers.length} 物理机</span>`;
+    html += `<span class="summary-item">⚡ ${totalCpu}C CPU</span>`;
+    html += `<span class="summary-item">💾 ${totalMem}G 内存</span>`;
+    html += `<span class="summary-item">📦 ${totalInstances} 实例</span>`;
+    html += `<span class="summary-item">📋 ${cluster.tenants ? cluster.tenants.length : 0} 租户</span>`;
+    html += `</div>`;
+
+    // 辅助函数：渲染单个服务器卡片
+    function renderServerCard(server) {
+        // 从description解析节点类型
+        let nodeType = '计算节点';
+        let nodeConfig = nodeTypeConfig['计算节点'];
+
+        if (server.description) {
+            const typeMatch = server.description.match(/节点类型:\s*([^|]+)/);
+            if (typeMatch) {
+                nodeType = typeMatch[1].trim();
+                nodeConfig = nodeTypeConfig[nodeType] || nodeTypeConfig['计算节点'];
+            }
+        }
+
+        // 解析多IP
+        let ipInfo = '';
+        if (server.description) {
+            const vipMatch = server.description.match(/VIP:\s*([^|]+)/);
+            const scanMatch = server.description.match(/ScanIP:\s*([^|]+)/);
+
+            if (vipMatch && vipMatch[1].trim() !== 'None') {
+                ipInfo += `<span class="ip-tag vip">VIP:${escapeHtml(vipMatch[1].trim())}</span>`;
+            }
+            if (scanMatch && scanMatch[1].trim() !== 'None') {
+                ipInfo += `<span class="ip-tag scan">Scan:${escapeHtml(scanMatch[1].trim())}</span>`;
+            }
+        }
+
+        let serverHtml = `
+            <div class="topology-server" style="border-color: ${nodeConfig.borderColor}; border-width: 2px;" onclick="showEditServerDialog('${server.id}', '${escapeJs(server.name)}', '${escapeJs(server.host || '')}', '${escapeJs(server.datacenter || '')}', '${escapeJs(server.cpu || '')}', '${escapeJs(server.memory || '')}', '${escapeJs(server.description || '')}')">
+                <div class="server-header" style="border-bottom-color: ${nodeConfig.borderColor};">
+                    <span class="server-icon" style="color: ${nodeConfig.color};">${nodeConfig.icon}</span>
+                    <div class="server-info">
+                        <span class="server-name">${escapeHtml(server.name)}</span>
+                        <span class="server-type">${nodeType}</span>
+                        ${server.datacenter ? `<span class="server-datacenter">📍 ${escapeHtml(server.datacenter)}</span>` : ''}
+                    </div>
+                    <div class="server-actions">
+                        <span class="server-host">${escapeHtml(server.host || '')}</span>
+                        <button class="btn-icon btn-add" onclick="event.stopPropagation(); showAddInstanceDialog('${server.id}')" title="添加实例">➕</button>
+                        <button class="btn-icon btn-delete" onclick="event.stopPropagation(); deleteServer('${server.id}')" title="删除节点">🗑️</button>
+                    </div>
+                </div>
+                <div class="server-ips">
+                    ${ipInfo}
+                </div>
+                <div class="server-specs">
+                    ${server.cpu ? `<span class="spec-tag">⚡ ${escapeHtml(server.cpu)}C</span>` : ''}
+                    ${server.memory ? `<span class="spec-tag">💾 ${escapeHtml(server.memory)}G</span>` : ''}
+                </div>
+                <div class="server-instances">
+        `;
+
+        if (server.instances && server.instances.length > 0) {
+            server.instances.forEach(instance => {
+                let serviceName = '';
+                if (instance.description) {
+                    const serviceMatch = instance.description.match(/Service:\s*([^|]+)/);
+                    if (serviceMatch) {
+                        serviceName = serviceMatch[1].trim();
+                    }
+                }
+
+                serverHtml += `
+                    <div class="topology-instance" onclick="event.stopPropagation(); showInstanceDetail('${instance.id}')">
+                        <div class="instance-header">
+                            <span class="instance-name">${escapeHtml(instance.name)}</span>
+                            <span class="instance-port">:${escapeHtml(instance.port)}</span>
+                            <span class="instance-actions">
+                                <button class="btn-icon btn-edit" onclick="event.stopPropagation(); showEditInstanceDialog('${instance.id}', '${escapeJs(instance.name)}', '${escapeJs(instance.port)}', '${escapeJs(instance.cpu || '')}','${escapeJs(instance.memory || '')}', '${escapeJs(instance.description || '')}')" title="编辑">✏️</button>
+                                <button class="btn-icon btn-delete" onclick="event.stopPropagation(); deleteInstance('${instance.id}')" title="删除">🗑️</button>
+                            </span>
+                        </div>
+                        ${serviceName ? `<div class="instance-service">${escapeHtml(serviceName)}</div>` : ''}
+                        <div class="instance-spec">${escapeHtml(instance.cpu || '-')}C / ${escapeHtml(instance.memory|| '-')}G</div>
+                    </div>
+                `;
+            });
+        } else {
+            serverHtml += `<div class="no-instances">暂无实例</div>`;
+        }
+
+        serverHtml += `
+                </div>
+            </div>
+        `;
+
+        return { html: serverHtml, nodeType };
+    }
+
+    // 按机房和节点类型分组服务器
+    const datacenterGroups = {};
+
+    cluster.servers.forEach(server => {
+        const dc = server.datacenter || '默认机房';
+        if (!datacenterGroups[dc]) {
+            datacenterGroups[dc] = { compute: [], storage: [], other: [] };
+        }
+
+        let nodeType = '计算节点';
+        if (server.description) {
+            const typeMatch = server.description.match(/节点类型:\s*([^|]+)/);
+            if (typeMatch) {
+                nodeType = typeMatch[1].trim();
+            }
+        }
+
+        if (nodeType === '存储节点') {
+            datacenterGroups[dc].storage.push(server);
+        } else if (nodeType === '计算节点' || nodeType.includes('虚拟机') || nodeType.includes('物理机')) {
+            datacenterGroups[dc].compute.push(server);
+        } else {
+            datacenterGroups[dc].other.push(server);
+        }
+    });
+
+    // 按机房渲染
+    Object.entries(datacenterGroups).forEach(([dcName, groups]) => {
+        const dcServerCount = groups.compute.length + groups.storage.length + groups.other.length;
+        html += `<div class="topology-datacenter">`;
+        html += `<div class="datacenter-title">📍 ${escapeHtml(dcName)} (${dcServerCount} 节点)</div>`;
+
+        // 渲染计算节点
+        if (groups.compute.length > 0) {
+            html += `<div class="topology-section-title">🔲 计算节点 (${groups.compute.length})</div>`;
+            html += `<div class="topology-servers">`;
+            groups.compute.forEach(server => {
+                html += renderServerCard(server).html;
+            });
+            html += `</div>`;
+        }
+
+        // 渲染存储节点
+        if (groups.storage.length > 0) {
+            html += `<div class="topology-section-title">💾 存储节点 (${groups.storage.length})</div>`;
+            html += `<div class="topology-servers">`;
+            groups.storage.forEach(server => {
+                html += renderServerCard(server).html;
+            });
+            html += `</div>`;
+        }
+
+        // 渲染其他类型节点
+        if (groups.other.length > 0) {
+            html += `<div class="topology-section-title">🔧 其他节点 (${groups.other.length})</div>`;
+            html += `<div class="topology-servers">`;
+            groups.other.forEach(server => {
+                html += renderServerCard(server).html;
+            });
+            html += `</div>`;
+        }
+
+        html += `</div>`;
+    });
+
+    // 显示租户信息
+    if (cluster.tenants && cluster.tenants.length > 0) {
+        html += `<div class="topology-tenants">`;
+        html += `<div class="tenants-title">📋 租户（实例集群）</div>`;
+
+        cluster.tenants.forEach(tenant => {
+            const typeMap = {
+                'master-slave': '主从复制',
+                'master-master': '双主复制',
+                'rac': 'RAC集群',
+                'cluster': '集群'
+            };
+
+            // 统计租户实例数
+            const tenantInstanceCount = tenant.instances ? tenant.instances.length : 0;
+
+            html += `
+                <div class="topology-tenant">
+                    <div class="tenant-header">
+                        <span class="tenant-name">${escapeHtml(tenant.name)}</span>
+                        <span class="tenant-type">${typeMap[tenant.topology_type] || tenant.topology_type}</span>
+                        <span class="tenant-count">${tenantInstanceCount} 实例</span>
+                        <button class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); showEditTenantDialog('${tenant.id}', '${escapeHtml(tenant.name)}', '${tenant.topology_type}', '${escapeHtml(tenant.description || '')}')">编辑</button>
+                        <button class="btn btn-xs btn-danger" onclick="event.stopPropagation(); deleteTenant('${tenant.id}')">删除</button>
+                    </div>
+                    <div class="tenant-instances">
+            `;
+
+            if (tenant.instances && tenant.instances.length > 0) {
+                tenant.instances.forEach(ti => {
+                    const roleIcon = ti.role === 'master' ? '🟢' : '🔵';
+                    html += `<span class="tenant-instance">${roleIcon} ${escapeHtml(ti.host)}:${escapeHtml(ti.port)}</span>`;
+                });
+            }
+
+            html += `</div></div>`;
+        });
+
+        html += `</div>`;
+    }
+
+    html += `</div>`;
+    container.innerHTML = html;
+}
+
+// 显示实例详情
+async function showInstanceDetail(instanceId) {
+    try {
+        const response = await fetch(`/api/topology/instances/${instanceId}`);
+        const data = await response.json();
+
+        if (response.ok) {
+            const detailPanel = document.getElementById('topology-detail');
+            const detailContent = document.getElementById('detail-content');
+
+            detailContent.innerHTML = `
+                <div class="detail-item">
+                    <div class="detail-label">实例名称</div>
+                    <div class="detail-value">${escapeHtml(data.name)}</div>
+                </div>
+                <div class="detail-item">
+                    <div class="detail-label">IP 地址</div>
+                    <div class="detail-value">${escapeHtml(data.server_host || '-')}</div>
+                </div>
+                <div class="detail-item">
+                    <div class="detail-label">端口</div>
+                    <div class="detail-value">${escapeHtml(data.port)}</div>
+                </div>
+                <div class="detail-item">
+                    <div class="detail-label">CPU</div>
+                    <div class="detail-value">${escapeHtml(data.cpu || '-')} 核</div>
+                </div>
+                <div class="detail-item">
+                    <div class="detail-label">内存</div>
+                    <div class="detail-value">${escapeHtml(data.memory || '-')} GB</div>
+                </div>
+                <div class="detail-item">
+                    <div class="detail-label">所属物理机</div>
+                    <div class="detail-value">${escapeHtml(data.server_name || '-')}</div>
+                </div>
+                <div class="detail-item">
+                    <div class="detail-label">所属集群</div>
+                    <div class="detail-value">${escapeHtml(data.cluster_name || '-')}</div>
+                </div>
+                ${data.description ? `
+                <div class="detail-item">
+                    <div class="detail-label">描述</div>
+                    <div class="detail-value">${escapeHtml(data.description)}</div>
+                </div>
+                ` : ''}
+                ${data.tenants && data.tenants.length > 0 ? `
+                <div class="detail-section">
+                    <h4>所属租户</h4>
+                    ${data.tenants.map(t => `
+                        <div class="tenant-item">
+                            <div class="tenant-name">${escapeHtml(t.name)}</div>
+                            <div class="tenant-role">角色: ${t.role === 'master' ? '🟢 主节点' : '🔵 从节点'}</div>
+                        </div>
+                    `).join('')}
+                </div>
+                ` : ''}
+            `;
+
+            detailPanel.style.display = 'flex';
+        } else {
+            showToast('获取实例详情失败', 'error');
+        }
+    } catch (error) {
+        showToast('获取实例详情失败', 'error');
+    }
+}
+
+function closeDetailPanel() {
+    document.getElementById('topology-detail').style.display = 'none';
+}
+
+function getNodeColor(role) {
+    const colors = {
+        'master': '#4CAF50',
+        'slave': '#2196F3',
+        'standalone': '#9E9E9E',
+        'cn': '#FF9800',
+        'dn': '#9C27B0',
+        'gtm': '#F44336'
+    };
+    return colors[role] || '#607D8B';
+}
+
+// ==================== 对话框函数 ====================
+
+function showAddClusterDialog() {
+    document.getElementById('modal-add-cluster').style.display = 'flex';
+}
+
+// ==================== 编辑集群名称 ====================
+async function editClusterName(clusterId, currentName) {
+    const newName = prompt('请输入新的集群名称:', currentName);
+    if (!newName || newName.trim() === '' || newName.trim() === currentName) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/topology/clusters/${clusterId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: newName.trim() })
+        });
+
+        if (response.ok) {
+            showToast('集群名称修改成功', 'success');
+            loadClusters();
+            // 如果当前选中的集群被重命名，刷新拓扑图
+            if (currentClusterId === clusterId) {
+                const clustersResponse = await fetch('/api/topology/clusters');
+                const data = await clustersResponse.json();
+                const cluster = data.clusters.find(c => c.id === clusterId);
+                if (cluster) {
+                    renderTopology(cluster);
+                }
+            }
+        } else {
+            showToast('修改失败', 'error');
+        }
+    } catch (error) {
+        showToast('修改失败', 'error');
+    }
+}
+
+function showAddServerDialog(clusterId) {
+    currentClusterId = clusterId;
+    document.getElementById('modal-add-server').style.display = 'flex';
+}
+
+function showAddInstanceDialog(serverId) {
+    window.currentServerId = serverId;
+    document.getElementById('modal-add-instance').style.display = 'flex';
+}
+
+function closeModal(modalId) {
+    document.getElementById(modalId).style.display = 'none';
+}
+
+// ==================== 添加集群 ====================
+async function addCluster() {
+    const name = document.getElementById('cluster-name').value.trim();
+    const dbType = document.getElementById('cluster-db-type').value;
+    const environment = document.getElementById('cluster-environment').value;
+    const description = document.getElementById('cluster-description').value.trim();
+
+    if (!name || !dbType) {
+        showToast('请填写集群名称和数据库类型', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/topology/clusters', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: name,
+                db_type: dbType,
+                environment: environment,
+                description: description
+            })
+        });
+
+        if (response.ok) {
+            showToast('添加成功', 'success');
+            closeModal('modal-add-cluster');
+            loadClusters();
+            document.getElementById('cluster-name').value = '';
+            document.getElementById('cluster-description').value = '';
+        } else {
+            showToast('添加失败', 'error');
+        }
+    } catch (error) {
+        showToast('添加失败', 'error');
+    }
+}
+
+// ==================== 添加节点 ====================
+async function addServer() {
+    const name = document.getElementById('server-name').value.trim();
+    const host = document.getElementById('server-host').value.trim();
+    const datacenter = document.getElementById('server-datacenter').value.trim();
+    const cpu = document.getElementById('server-cpu').value.trim();
+    const memory = document.getElementById('server-memory').value.trim();
+    const serverType = document.getElementById('server-type').value;
+    const description = document.getElementById('server-description').value.trim();
+
+    if (!name || !host) {
+        showToast('请填写节点名称和IP地址', 'error');
+        return;
+    }
+
+    // 构建描述，包含节点类型和规格
+    const fullDescription = `节点类型: ${serverType} | CPU: ${cpu}C | 内存: ${memory}G | ${description}`;
+
+    try {
+        const response = await fetch(`/api/topology/clusters/${currentClusterId}/servers`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: name,
+                host: host,
+                datacenter: datacenter,
+                cpu: cpu,
+                memory: memory,
+                description: fullDescription
+            })
+        });
+
+        if (response.ok) {
+            showToast('添加成功', 'success');
+            closeModal('modal-add-server');
+            selectCluster(currentClusterId);
+            document.getElementById('server-name').value = '';
+            document.getElementById('server-host').value = '';
+            document.getElementById('server-datacenter').value = '';
+            document.getElementById('server-cpu').value = '';
+            document.getElementById('server-memory').value = '';
+            document.getElementById('server-description').value = '';
+        } else {
+            showToast('添加失败', 'error');
+        }
+    } catch (error) {
+        showToast('添加失败', 'error');
+    }
+}
+
+// ==================== 编辑节点 ====================
+let currentEditServerId = null;
+
+function showEditServerDialog(serverId, serverName, serverHost, serverDatacenter, serverCpu, serverMemory, serverDescription) {
+    currentEditServerId = serverId;
+    document.getElementById('edit-server-name').value = serverName || '';
+    document.getElementById('edit-server-host').value = serverHost || '';
+    document.getElementById('edit-server-datacenter').value = serverDatacenter || '';
+
+    // 优先使用独立的cpu和memory字段，如果没有则从描述中解析
+    let cpu = serverCpu || '', memory = serverMemory || '', type = '计算节点', desc = '';
+    if (serverDescription) {
+        const typeMatch = serverDescription.match(/节点类型:\s*([^|]+)/);
+        const cpuMatch = serverDescription.match(/CPU:\s*([^|C]+)/);
+        const memMatch = serverDescription.match(/内存:\s*([^|G]+)/);
+        if (typeMatch) type = typeMatch[1].trim();
+        if (cpuMatch) cpu = cpuMatch[1].trim();
+        if (memMatch) memory = memMatch[1].trim();
+        // 提取剩余描述
+        const parts = serverDescription.split('|');
+        if (parts.length > 3) {
+            desc = parts.slice(3).join('|').trim();
+        }
+    }
+
+    document.getElementById('edit-server-type').value = type;
+    document.getElementById('edit-server-cpu').value = cpu;
+    document.getElementById('edit-server-memory').value = memory;
+    document.getElementById('edit-server-description').value = desc;
+
+    document.getElementById('modal-edit-server').style.display = 'flex';
+}
+
+async function updateServer() {
+    const name = document.getElementById('edit-server-name').value.trim();
+    const host = document.getElementById('edit-server-host').value.trim();
+    const datacenter = document.getElementById('edit-server-datacenter').value.trim();
+    const cpu = document.getElementById('edit-server-cpu').value.trim();
+    const memory = document.getElementById('edit-server-memory').value.trim();
+    const serverType = document.getElementById('edit-server-type').value;
+    const description = document.getElementById('edit-server-description').value.trim();
+
+    if (!name || !host) {
+        showToast('请填写节点名称和IP地址', 'error');
+        return;
+    }
+
+    const fullDescription = `节点类型: ${serverType} | CPU: ${cpu}C | 内存: ${memory}G | ${description}`;
+
+    try {
+        const response = await fetch(`/api/topology/servers/${currentEditServerId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: name,
+                host: host,
+                datacenter: datacenter,
+                cpu: cpu,
+                memory: memory,
+                description: fullDescription
+            })
+        });
+
+        if (response.ok) {
+            showToast('更新成功', 'success');
+            closeModal('modal-edit-server');
+            selectCluster(currentClusterId);
+        } else {
+            showToast('更新失败', 'error');
+        }
+    } catch (error) {
+        showToast('更新失败', 'error');
+    }
+}
+
+// ==================== 编辑租户 ====================
+let currentEditTenantId = null;
+
+function showEditTenantDialog(tenantId, tenantName, topologyType, tenantDescription) {
+    currentEditTenantId = tenantId;
+    document.getElementById('edit-tenant-name').value = tenantName || '';
+    document.getElementById('edit-tenant-topology').value = topologyType || 'master-slave';
+    document.getElementById('edit-tenant-description').value = tenantDescription || '';
+    document.getElementById('modal-edit-tenant').style.display = 'flex';
+}
+
+async function updateTenant() {
+    const name = document.getElementById('edit-tenant-name').value.trim();
+    const topologyType = document.getElementById('edit-tenant-topology').value;
+    const description = document.getElementById('edit-tenant-description').value.trim();
+
+    if (!name) {
+        showToast('请填写租户名称', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/topology/tenants/${currentEditTenantId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: name,
+                topology_type: topologyType,
+                description: description
+            })
+        });
+
+        if (response.ok) {
+            showToast('更新成功', 'success');
+            closeModal('modal-edit-tenant');
+            selectCluster(currentClusterId);
+        } else {
+            showToast('更新失败', 'error');
+        }
+    } catch (error) {
+        showToast('更新失败', 'error');
+    }
+}
+
+// ==================== 添加租户到集群 ====================
+function showAddTenantDialog(clusterId) {
+    currentClusterId = clusterId;
+    document.getElementById('new-tenant-name').value = '';
+    document.getElementById('new-tenant-topology').value = 'master-slave';
+    document.getElementById('new-tenant-description').value = '';
+    document.getElementById('modal-add-tenant').style.display = 'flex';
+}
+
+async function addTenantToCluster() {
+    const name = document.getElementById('new-tenant-name').value.trim();
+    const topologyType = document.getElementById('new-tenant-topology').value;
+    const description = document.getElementById('new-tenant-description').value.trim();
+
+    if (!name) {
+        showToast('请填写租户名称', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/topology/clusters/${currentClusterId}/tenants`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: name,
+                topology_type: topologyType,
+                description: description
+            })
+        });
+
+        if (response.ok) {
+            showToast('添加成功', 'success');
+            closeModal('modal-add-tenant');
+            selectCluster(currentClusterId);
+            document.getElementById('new-tenant-name').value = '';
+            document.getElementById('new-tenant-description').value = '';
+        } else {
+            showToast('添加失败', 'error');
+        }
+    } catch (error) {
+        showToast('添加失败', 'error');
+    }
+}
+
+// ==================== 添加实例 ====================
+async function addInstance() {
+    const name = document.getElementById('instance-name').value.trim();
+    const port = document.getElementById('instance-port').value.trim();
+    const cpu = document.getElementById('instance-cpu').value.trim();
+    const memory = document.getElementById('instance-memory').value.trim();
+    const description = document.getElementById('instance-description').value.trim();
+
+    if (!name || !port) {
+        showToast('请填写实例名称和端口', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/topology/servers/${window.currentServerId}/instances`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: name,
+                port: port,
+                cpu: cpu,
+                memory: memory,
+                description: description
+            })
+        });
+
+        if (response.ok) {
+            showToast('添加成功', 'success');
+            closeModal('modal-add-instance');
+            selectCluster(currentClusterId);
+            document.getElementById('instance-name').value = '';
+            document.getElementById('instance-port').value = '3306';
+            document.getElementById('instance-cpu').value = '';
+            document.getElementById('instance-memory').value = '';
+            document.getElementById('instance-description').value = '';
+        } else {
+            showToast('添加失败', 'error');
+        }
+    } catch (error) {
+        showToast('添加失败', 'error');
+    }
+}
+
+// ==================== 实例操作 ====================
+let currentEditInstanceId = null;
+
+function showAddInstanceDialog(serverId) {
+    window.currentServerId = serverId;
+    document.getElementById('instance-name').value = '';
+    document.getElementById('instance-port').value = '3306';
+    document.getElementById('instance-cpu').value = '';
+    document.getElementById('instance-memory').value = '';
+    document.getElementById('instance-description').value = '';
+    document.getElementById('modal-add-instance').style.display = 'flex';
+}
+
+function showEditInstanceDialog(instanceId, name, port, cpu, memory, description) {
+    currentEditInstanceId = instanceId;
+    document.getElementById('edit-instance-name').value = name || '';
+    document.getElementById('edit-instance-port').value = port || '';
+    document.getElementById('edit-instance-cpu').value = cpu || '';
+    document.getElementById('edit-instance-memory').value = memory || '';
+    document.getElementById('edit-instance-description').value = description || '';
+    document.getElementById('modal-edit-instance').style.display = 'flex';
+}
+
+async function updateInstance() {
+    const name = document.getElementById('edit-instance-name').value.trim();
+    const port = document.getElementById('edit-instance-port').value.trim();
+    const cpu = document.getElementById('edit-instance-cpu').value.trim();
+    const memory = document.getElementById('edit-instance-memory').value.trim();
+    const description = document.getElementById('edit-instance-description').value.trim();
+
+    if (!name || !port) {
+        showToast('请填写实例名称和端口', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/topology/instances/${currentEditInstanceId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: name,
+                port: port,
+                cpu: cpu,
+                memory: memory,
+                description: description
+            })
+        });
+
+        if (response.ok) {
+            showToast('更新成功', 'success');
+            closeModal('modal-edit-instance');
+            selectCluster(currentClusterId);
+        } else {
+            showToast('更新失败', 'error');
+        }
+    } catch (error) {
+        showToast('更新失败', 'error');
+    }
+}
+
+async function deleteInstance(instanceId) {
+    if (!confirm('确定要删除该实例吗？')) return;
+
+    try {
+        const response = await fetch(`/api/topology/instances/${instanceId}`, { method: 'DELETE' });
+        if (response.ok) {
+            showToast('删除成功', 'success');
+            selectCluster(currentClusterId);
+        } else {
+            showToast('删除失败', 'error');
+        }
+    } catch (error) {
+        showToast('删除失败', 'error');
+    }
+}
+
+// ==================== 删除操作 ====================
+async function deleteCluster(clusterId) {
+    if (!confirm('确定要删除该集群吗？')) return;
+
+    try {
+        const response = await fetch(`/api/topology/clusters/${clusterId}`, { method: 'DELETE' });
+        if (response.ok) {
+            showToast('删除成功', 'success');
+            if (currentClusterId === clusterId) {
+                currentClusterId = null;
+                document.getElementById('topology-graph').innerHTML = `
+                    <div class="welcome-message">
+                        <div class="welcome-icon">🗺️</div>
+                        <h3>集群拓扑</h3>
+                        <p>选择左侧的集群查看拓扑图</p>
+                    </div>
+                `;
+            }
+            loadClusters();
+        } else {
+            showToast('删除失败', 'error');
+        }
+    } catch (error) {
+        showToast('删除失败', 'error');
+    }
+}
+
+async function deleteServer(serverId) {
+    if (!confirm('确定要删除该物理机吗？')) return;
+
+    try {
+        const response = await fetch(`/api/topology/servers/${serverId}`, { method: 'DELETE' });
+        if (response.ok) {
+            showToast('删除成功', 'success');
+            selectCluster(currentClusterId);
+        } else {
+            showToast('删除失败', 'error');
+        }
+    } catch (error) {
+        showToast('删除失败', 'error');
+    }
+}
+
+async function deleteTenant(tenantId) {
+    if (!confirm('确定要删除该租户吗？')) return;
+
+    try {
+        const response = await fetch(`/api/topology/tenants/${tenantId}`, { method: 'DELETE' });
+        if (response.ok) {
+            showToast('删除成功', 'success');
+            selectCluster(currentClusterId);
+        } else {
+            showToast('删除失败', 'error');
+        }
+    } catch (error) {
+        showToast('删除失败', 'error');
+    }
+}
+
+// ==================== 导出拓扑 ====================
+async function exportTopology() {
+    try {
+        const response = await fetch('/api/topology/export');
+        const data = await response.json();
+
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `topology_${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        showToast('拓扑配置已导出', 'success');
+    } catch (error) {
+        showToast('导出失败', 'error');
+    }
+}
+
+// ==================== API配置模块 ====================
+// ==================== 多模型配置管理 ====================
+let currentModels = [];
+let editingModelId = null;
+
+async function loadConfig() {
+    try {
+        const response = await fetch('/api/config/llm/models');
+        const data = await response.json();
+        currentModels = data.models || [];
+        renderModelsList();
+    } catch (error) {
+        console.error('加载配置失败:', error);
+    }
+}
+
+function renderModelsList() {
+    const container = document.getElementById('models-list');
+    if (!container) return;
+
+    if (currentModels.length === 0) {
+        container.innerHTML = '<div class="empty-message">暂无配置模型，点击上方按钮添加</div>';
+        return;
+    }
+
+    container.innerHTML = currentModels.map(model => `
+        <div class="model-card ${model.is_default ? 'default' : ''}">
+            <div class="model-info">
+                <div class="model-name">${escapeHtml(model.display_name || model.model_name)}</div>
+                <div class="model-detail">${escapeHtml(model.model_name)} | ${escapeHtml(model.api_url)}</div>
+                ${model.is_default ? '<span class="model-badge default">默认</span>' : ''}
+            </div>
+            <div class="model-actions">
+                <button class="btn btn-sm btn-primary" onclick="testModelConnection('${model.id}')">测试</button>
+                <button class="btn btn-sm btn-secondary" onclick="editModel('${model.id}')">编辑</button>
+                ${!model.is_default ? `<button class="btn btn-sm btn-success" onclick="setDefaultModel('${model.id}')">设为默认</button>` : ''}
+                <button class="btn btn-sm btn-danger" onclick="deleteModel('${model.id}')">删除</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function showAddModelDialog() {
+    editingModelId = null;
+    document.getElementById('model-form-title').textContent = '添加模型';
+    document.getElementById('model-id').value = '';
+    document.getElementById('model-display-name').value = '';
+    document.getElementById('api-url').value = '';
+    document.getElementById('api-key').value = '';
+    document.getElementById('model-name').value = '';
+    document.getElementById('model-form-container').style.display = 'block';
+}
+
+function hideModelForm() {
+    document.getElementById('model-form-container').style.display = 'none';
+    editingModelId = null;
+}
+
+function editModel(modelId) {
+    const model = currentModels.find(m => m.id === modelId);
+    if (!model) return;
+
+    editingModelId = modelId;
+    document.getElementById('model-form-title').textContent = '编辑模型';
+    document.getElementById('model-id').value = modelId;
+    document.getElementById('model-display-name').value = model.display_name || '';
+    document.getElementById('api-url').value = model.api_url || '';
+    document.getElementById('api-key').value = '';
+    document.getElementById('api-key').placeholder = model.api_key_masked || '请输入新的API Key';
+    document.getElementById('model-name').value = model.model_name || '';
+    document.getElementById('model-form-container').style.display = 'block';
+}
+
+async function saveModelConfig() {
+    const modelId = document.getElementById('model-id').value;
+    const displayName = document.getElementById('model-display-name').value.trim();
+    const apiUrl = document.getElementById('api-url').value.trim();
+    const apiKey = document.getElementById('api-key').value.trim();
+    const modelName = document.getElementById('model-name').value.trim();
+
+    if (!displayName) {
+        showToast('请输入显示名称', 'error');
+        return;
+    }
+    if (!apiUrl) {
+        showToast('请输入API地址', 'error');
+        return;
+    }
+    if (!apiKey && !modelId) {
+        showToast('请输入API Key', 'error');
+        return;
+    }
+    if (!modelName) {
+        showToast('请输入模型名称', 'error');
+        return;
+    }
+
+    const body = {
+        id: modelId || undefined,
+        display_name: displayName,
+        api_url: apiUrl,
+        model_name: modelName
+    };
+
+    // 如果提供了api_key，则包含在请求中
+    if (apiKey) {
+        body.api_key = apiKey;
+    }
+
+    try {
+        const response = await fetch('/api/config/llm/models', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            showToast(data.message || '保存成功', 'success');
+            hideModelForm();
+            loadConfig();
+        } else {
+            showToast(data.error || '保存失败', 'error');
+        }
+    } catch (error) {
+        showToast('保存失败', 'error');
+    }
+}
+
+async function deleteModel(modelId) {
+    if (!confirm('确定要删除这个模型配置吗？')) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/config/llm/models/${modelId}`, {
+            method: 'DELETE'
+        });
+
+        if (response.ok) {
+            showToast('删除成功', 'success');
+            loadConfig();
+        } else {
+            showToast('删除失败', 'error');
+        }
+    } catch (error) {
+        showToast('删除失败', 'error');
+    }
+}
+
+async function setDefaultModel(modelId) {
+    try {
+        const response = await fetch(`/api/config/llm/models/${modelId}/default`, {
+            method: 'POST'
+        });
+
+        if (response.ok) {
+            showToast('设置默认模型成功', 'success');
+            loadConfig();
+        } else {
+            showToast('设置失败', 'error');
+        }
+    } catch (error) {
+        showToast('设置失败', 'error');
+    }
+}
+
+async function testModelConnection(modelId) {
+    const resultDiv = document.getElementById('config-test-result');
+    resultDiv.style.display = 'block';
+    resultDiv.className = 'test-result';
+    resultDiv.textContent = '测试中...';
+
+    try {
+        const response = await fetch('/api/config/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model_id: modelId })
+        });
+        const data = await response.json();
+
+        if (response.ok) {
+            resultDiv.className = 'test-result success';
+            resultDiv.textContent = '连接成功！模型回复: ' + data.response;
+        } else {
+            resultDiv.className = 'test-result error';
+            resultDiv.textContent = data.error || '连接失败';
+        }
+    } catch (error) {
+        resultDiv.className = 'test-result error';
+        resultDiv.textContent = '测试失败: ' + error.message;
+    }
+}
+
+// 兼容旧接口
+async function saveConfig() {
+    await saveModelConfig();
+}
+
+async function testConnection() {
+    // 测试默认模型
+    await testModelConnection();
+}
+
+// ==================== 工具函数 ====================
+function showToast(message, type = 'info') {
+    const toast = document.getElementById('toast');
+    toast.textContent = message;
+    toast.className = `toast ${type} show`;
+
+    setTimeout(() => {
+        toast.className = 'toast';
+    }, 3000);
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function escapeJs(text) {
+    if (!text) return '';
+    return text.replace(/\\/g, '\\\\')
+               .replace(/'/g, "\\'")
+               .replace(/"/g, '\\"')
+               .replace(/\n/g, '\\n')
+               .replace(/\r/g, '\\r');
+}
+
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function formatMarkdown(text) {
+    if (!text) return '';
+
+    let html = escapeHtml(text);
+
+    // 标题
+    html = html.replace(/^### (.*$)/gm, '<h3>$1</h3>');
+    html = html.replace(/^## (.*$)/gm, '<h2>$1</h2>');
+    html = html.replace(/^# (.*$)/gm, '<h1>$1</h1>');
+
+    // 粗体和斜体
+    html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+
+    // 代码块
+    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+    html = html.replace(/`(.*?)`/g, '<code>$1</code>');
+
+    // 列表
+    html = html.replace(/^\s*[-*]\s(.*$)/gm, '<li>$1</li>');
+    html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+
+    // 换行
+    html = html.replace(/\n/g, '<br>');
+
+    return html;
+}
+
+function copyToClipboard(elementId) {
+    const element = document.getElementById(elementId);
+    const text = element.textContent;
+    navigator.clipboard.writeText(text).then(() => {
+        showToast('已复制到剪贴板', 'success');
+    }).catch(() => {
+        showToast('复制失败', 'error');
+    });
+}
+
+// 页面加载时加载运维手册
+function initManuals() {
+    loadManuals();
+}
+
+// ==================== 仪表盘模块 ====================
+async function loadDashboard() {
+    try {
+        // 加载统计数据
+        const statsResponse = await fetch('/api/stats');
+        const stats = await statsResponse.json();
+
+        document.getElementById('stat-db-types').textContent = stats.db_types_count || 0;
+        document.getElementById('stat-knowledge').textContent = stats.knowledge_files || 0;
+        document.getElementById('stat-manuals').textContent = stats.manuals_count || 0;
+        document.getElementById('stat-clusters').textContent = stats.clusters_count || 0;
+
+        // 渲染知识库分布图
+        renderDBChart(stats.by_db_type || {});
+
+        // 加载最近操作日志
+        loadRecentLogs();
+
+        // 加载系统状态
+        loadSystemHealth();
+    } catch (error) {
+        console.error('加载仪表盘失败:', error);
+    }
+}
+
+function renderDBChart(byDbType) {
+    const chartDiv = document.getElementById('db-chart');
+    const entries = Object.entries(byDbType);
+
+    if (entries.length === 0) {
+        chartDiv.innerHTML = '<div class="empty-message">暂无数据</div>';
+        return;
+    }
+
+    const maxCount = Math.max(...entries.map(([_, count]) => count), 1);
+
+    chartDiv.innerHTML = entries.map(([dbType, count]) => {
+        const dbInfo = dbTypes.find(t => t.id === dbType);
+        const icon = dbInfo ? dbInfo.icon : '📁';
+        const name = dbInfo ? dbInfo.name : dbType;
+        const percentage = (count / maxCount) * 100;
+
+        return `
+            <div class="chart-bar-item">
+                <div class="chart-label">${icon} ${name}</div>
+                <div class="chart-bar-container">
+                    <div class="chart-bar" style="width: ${percentage}%"></div>
+                    <span class="chart-value">${count}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+async function loadRecentLogs() {
+    try {
+        const response = await fetch('/api/logs?limit=5');
+        const data = await response.json();
+        const logsDiv = document.getElementById('recent-logs');
+
+        if (data.logs && data.logs.length > 0) {
+            logsDiv.innerHTML = data.logs.map(log => `
+                <div class="log-item">
+                    <span class="log-time">${log.timestamp}</span>
+                    <span class="log-module">[${log.module}]</span>
+                    <span class="log-action">${escapeHtml(log.action)}</span>
+                </div>
+            `).join('');
+        } else {
+            logsDiv.innerHTML = '<div class="empty-message">暂无操作记录</div>';
+        }
+    } catch (error) {
+        console.error('加载日志失败:', error);
+    }
+}
+
+async function loadSystemHealth() {
+    try {
+        const response = await fetch('/api/health');
+        const health = await response.json();
+        const healthDiv = document.getElementById('system-health');
+
+        const statusIcon = health.status === 'healthy' ? '✅' : '⚠️';
+        let checksHtml = '';
+
+        if (health.checks) {
+            for (const [key, check] of Object.entries(health.checks)) {
+                const checkIcon = check.status === 'ok' ? '✅' : check.status === 'warning' ? '⚠️' : '❌';
+                checksHtml += `<div class="health-check">${checkIcon} ${check.message}</div>`;
+            }
+        }
+
+        healthDiv.innerHTML = `
+            <div class="health-status">${statusIcon} 系统状态: ${health.status === 'healthy' ? '正常' : '异常'}</div>
+            ${checksHtml}
+        `;
+    } catch (error) {
+        document.getElementById('system-health').innerHTML = '<div class="health-check">❌ 无法获取系统状态</div>';
+    }
+}
+
+// ==================== 文档加载 ====================
+async function loadDoc(filename, elementId) {
+    try {
+        const response = await fetch(`/api/config/docs/${filename}`);
+        const data = await response.json();
+        const element = document.getElementById(elementId);
+
+        if (response.ok) {
+            element.innerHTML = formatMarkdown(data.content);
+        } else {
+            element.innerHTML = `<div class="empty-message">${data.error || '加载失败'}</div>`;
+        }
+    } catch (error) {
+        document.getElementById(elementId).innerHTML = '<div class="empty-message">加载失败</div>';
+    }
+}
+
+// ==================== 快捷键系统 ====================
+function initKeyboardShortcuts() {
+    document.addEventListener('keydown', function(e) {
+        // Ctrl/Cmd + 1~9 切换模块
+        if ((e.ctrlKey || e.metaKey) && e.key >= '1' && e.key <= '9') {
+            e.preventDefault();
+            const moduleMap = {
+                '1': 'dashboard',
+                '2': 'knowledge',
+                '3': 'qa',
+                '4': 'sql',
+                '5': 'manuals',
+                '6': 'commands',
+                '7': 'topology',
+                '8': 'config',
+                '9': 'config'
+            };
+            const module = moduleMap[e.key];
+            if (module) {
+                switchModule(module);
+            }
+        }
+
+        // Ctrl/Cmd + K 搜索命令
+        if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+            e.preventDefault();
+            switchModule('commands');
+            setTimeout(() => {
+                const searchInput = document.getElementById('command-search');
+                if (searchInput) {
+                    searchInput.focus();
+                }
+            }, 100);
+        }
+
+        // ESC 关闭对话框
+        if (e.key === 'Escape') {
+            document.querySelectorAll('.modal').forEach(modal => {
+                modal.style.display = 'none';
+            });
+        }
+    });
+}
+
+// ==================== 文件预览功能 ====================
+async function previewFile(dbType, filename) {
+    try {
+        const response = await fetch(`/api/knowledge/preview/${dbType}/${encodeURIComponent(filename)}`);
+        const data = await response.json();
+
+        if (response.ok) {
+            document.getElementById('preview-title').textContent = `文件预览: ${filename}`;
+            document.getElementById('preview-content').textContent = data.content;
+            document.getElementById('modal-preview').style.display = 'flex';
+        } else {
+            showToast(data.error || '预览失败', 'error');
+        }
+    } catch (error) {
+        showToast('预览失败', 'error');
+    }
+}
+
+async function previewManual(filename) {
+    try {
+        const response = await fetch(`/api/manuals/preview/${encodeURIComponent(filename)}`);
+        const data = await response.json();
+
+        if (response.ok) {
+            document.getElementById('preview-title').textContent = `手册预览: ${filename}`;
+            document.getElementById('preview-content').textContent = data.content;
+            document.getElementById('modal-preview').style.display = 'flex';
+        } else {
+            showToast(data.error || '预览失败', 'error');
+        }
+    } catch (error) {
+        showToast('预览失败', 'error');
+    }
+}
+
+// ==================== 命令跨库搜索 ====================
+async function searchCommands() {
+    const keyword = document.getElementById('command-search').value.trim();
+    const resultsDiv = document.getElementById('command-search-results');
+    const resultsList = document.getElementById('command-search-results-list');
+
+    if (!keyword) {
+        resultsDiv.style.display = 'none';
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/commands/search?keyword=${encodeURIComponent(keyword)}`);
+        const data = await response.json();
+
+        if (data.results && data.results.length > 0) {
+            resultsDiv.style.display = 'block';
+            resultsList.innerHTML = data.results.map(cmd => `
+                <div class="command-item">
+                    <div class="cmd-info">
+                        <div class="cmd-name">
+                            <span class="cmd-db-type">${escapeHtml(cmd.db_name)}</span>
+                            ${escapeHtml(cmd.name)}
+                        </div>
+                        <div class="cmd-desc">[${escapeHtml(cmd.category)}] ${escapeHtml(cmd.desc)}</div>
+                    </div>
+                    <code class="cmd-text" onclick="copyText('${escapeHtml(cmd.cmd)}')" title="点击复制">
+                        ${escapeHtml(cmd.cmd)}
+                    </code>
+                </div>
+            `).join('');
+        } else {
+            resultsDiv.style.display = 'block';
+            resultsList.innerHTML = '<div class="empty-message">未找到匹配的命令</div>';
+        }
+    } catch (error) {
+        showToast('搜索失败', 'error');
+    }
+}
+
+// ==================== 数据库类型管理 ====================
+async function loadDBTypesPage() {
+    try {
+        const response = await fetch('/api/db-types');
+        const data = await response.json();
+        const gridDiv = document.getElementById('dbtypes-grid');
+
+        if (data.types && data.types.length > 0) {
+            gridDiv.innerHTML = data.types.map(type => `
+                <div class="dbtype-card">
+                    <div class="dbtype-icon">${type.icon || '📁'}</div>
+                    <div class="dbtype-info">
+                        <div class="dbtype-name">${escapeHtml(type.name)}</div>
+                        <div class="dbtype-id">${escapeHtml(type.id)}</div>
+                    </div>
+                    <button class="btn btn-sm btn-danger" onclick="deleteDBType('${escapeHtml(type.id)}')">
+                        删除
+                    </button>
+                </div>
+            `).join('');
+        } else {
+            gridDiv.innerHTML = '<div class="empty-message">暂无数据库类型</div>';
+        }
+    } catch (error) {
+        showToast('加载数据库类型失败', 'error');
+    }
+}
+
+function showAddDBTypeDialog() {
+    document.getElementById('dbtype-id').value = '';
+    document.getElementById('dbtype-name').value = '';
+    document.getElementById('dbtype-icon').value = '📁';
+    document.getElementById('modal-add-dbtype').style.display = 'flex';
+}
+
+async function addDBType() {
+    const id = document.getElementById('dbtype-id').value.trim().toLowerCase();
+    const name = document.getElementById('dbtype-name').value.trim();
+    const icon = document.getElementById('dbtype-icon').value.trim() || '📁';
+
+    if (!id || !name) {
+        showToast('请填写数据库ID和名称', 'error');
+        return;
+    }
+
+    if (!/^[a-z0-9_]+$/.test(id)) {
+        showToast('ID只能包含字母、数字和下划线', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/db-types', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id, name, icon })
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            showToast('添加成功', 'success');
+            closeModal('modal-add-dbtype');
+            loadDBTypesPage();
+            loadDBTypes(); // 刷新下拉框
+        } else {
+            showToast(data.error || '添加失败', 'error');
+        }
+    } catch (error) {
+        showToast('添加失败', 'error');
+    }
+}
+
+async function deleteDBType(id) {
+    if (!confirm(`确定要删除数据库类型 "${id}" 吗？`)) return;
+
+    try {
+        const response = await fetch(`/api/db-types/${id}`, { method: 'DELETE' });
+
+        if (response.ok) {
+            showToast('删除成功', 'success');
+            loadDBTypesPage();
+            loadDBTypes(); // 刷新下拉框
+        } else {
+            showToast('删除失败', 'error');
+        }
+    } catch (error) {
+        showToast('删除失败', 'error');
+    }
+}
+
+// ==================== 系统配置 Tab 切换 ====================
+function switchConfigTab(tab) {
+    // 更新标签按钮状态
+    document.querySelectorAll('.config-tabs .tab-btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    event.target.classList.add('active');
+
+    // 切换内容显示
+    document.querySelectorAll('.config-tab-content').forEach(content => {
+        content.classList.remove('active');
+    });
+    document.getElementById(`config-tab-${tab}`).classList.add('active');
+
+    // 加载对应数据
+    if (tab === 'logs') {
+        loadLogs();
+    } else if (tab === 'dbtypes') {
+        loadDBTypesPage();
+    } else if (tab === 'project') {
+        loadDoc('PROJECT.md', 'project-doc-content');
+    } else if (tab === 'changelog') {
+        loadDoc('version_update.md', 'changelog-content');
+    }
+}
+
+// ==================== 配置导入导出 ====================
+async function exportConfig() {
+    try {
+        const response = await fetch('/api/config/export');
+        const data = await response.json();
+
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `config_${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        showToast('配置已导出', 'success');
+    } catch (error) {
+        showToast('导出失败', 'error');
+    }
+}
+
+// 配置导入
+document.getElementById('config-import-file').addEventListener('change', async function(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+
+        const response = await fetch('/api/config/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+
+        if (response.ok) {
+            showToast('导入成功', 'success');
+            loadDBTypes(); // 刷新下拉框
+        } else {
+            showToast('导入失败', 'error');
+        }
+    } catch (error) {
+        showToast('导入失败，请检查文件格式', 'error');
+    }
+
+    this.value = '';
+});
+
+// ==================== 操作日志 ====================
+async function loadLogs() {
+    const module = document.getElementById('log-module-filter').value;
+
+    try {
+        const url = `/api/logs?limit=100${module ? `&module=${module}` : ''}`;
+        const response = await fetch(url);
+        const data = await response.json();
+        const tbody = document.getElementById('logs-list');
+
+        if (data.logs && data.logs.length > 0) {
+            tbody.innerHTML = data.logs.map(log => `
+                <tr>
+                    <td>${log.timestamp}</td>
+                    <td>${escapeHtml(log.module)}</td>
+                    <td>${escapeHtml(log.action)}</td>
+                    <td>${escapeHtml(log.detail || '-')}</td>
+                    <td><span class="status-${log.status}">${log.status}</span></td>
+                </tr>
+            `).join('');
+        } else {
+            tbody.innerHTML = '<tr><td colspan="5" class="empty-message">暂无操作记录</td></tr>';
+        }
+
+        // 加载模块列表
+        loadLogModules();
+    } catch (error) {
+        showToast('加载日志失败', 'error');
+    }
+}
+
+async function loadLogModules() {
+    try {
+        const response = await fetch('/api/logs/modules');
+        const data = await response.json();
+        const select = document.getElementById('log-module-filter');
+
+        // 保留第一个选项
+        const firstOption = select.options[0];
+        select.innerHTML = '';
+        select.appendChild(firstOption);
+
+        if (data.modules) {
+            data.modules.forEach(module => {
+                const option = document.createElement('option');
+                option.value = module;
+                option.textContent = module;
+                select.appendChild(option);
+            });
+        }
+    } catch (error) {
+        console.error('加载日志模块失败:', error);
+    }
+}
+
+async function clearLogs() {
+    if (!confirm('确定要清空所有操作日志吗？')) return;
+
+    try {
+        const response = await fetch('/api/logs', { method: 'DELETE' });
+
+        if (response.ok) {
+            showToast('日志已清空', 'success');
+            loadLogs();
+        } else {
+            showToast('清空失败', 'error');
+        }
+    } catch (error) {
+        showToast('清空失败', 'error');
+    }
+}

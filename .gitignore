@@ -1,0 +1,25 @@
+# Data files - excluded from version control
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Temporary scripts
+temp_scripts/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

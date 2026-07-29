@@ -1,0 +1,1590 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数据库运维工具</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛠️</text></svg>">
+    <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
+    <!-- vis.js 用于拓扑图 -->
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- 左侧导航栏 -->
+        <nav class="sidebar">
+            <div class="logo">
+                <h2>🛠️ DBSV</h2>
+                <span class="version">v{{ version }}</span>
+            </div>
+            <div class="theme-toggle">
+                <button class="theme-toggle-btn" id="theme-toggle-btn" onclick="toggleTheme()" title="切换主题">
+                    <span id="theme-icon">🌙</span>
+                    <span id="theme-text">暗色模式</span>
+                </button>
+            </div>
+            <ul class="nav-menu">
+                <li class="nav-item active" data-module="dashboard">
+                    <span class="icon">📊</span>
+                    <span class="text">仪表盘</span>
+                </li>
+                <li class="nav-item" data-module="knowledge">
+                    <span class="icon">📚</span>
+                    <span class="text">知识库</span>
+                </li>
+                <li class="nav-item" data-module="qa">
+                    <span class="icon">💬</span>
+                    <span class="text">知识问答</span>
+                </li>
+                <li class="nav-item" data-module="agent">
+                    <span class="icon">🤖</span>
+                    <span class="text">智能运维</span>
+                </li>
+                <li class="nav-item" data-module="log_analysis">
+                    <span class="icon">📋</span>
+                    <span class="text">日志分析</span>
+                </li>
+                <li class="nav-item" data-module="sql">
+                    <span class="icon">🔍</span>
+                    <span class="text">SQL工具</span>
+                </li>
+                <li class="nav-item" data-module="commands">
+                    <span class="icon">⚡</span>
+                    <span class="text">命令速查</span>
+                </li>
+                <li class="nav-item" data-module="manuals">
+                    <span class="icon">📋</span>
+                    <span class="text">操作手册</span>
+                </li>
+                <li class="nav-item" data-module="topology">
+                    <span class="icon">🗺️</span>
+                    <span class="text">集群拓扑</span>
+                </li>
+                <li class="nav-item" data-module="config">
+                    <span class="icon">⚙️</span>
+                    <span class="text">系统配置</span>
+                </li>
+            </ul>
+            <div class="sidebar-footer">
+                <div class="sidebar-stat">
+                    <span class="stat-label">📚 知识库:</span>
+                    <span class="stat-value" id="sidebar-knowledge-count">0</span>
+                    <span class="stat-unit">文件</span>
+                </div>
+                <div class="sidebar-stat">
+                    <span class="stat-label">🗺️ 资源池:</span>
+                    <span class="stat-value" id="sidebar-cluster-count">0</span>
+                    <span class="stat-unit">个</span>
+                </div>
+            </div>
+        </nav>
+
+        <!-- 右侧内容区 -->
+        <main class="content">
+            <!-- ==================== 仪表盘模块 ==================== -->
+            <div class="module active" id="module-dashboard">
+                <h2>📊 系统仪表盘</h2>
+                <div class="dashboard-grid">
+                    <!-- 统计卡片 -->
+                    <div class="stat-card">
+                        <div class="stat-icon">🐬</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="stat-db-types">0</div>
+                            <div class="stat-label">数据库类型</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">📚</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="stat-knowledge">0</div>
+                            <div class="stat-label">知识库文件</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">📋</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="stat-manuals">0</div>
+                            <div class="stat-label">操作手册</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">🗺️</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="stat-clusters">0</div>
+                            <div class="stat-label">资源池数量</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dashboard-row dashboard-row-4col">
+                    <!-- 知识库分布图 -->
+                    <div class="dashboard-section">
+                        <h3>📊 知识库文件分布</h3>
+                        <div id="db-chart" class="db-chart">
+                            <div class="empty-message">暂无数据</div>
+                        </div>
+                    </div>
+
+                    <!-- 向量索引数量 -->
+                    <div class="dashboard-section">
+                        <h3>🔢 向量索引数量</h3>
+                        <div id="embedding-chart" class="db-chart">
+                            <div class="empty-message">暂无数据</div>
+                        </div>
+                    </div>
+
+                    <!-- 最近操作日志 -->
+                    <div class="dashboard-section">
+                        <h3>📝 最近操作</h3>
+                        <div id="recent-logs" class="recent-logs">
+                            <div class="empty-message">暂无操作记录</div>
+                        </div>
+                    </div>
+
+                    <!-- 系统状态 -->
+                    <div class="dashboard-section">
+                        <h3>💻 系统状态</h3>
+                        <div id="system-health" class="system-health">
+                            <div class="loading">加载中...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dashboard-row">
+                    <!-- 快捷键 -->
+                    <div class="dashboard-section dashboard-section-full">
+                        <h3>⌨️ 快捷键</h3>
+                        <div class="shortcuts-grid">
+                            <div class="shortcut-item">
+                                <kbd>Ctrl+1</kbd>
+                                <span>仪表盘</span>
+                            </div>
+                            <div class="shortcut-item">
+                                <kbd>Ctrl+2</kbd>
+                                <span>知识库</span>
+                            </div>
+                            <div class="shortcut-item">
+                                <kbd>Ctrl+3</kbd>
+                                <span>知识问答</span>
+                            </div>
+                            <div class="shortcut-item">
+                                <kbd>Ctrl+4</kbd>
+                                <span>SQL工具</span>
+                            </div>
+                            <div class="shortcut-item">
+                                <kbd>Ctrl+5</kbd>
+                                <span>命令速查</span>
+                            </div>
+                            <div class="shortcut-item">
+                                <kbd>Ctrl+6</kbd>
+                                <span>操作手册</span>
+                            </div>
+                            <div class="shortcut-item">
+                                <kbd>Ctrl+7</kbd>
+                                <span>集群拓扑</span>
+                            </div>
+                            <div class="shortcut-item">
+                                <kbd>Ctrl+8</kbd>
+                                <span>系统配置</span>
+                            </div>
+                            <div class="shortcut-item">
+                                <kbd>Ctrl+K</kbd>
+                                <span>搜索命令</span>
+                            </div>
+                            <div class="shortcut-item">
+                                <kbd>ESC</kbd>
+                                <span>关闭对话框</span>
+                            </div>
+                            <div class="shortcut-item">
+                                <kbd>Enter</kbd>
+                                <span>发送问答</span>
+                            </div>
+                            <div class="shortcut-item">
+                                <kbd>Shift+Enter</kbd>
+                                <span>换行</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ==================== 知识库模块 ==================== -->
+            <div class="module" id="module-knowledge" style="display: none;">
+                <h2>📚 知识库管理</h2>
+                <div class="module-header">
+                    <div class="header-left">
+                        <select id="knowledge-db-type" class="select-db-type">
+                            <option value="">选择数据库类型</option>
+                        </select>
+                        <select id="knowledge-tag" class="select-tag">
+                            <option value="">全部分类</option>
+                            <option value="install">📦 安装部署</option>
+                            <option value="maintain">🔧 日常运维</option>
+                            <option value="troubleshoot">🚨 故障处理</option>
+                            <option value="performance">⚡ 性能优化</option>
+                            <option value="backup">💾 备份恢复</option>
+                            <option value="security">🔒 安全管理</option>
+                            <option value="upgrade">🔄 升级迁移</option>
+                            <option value="case">📋 故障案例</option>
+                        </select>
+                    </div>
+                    <div class="header-right">
+                        <div class="search-box">
+                            <input type="text" id="knowledge-search" placeholder="🔍 搜索文件内容..." oninput="debouncedSearchKnowledge()">
+                            <button class="btn btn-secondary" onclick="searchKnowledge()">🔍 搜索</button>
+                        </div>
+                        <button class="btn btn-secondary" onclick="scanKnowledgeFiles()" title="扫描目录中的新文件">
+                            📂 扫描文件
+                        </button>
+                        <button class="btn btn-secondary" onclick="reindexKnowledge()" title="重建所有文件的向量索引">
+                            🔄 重建索引
+                        </button>
+                        <button class="btn btn-primary" onclick="document.getElementById('file-input').click()">
+                            📤 上传文件
+                        </button>
+                        <button class="btn btn-secondary" onclick="document.getElementById('folder-input').click()">
+                            📁 上传文件夹
+                        </button>
+                        <input type="file" id="file-input" style="display: none"
+                               accept=".txt,.md,.pdf,.docx,.xlsx,.xls,.doc,.html,.htm" multiple>
+                        <input type="file" id="folder-input" style="display: none"
+                               webkitdirectory directory multiple>
+                    </div>
+                </div>
+
+                <!-- 搜索结果 -->
+                <div id="search-results" class="search-results" style="display: none;">
+                    <h4>搜索结果</h4>
+                    <div id="search-results-list"></div>
+                </div>
+
+                <!-- 重建索引进度条 -->
+                <div id="reindex-progress" class="reindex-progress" style="display: none;">
+                    <div class="progress-header">
+                        <span id="progress-status">正在重建索引...</span>
+                        <span id="progress-text">0/0</span>
+                    </div>
+                    <div class="progress-bar-container">
+                        <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <!-- 文件列表 -->
+                <div class="file-list-container">
+                    <table class="file-table">
+                        <thead>
+                            <tr>
+                                <th style="width: 30%">文件名</th>
+                                <th style="width: 10%">大小</th>
+                                <th style="width: 20%">标签</th>
+                                <th style="width: 15%">上传时间</th>
+                                <th style="width: 25%">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="file-list">
+                            <tr>
+                                <td colspan="5" class="empty-message">请选择数据库类型查看文件</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- ==================== 知识问答模块 ==================== -->
+            <div class="module" id="module-qa" style="display: none;">
+                <h2>💬 知识问答</h2>
+                <div class="qa-container">
+                    <!-- 左侧历史记录 -->
+                    <div class="qa-sidebar">
+                        <div class="qa-sidebar-header">
+                            <h3>📝 问答记录</h3>
+                            <div class="qa-sidebar-actions">
+                                <button class="btn btn-sm btn-primary" onclick="createNewConversation()">+ 新增会话</button>
+                                <button class="btn btn-sm btn-danger" onclick="clearAllConversations()">🗑️ 清空</button>
+                            </div>
+                        </div>
+                        <div id="qa-conversation-list" class="qa-history-list">
+                            <div class="empty-message">暂无历史记录</div>
+                        </div>
+                    </div>
+                    <!-- 右侧对话区域 -->
+                    <div class="qa-main">
+                        <div class="qa-header">
+                            <select id="qa-db-type" class="select-db-type">
+                                <option value="auto" selected>🤖 自动选择</option>
+                            </select>
+                            <select id="qa-model-select" class="select-db-type">
+                                <option value="">使用默认模型</option>
+                            </select>
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="qa-use-rag" checked> 使用知识库增强
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="qa-use-topology"> 使用集群拓扑增强
+                            </label>
+                            <select id="qa-template" class="select-template" onchange="applyTemplate()">
+                                <option value="">问题模板</option>
+                            </select>
+                        </div>
+                        <div class="qa-chat" id="qa-chat">
+                            <div class="welcome-message">
+                                <div class="welcome-icon">🤖</div>
+                                <h3>你好！我是数据库知识助手</h3>
+                                <p>请选择数据库类型，然后输入你的问题</p>
+                                <p>开启"知识库增强"后，我会优先使用知识库中的资料回答</p>
+                                <p>支持 Shift+Enter 换行</p>
+                            </div>
+                        </div>
+                        <div class="qa-input-area">
+                            <textarea id="qa-question" placeholder="请输入你的问题... (Shift+Enter 换行)" rows="3"></textarea>
+                            <button class="btn btn-primary" id="qa-send-btn" onclick="sendQuestion()">
+                                发送 ➤
+                            </button>
+                            <button class="btn btn-danger" id="qa-stop-btn" onclick="stopStreaming()" style="display: none;">
+                                ⏹ 停止
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ==================== 智能运维Agent模块 ==================== -->
+            <div class="module" id="module-agent" style="display: none;">
+                <div class="agent-layout">
+                    <!-- 左侧边栏 -->
+                    <div class="agent-sidebar">
+                        <!-- 连接管理 -->
+                        <div class="agent-section">
+                            <h3>🔌 连接管理</h3>
+                            <div class="connection-tabs">
+                                <button class="tab-btn active" data-tab="ssh" onclick="switchAgentTab('ssh')">SSH</button>
+                                <button class="tab-btn" data-tab="db" onclick="switchAgentTab('db')">数据库</button>
+                            </div>
+                            <div id="agent-ssh-connections" class="tab-content active">
+                                <button class="btn-add" onclick="showAddSSHDialog()">+ 添加SSH</button>
+                                <div id="agent-ssh-conn-list" class="connection-list"></div>
+                            </div>
+                            <div id="agent-db-connections" class="tab-content" style="display: none;">
+                                <button class="btn-add" onclick="showAddDBDialog()">+ 添加DB</button>
+                                <div id="agent-db-conn-list" class="connection-list"></div>
+                            </div>
+                        </div>
+
+                        <!-- 会话列表 -->
+                        <div class="agent-section">
+                            <h3>📋 会话历史</h3>
+                            <div id="agent-session-list" class="session-list"></div>
+                        </div>
+                    </div>
+
+                    <!-- 右侧主区域 -->
+                    <div class="agent-main">
+                        <!-- 顶部工具栏 -->
+                        <div class="agent-toolbar">
+                            <div class="connection-status">
+                                <span id="agent-ssh-status">🔴 SSH未连接</span>
+                                <span id="agent-db-status">🔴 DB未连接</span>
+                            </div>
+                            <div class="agent-actions">
+                                <button class="btn btn-primary" onclick="newAgentSession()">📝 新会话</button>
+                                <button class="btn btn-secondary" onclick="clearAgentChat()">🗑️ 清空</button>
+                            </div>
+                        </div>
+
+                        <!-- 对话区域 -->
+                        <div class="agent-chat" id="agent-chat">
+                            <div class="agent-welcome">
+                                <div class="welcome-icon">🤖</div>
+                                <div class="welcome-title">智能运维Agent</div>
+                                <div class="welcome-desc">
+                                    我可以帮你执行数据库运维任务，包括：<br>
+                                    • 查询数据库状态<br>
+                                    • 分析性能问题<br>
+                                    • 检查集群健康<br>
+                                    • 诊断慢查询<br><br>
+                                    <span class="welcome-warning">⚠️ 所有操作均为只读，不会修改数据</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 输入区域 -->
+                        <div class="agent-input-area">
+                            <div class="input-wrapper">
+                                <input type="text" id="agent-input"
+                                       placeholder="输入指令，如：检查Oracle集群状态"
+                                       onkeypress="if(event.key==='Enter')sendAgentQuestion()">
+                                <button class="btn btn-primary" onclick="sendAgentQuestion()">发送</button>
+                            </div>
+                            <div class="input-hints">
+                                <span>💡 试试：查看慢查询 | 检查集群状态 | 分析AWR报告</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ==================== 日志分析模块 ==================== -->
+            <div class="module" id="module-log_analysis" style="display: none;">
+                <h2>📋 日志分析</h2>
+                <div class="module-header">
+                    <div class="header-left">
+                        <button class="btn btn-primary" id="log-analysis-new-btn" onclick="showNewAnalysisDialog()">➕ 新建分析</button>
+                        <button class="btn btn-secondary" id="log-analysis-back-btn" onclick="hideReport()" style="display: none;">📋 返回列表</button>
+                    </div>
+                </div>
+
+                <!-- 新建分析对话框 -->
+                <div id="log-analysis-new-dialog" class="modal" style="display: none;">
+                    <div class="modal-content modal-large">
+                        <div class="modal-header">
+                            <h3>新建日志分析</h3>
+                            <button class="modal-close" onclick="closeModal('log-analysis-new-dialog')">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="form-group">
+                                <label>数据库类型</label>
+                                <select id="log-analysis-db-type">
+                                    <option value="">请选择数据库类型</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>任务名称</label>
+                                <input type="text" id="log-analysis-name" placeholder="例如：MySQL慢查询分析">
+                            </div>
+                            <div class="form-group">
+                                <label>分析问题描述</label>
+                                <textarea id="log-analysis-question" placeholder="描述你要分析的问题..." rows="8"></textarea>
+                            </div>
+                            <div class="form-group">
+                                <label>上传日志文件</label>
+                                <div class="file-upload-wrapper">
+                                    <span class="file-upload-btn" id="file-upload-label">选择文件</span>
+                                    <input type="file" id="log-analysis-files" multiple accept=".txt,.log,.md,.csv" onchange="updateFilePreview()">
+                                </div>
+                                <small>支持 .txt, .log, .md, .csv 等格式</small>
+                                <div id="log-analysis-file-list" class="file-preview-list"></div>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button class="btn btn-secondary" onclick="closeModal('log-analysis-new-dialog')">取消</button>
+                            <button class="btn btn-primary" onclick="createAnalysisTask()">创建并上传</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 分析中区域 -->
+                <div id="log-analysis-active-area" style="display: none;">
+                    <h3 class="section-title">🔬 分析中</h3>
+                    <div id="log-analysis-active-list" class="active-task-list"></div>
+                </div>
+
+                <!-- 分析进度（全屏展示） -->
+                <div id="log-analysis-progress" style="display: none;">
+                    <div class="progress-header">
+                        <h3>分析进度</h3>
+                        <span id="log-analysis-status">准备中...</span>
+                    </div>
+                    <div class="progress-steps">
+                        <div class="progress-step" id="step-intent">
+                            <span class="step-icon">🎯</span>
+                            <span class="step-text">意图识别</span>
+                            <span class="step-status">等待中</span>
+                            <span class="step-time" id="step-time-intent"></span>
+                        </div>
+                        <div class="progress-step" id="step-filter">
+                            <span class="step-icon">🔍</span>
+                            <span class="step-text">日志筛选</span>
+                            <span class="step-status">等待中</span>
+                            <span class="step-time" id="step-time-filter"></span>
+                        </div>
+                        <div class="progress-step" id="step-analysis">
+                            <span class="step-icon">🔬</span>
+                            <span class="step-text">根因分析</span>
+                            <span class="step-status">等待中</span>
+                            <span class="step-time" id="step-time-analysis"></span>
+                        </div>
+                        <div class="progress-step" id="step-report">
+                            <span class="step-icon">📄</span>
+                            <span class="step-text">报告生成</span>
+                            <span class="step-status">等待中</span>
+                            <span class="step-time" id="step-time-report"></span>
+                        </div>
+                    </div>
+                    <div id="log-analysis-current-info" class="current-info"></div>
+                </div>
+
+                <!-- 分析报告 -->
+                <div id="log-analysis-report" style="display: none;">
+                    <div id="log-analysis-report-content" class="markdown-content"></div>
+                </div>
+
+                <!-- 历史分析报告 -->
+                <h3 class="section-title" id="log-analysis-history-title">📚 历史分析报告</h3>
+                <div id="log-analysis-list" class="task-list">
+                    <div class="empty-message">暂无分析任务，点击上方按钮新建</div>
+                </div>
+            </div>
+
+            <!-- ==================== SQL工具模块 ==================== -->
+            <div class="module" id="module-sql" style="display: none;">
+                <h2>🔍 SQL工具箱</h2>
+                <div class="sql-tabs">
+                    <button class="tab-btn active" onclick="switchSqlTab('review')">📝 SQL审核</button>
+                    <button class="tab-btn" onclick="switchSqlTab('explain')">📊 执行计划分析</button>
+                    <button class="tab-btn" onclick="switchSqlTab('format')">✨ SQL格式化</button>
+                    <button class="tab-btn" onclick="switchSqlTab('convert')">🔄 SQL转换</button>
+                </div>
+
+                <!-- SQL审核 -->
+                <div class="sql-tab-content active" id="sql-tab-review">
+                    <div class="sql-header">
+                        <select id="sql-db-type" class="select-db-type">
+                            <option value="">选择数据库类型</option>
+                        </select>
+                        <select id="sql-model-select" class="select-db-type">
+                            <option value="">使用默认模型</option>
+                        </select>
+                        <div class="review-mode-selector-inline">
+                            <label>审核模式：</label>
+                            <select id="sql-review-mode" class="select-db-type">
+                                <option value="syntax">🔍 语法审核（快速）</option>
+                                <option value="comprehensive">📋 综合审核（详细）</option>
+                            </select>
+                        </div>
+                        <div class="review-mode-selector-inline">
+                            <label>审核引擎：</label>
+                            <select id="sql-review-engine" class="select-db-type">
+                                <option value="local">⚡ 本地检查（极速）</option>
+                                <option value="llm">🤖 AI 审核（智能）</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="sql-editor-area">
+                        <label>请输入SQL语句：</label>
+                        <textarea id="sql-input" placeholder="在此输入SQL语句..." rows="10"></textarea>
+                    </div>
+                    <div class="sql-actions">
+                        <button class="btn btn-primary" onclick="reviewSQL()">开始审核</button>
+                        <button class="btn btn-secondary" onclick="clearSQL()">清空</button>
+                    </div>
+                    <div class="sql-result" id="sql-result" style="display: none">
+                        <h3>审核结果</h3>
+                        <div id="sql-review-content" class="markdown-content"></div>
+                    </div>
+                </div>
+
+                <!-- SQL格式化 -->
+                <div class="sql-tab-content" id="sql-tab-format">
+                    <div class="sql-editor-area">
+                        <label>输入SQL：</label>
+                        <textarea id="sql-format-input" placeholder="粘贴需要格式化的SQL..." rows="8"></textarea>
+                    </div>
+                    <div class="sql-actions">
+                        <button class="btn btn-primary" onclick="formatSQL()">格式化</button>
+                    </div>
+                    <div class="sql-result" id="sql-format-result" style="display: none">
+                        <h3>格式化结果</h3>
+                        <pre><code id="sql-format-content"></code></pre>
+                        <button class="btn btn-secondary btn-sm" onclick="copyToClipboard('sql-format-content')">复制</button>
+                    </div>
+                </div>
+
+                <!-- SQL转换 -->
+                <div class="sql-tab-content" id="sql-tab-convert">
+                    <div class="sql-convert-header">
+                        <select id="sql-source-db" class="select-db-type">
+                            <option value="">源数据库</option>
+                        </select>
+                        <span class="convert-arrow">➡️</span>
+                        <select id="sql-target-db" class="select-db-type">
+                            <option value="">目标数据库</option>
+                        </select>
+                    </div>
+                    <div class="sql-editor-area">
+                        <label>输入SQL：</label>
+                        <textarea id="sql-convert-input" placeholder="输入需要转换的SQL..." rows="8"></textarea>
+                    </div>
+                    <div class="sql-actions">
+                        <button class="btn btn-primary" onclick="convertSQL()">转换</button>
+                    </div>
+                    <div class="sql-result" id="sql-convert-result" style="display: none">
+                        <h3>转换结果</h3>
+                        <pre><code id="sql-convert-content"></code></pre>
+                        <button class="btn btn-secondary btn-sm" onclick="copyToClipboard('sql-convert-content')">复制</button>
+                    </div>
+                </div>
+
+                <!-- 执行计划分析 -->
+                <div class="sql-tab-content" id="sql-tab-explain">
+                    <div class="sql-header">
+                        <select id="explain-db-type" class="select-db-type">
+                            <option value="">选择数据库类型</option>
+                        </select>
+                    </div>
+                    <div class="sql-editor-area">
+                        <label>粘贴执行计划结果：</label>
+                        <textarea id="explain-input" placeholder="将EXPLAIN结果粘贴到这里..." rows="10"></textarea>
+                    </div>
+                    <div class="sql-actions">
+                        <button class="btn btn-primary" onclick="analyzeExplain()">分析</button>
+                    </div>
+                    <div class="sql-result" id="explain-result" style="display: none">
+                        <h3>分析结果</h3>
+                        <div id="explain-content" class="markdown-content"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ==================== 操作手册模块 ==================== -->
+            <div class="module" id="module-manuals" style="display: none;">
+                <h2>📋 操作手册</h2>
+                <div class="manual-container">
+                    <!-- 左侧手册列表 -->
+                    <div class="manual-sidebar">
+                        <div class="manual-sidebar-header">
+                            <h3>📁 手册列表</h3>
+                            <button class="btn btn-sm btn-primary" onclick="document.getElementById('manual-input').click()">📤 上传</button>
+                            <input type="file" id="manual-input" style="display: none" accept=".txt,.md,.pdf,.docx,.html">
+                        </div>
+                        <div id="manual-list" class="manual-list">
+                            <div class="empty-message">暂无手册</div>
+                        </div>
+                    </div>
+                    <!-- 右侧内容区域 -->
+                    <div class="manual-main">
+                        <div class="manual-toolbar" id="manual-toolbar" style="display: none;">
+                            <div class="manual-toolbar-title" id="manual-toolbar-title"></div>
+                            <div class="manual-toolbar-actions">
+                                <button class="btn btn-sm btn-primary" onclick="downloadCurrentManual()">📥 下载</button>
+                                <button class="btn btn-sm btn-danger" onclick="deleteCurrentManual()">🗑️ 删除</button>
+                            </div>
+                        </div>
+                        <div id="manual-content" class="manual-content">
+                            <div class="welcome-message">
+                                <div class="welcome-icon">📋</div>
+                                <h3>运维手册</h3>
+                                <p>选择左侧的手册查看内容</p>
+                                <p>支持 Markdown 格式渲染</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ==================== 常用命令库模块 ==================== -->
+            <div class="module" id="module-commands" style="display: none;">
+                <h2>⚡ 常用命令速查</h2>
+                <div class="module-header">
+                    <select id="commands-db-type" class="select-db-type" onchange="loadCommands()">
+                        <option value="">选择数据库类型</option>
+                    </select>
+                    <div class="search-box">
+                        <input type="text" id="command-search" placeholder="🔍 搜索命令..." onkeyup="debouncedSearchCommands()">
+                        <button class="btn btn-secondary" onclick="searchCommands()">🔍 搜索</button>
+                    </div>
+                    <button class="btn btn-primary" onclick="showAddCategoryDialog()">➕ 添加分类</button>
+                </div>
+                <div id="command-search-results" class="search-results" style="display: none;">
+                    <h4>搜索结果</h4>
+                    <div id="command-search-results-list"></div>
+                </div>
+                <div id="commands-container" class="commands-container">
+                    <div class="empty-message">请选择数据库类型查看常用命令</div>
+                </div>
+            </div>
+
+            <!-- ==================== 集群拓扑模块 ==================== -->
+            <div class="module" id="module-topology" style="display: none;">
+                <div class="topology-header-row">
+                    <h2>🗺️ 数据库集群拓扑</h2>
+                    <div class="topology-view-switch">
+                        <button class="view-switch-btn active" data-view="stats" onclick="switchTopologyTab('stats')">
+                            <span class="icon">📊</span> 统计视图
+                        </button>
+                        <button class="view-switch-btn" data-view="graph" onclick="switchTopologyTab('graph')">
+                            <span class="icon">🗺️</span> 拓扑视图
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 统计视图 -->
+                <div class="topology-tab-content active" id="topology-tab-stats">
+                    <!-- 筛选栏（固定） -->
+                    <div class="stats-filter-bar">
+                        <div class="filter-group">
+                            <label>资源池</label>
+                            <select id="stats-filter-resource-pool" onchange="loadTopologyStats()">
+                                <option value="">全部资源池</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label>集群</label>
+                            <select id="stats-filter-cluster" onchange="loadTopologyStats()">
+                                <option value="">全部集群</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label>数据中心</label>
+                            <select id="stats-filter-datacenter" onchange="loadTopologyStats()">
+                                <option value="">全部数据中心</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label>数据库类型</label>
+                            <select id="stats-filter-dbtype" onchange="loadTopologyStats()">
+                                <option value="">全部类型</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label>环境</label>
+                            <select id="stats-filter-env" onchange="loadTopologyStats()">
+                                <option value="">全部环境</option>
+                                <option value="production">生产</option>
+                                <option value="testing">测试</option>
+                                <option value="development">开发</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-secondary btn-sm" onclick="resetStatsFilter()">重置筛选</button>
+                    </div>
+
+                    <div class="stats-scrollable-content">
+
+                    <!-- 总览卡片 -->
+                    <div class="stats-overview-cards">
+                        <div class="stats-card">
+                            <div class="stats-card-icon">🏢</div>
+                            <div class="stats-card-info">
+                                <div class="stats-card-value" id="stats-resource-pool-count">0</div>
+                                <div class="stats-card-label">资源池总数</div>
+                            </div>
+                        </div>
+                        <div class="stats-card">
+                            <div class="stats-card-icon">📦</div>
+                            <div class="stats-card-info">
+                                <div class="stats-card-value" id="stats-cluster-count">0</div>
+                                <div class="stats-card-label">集群总数</div>
+                            </div>
+                        </div>
+                        <div class="stats-card">
+                            <div class="stats-card-icon">🖥️</div>
+                            <div class="stats-card-info">
+                                <div class="stats-card-value" id="stats-server-count">0</div>
+                                <div class="stats-card-label">服务器总数</div>
+                            </div>
+                        </div>
+                        <div class="stats-card">
+                            <div class="stats-card-icon">🗄️</div>
+                            <div class="stats-card-info">
+                                <div class="stats-card-value" id="stats-instance-count">0</div>
+                                <div class="stats-card-label">实例总数</div>
+                            </div>
+                        </div>
+                        <div class="stats-card">
+                            <div class="stats-card-icon">👥</div>
+                            <div class="stats-card-info">
+                                <div class="stats-card-value" id="stats-tenant-count">0</div>
+                                <div class="stats-card-label">租户总数</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 图表区 -->
+                    <div class="stats-charts-row">
+                        <div class="stats-chart-box">
+                            <h4>资源池分布</h4>
+                            <div class="stats-chart-content" id="stats-cluster-chart">
+                                <div class="empty-message">暂无数据</div>
+                            </div>
+                        </div>
+                        <div class="stats-chart-box">
+                            <h4>集群分布</h4>
+                            <div class="stats-chart-content" id="stats-new-cluster-chart">
+                                <div class="empty-message">暂无数据</div>
+                            </div>
+                        </div>
+                        <div class="stats-chart-box">
+                            <h4>数据中心分布</h4>
+                            <div class="stats-chart-content" id="stats-datacenter-chart">
+                                <div class="empty-message">暂无数据</div>
+                            </div>
+                        </div>
+                        <div class="stats-chart-box">
+                            <h4>硬件类型分布</h4>
+                            <div class="stats-chart-content" id="stats-hardware-chart">
+                                <div class="empty-message">暂无数据</div>
+                            </div>
+                        </div>
+                        <div class="stats-chart-box">
+                            <h4>节点角色分布</h4>
+                            <div class="stats-chart-content" id="stats-noderole-chart">
+                                <div class="empty-message">暂无数据</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 资源池统计表格 -->
+                    <div class="stats-table-section">
+                        <h4>资源池详情统计</h4>
+                        <div class="stats-table-wrapper">
+                            <table class="stats-table" id="stats-cluster-table">
+                                <thead>
+                                    <tr>
+                                        <th>资源池名称</th>
+                                        <th>数据库类型</th>
+                                        <th>环境</th>
+                                        <th>服务器数</th>
+                                        <th>实例数</th>
+                                        <th>租户数</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td colspan="6" class="empty-cell">暂无数据</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 服务器列表 -->
+                    <div class="stats-table-section">
+                        <h4>服务器列表</h4>
+                        <div class="stats-table-wrapper">
+                            <table class="stats-table" id="stats-server-table">
+                                <thead>
+                                    <tr>
+                                        <th>名称</th>
+                                        <th>IP地址</th>
+                                        <th>所属集群</th>
+                                        <th>数据中心</th>
+                                        <th>节点角色</th>
+                                        <th>硬件类型</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td colspan="6" class="empty-cell">暂无数据</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 拓扑视图（原有） -->
+                <div class="topology-tab-content" id="topology-tab-graph" style="display: none;">
+                    <div class="topology-container">
+                        <!-- 左侧集群列表 -->
+                        <div class="topology-sidebar">
+                            <div class="topology-actions">
+                                <button class="btn btn-primary" onclick="showAddResourcePoolDialog()">➕ 添加资源池</button>
+                                <button class="btn btn-secondary" onclick="exportTopology()">📥 导出</button>
+                            </div>
+                            <div id="topology-cluster-list" class="cluster-list">
+                                <div class="empty-message">暂无集群</div>
+                            </div>
+                        </div>
+                        <!-- 中间拓扑图 -->
+                        <div class="topology-main">
+                            <div id="topology-graph-view" class="topology-graph">
+                                <div class="welcome-message">
+                                    <div class="welcome-icon">🗺️</div>
+                                    <h3>集群拓扑</h3>
+                                    <p>选择左侧的集群查看拓扑图</p>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- 右侧详情面板 -->
+                        <div class="topology-detail" id="topology-detail" style="display: none;">
+                            <div class="detail-header">
+                                <h3>详情</h3>
+                                <button class="btn btn-sm btn-secondary" onclick="closeDetailPanel()">✕</button>
+                            </div>
+                            <div id="detail-content" class="detail-content">
+                                <!-- 详情内容 -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ==================== 系统配置模块 ==================== -->
+            <div class="module" id="module-config" style="display: none;">
+                <h2>⚙️ 系统配置</h2>
+                <div class="config-tabs">
+                    <button class="tab-btn active" onclick="switchConfigTab('llm')">🤖 大模型配置</button>
+                    <button class="tab-btn" onclick="switchConfigTab('features')">🔧 功能配置</button>
+                    <button class="tab-btn" onclick="switchConfigTab('dbtypes')">🗄️ 数据库类型</button>
+                    <button class="tab-btn" onclick="switchConfigTab('import-export')">📦 配置导入导出</button>
+                    <button class="tab-btn" onclick="switchConfigTab('logs')">📝 操作日志</button>
+                    <button class="tab-btn" onclick="switchConfigTab('project')">📄 项目说明</button>
+                    <button class="tab-btn" onclick="switchConfigTab('changelog')">📋 更新日志</button>
+                </div>
+
+                <!-- 大模型配置 -->
+                <div class="config-tab-content active" id="config-tab-llm">
+                    <div class="config-container">
+                        <!-- 模型列表 -->
+                        <div class="models-section">
+                            <div class="models-header">
+                                <h3>已配置的模型</h3>
+                                <button class="btn btn-primary" onclick="showAddModelDialog()">➕ 添加模型</button>
+                            </div>
+                            <div id="models-list" class="models-list">
+                                <div class="empty-message">暂无配置模型</div>
+                            </div>
+                        </div>
+
+                        <!-- 添加/编辑模型表单 -->
+                        <div id="model-form-container" class="model-form-container" style="display: none;">
+                            <h4 id="model-form-title">添加模型</h4>
+                            <form id="config-form">
+                                <input type="hidden" id="model-id">
+                                <div class="form-group">
+                                    <label for="model-display-name">显示名称</label>
+                                    <input type="text" id="model-display-name" placeholder="例如: Kimi K2.6">
+                                    <small>用于在下拉框中显示的友好名称</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="api-url">API地址</label>
+                                    <input type="text" id="api-url" placeholder="例如: https://api.moonshot.cn/v1">
+                                    <small>支持OpenAI兼容格式的API地址</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="api-key">API Key</label>
+                                    <input type="password" id="api-key" placeholder="请输入API Key">
+                                </div>
+                                <div class="form-group">
+                                    <label for="model-name">模型名称</label>
+                                    <input type="text" id="model-name" placeholder="例如: kimi-k2.6, gpt-4">
+                                </div>
+                                <div class="form-actions">
+                                    <button type="button" class="btn btn-secondary" onclick="hideModelForm()">取消</button>
+                                    <button type="button" class="btn btn-primary" onclick="saveModelConfig()">保存</button>
+                                </div>
+                            </form>
+                        </div>
+                        <div id="config-test-result" class="test-result" style="display: none"></div>
+                    </div>
+                </div>
+
+                <!-- 功能配置 -->
+                <div class="config-tab-content" id="config-tab-features">
+                    <div class="config-container">
+                        <div class="module-header">
+                            <p class="module-desc">管理系统功能模块的显示与隐藏，关闭后左侧导航栏将不再显示该模块入口</p>
+                        </div>
+                        <div id="feature-config-list" class="feature-config-list">
+                            <div class="empty-message">加载中...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 数据库类型管理 -->
+                <div class="config-tab-content" id="config-tab-dbtypes">
+                    <div class="config-container">
+                        <div class="module-header">
+                            <p class="module-desc">管理支持的数据库类型，可动态添加或删除</p>
+                            <button class="btn btn-primary" onclick="showAddDBTypeDialog()">添加数据库类型</button>
+                        </div>
+                        <div id="dbtypes-grid" class="dbtypes-grid">
+                            <div class="empty-message">加载中...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 配置导入导出 -->
+                <div class="config-tab-content" id="config-tab-import-export">
+                    <div class="config-container">
+                        <div class="import-export-section">
+                            <h3>导出配置</h3>
+                            <p>导出当前系统的数据库类型、集群拓扑、收藏夹等配置</p>
+                            <button class="btn btn-primary" onclick="exportConfig()">导出配置</button>
+                        </div>
+                        <div class="import-export-section">
+                            <h3>导入配置</h3>
+                            <p>从JSON文件导入配置（数据库类型、集群拓扑、收藏夹）</p>
+                            <input type="file" id="config-import-file" accept=".json" style="display: none">
+                            <button class="btn btn-secondary" onclick="document.getElementById('config-import-file').click()">
+                                选择文件导入
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 操作日志 -->
+                <div class="config-tab-content" id="config-tab-logs">
+                    <div class="config-container">
+                        <div class="logs-header">
+                            <select id="log-module-filter" class="select-db-type" onchange="loadLogs()">
+                                <option value="">全部模块</option>
+                            </select>
+                            <button class="btn btn-danger" onclick="clearLogs()">清空日志</button>
+                        </div>
+                        <div class="logs-table-container">
+                            <table class="file-table">
+                                <thead>
+                                    <tr>
+                                        <th>时间</th>
+                                        <th>模块</th>
+                                        <th>操作</th>
+                                        <th>详情</th>
+                                        <th>状态</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="logs-list">
+                                    <tr>
+                                        <td colspan="5" class="empty-message">暂无操作记录</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 项目说明 -->
+                <div class="config-tab-content" id="config-tab-project">
+                    <div class="config-container">
+                        <div id="project-doc-content" class="doc-content markdown-content">
+                            <div class="loading">加载中...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 更新日志 -->
+                <div class="config-tab-content" id="config-tab-changelog">
+                    <div class="config-container">
+                        <div id="changelog-content" class="doc-content markdown-content">
+                            <div class="loading">加载中...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- 编辑集群对话框 -->
+    <div class="modal" id="modal-edit-cluster" style="display: none">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>修改资源池</h3>
+                <button class="modal-close" onclick="closeModal('modal-edit-cluster')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>集群名称</label>
+                    <input type="text" id="edit-cluster-name" placeholder="例如: 生产MySQL集群01">
+                </div>
+                <div class="form-group">
+                    <label>数据库类型</label>
+                    <select id="edit-cluster-db-type" class="select-db-type">
+                        <option value="">选择数据库类型</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>环境</label>
+                    <select id="edit-cluster-environment" class="select-db-type">
+                        <option value="production">🟢 生产环境</option>
+                        <option value="testing">🟡 测试环境</option>
+                        <option value="development">🔵 开发环境</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>描述</label>
+                    <textarea id="edit-cluster-description" placeholder="集群描述..." rows="3"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('modal-edit-cluster')">取消</button>
+                <button class="btn btn-primary" onclick="updateCluster()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加集群对话框 -->
+    <div class="modal" id="modal-add-cluster" style="display: none">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>添加物理集群</h3>
+                <button class="modal-close" onclick="closeModal('modal-add-cluster')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>集群名称</label>
+                    <input type="text" id="cluster-name" placeholder="例如: 生产MySQL集群01">
+                </div>
+                <div class="form-group">
+                    <label>数据库类型</label>
+                    <select id="cluster-db-type" class="select-db-type">
+                        <option value="">选择数据库类型</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>环境</label>
+                    <select id="cluster-environment" class="select-db-type">
+                        <option value="production">🟢 生产环境</option>
+                        <option value="testing">🟡 测试环境</option>
+                        <option value="development">🔵 开发环境</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>描述</label>
+                    <textarea id="cluster-description" placeholder="集群描述..." rows="3"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('modal-add-cluster')">取消</button>
+                <button class="btn btn-primary" onclick="addCluster()">确定</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加节点对话框 -->
+    <div class="modal" id="modal-add-server" style="display: none">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>添加节点</h3>
+                <button class="modal-close" onclick="closeModal('modal-add-server')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>节点名称</label>
+                    <input type="text" id="server-name" placeholder="例如: 计算节点1">
+                </div>
+                <div class="form-group">
+                    <label>节点角色</label>
+                    <select id="server-node-role" class="select-db-type">
+                        <option value="计算节点">🔲 计算节点</option>
+                        <option value="存储节点">💾 存储节点</option>
+                        <option value="监控节点">📊 监控节点</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>节点设备</label>
+                    <select id="server-hardware-type" class="select-db-type">
+                        <option value="非信创物理机">🔶 非信创物理机</option>
+                        <option value="非信创虚拟机">🔷 非信创虚拟机</option>
+                        <option value="海光物理机">🔶 海光物理机</option>
+                        <option value="海光虚拟机">🔷 海光虚拟机</option>
+                        <option value="鲲鹏物理机">🔶 鲲鹏物理机</option>
+                        <option value="鲲鹏虚拟机">🔷 鲲鹏虚拟机</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>IP 地址</label>
+                    <input type="text" id="server-host" placeholder="例如: 192.168.1.101">
+                </div>
+                <div class="form-group">
+                    <label>所属机房</label>
+                    <input type="text" id="server-datacenter" placeholder="例如: 北京机房、上海机房">
+                </div>
+                <div class="form-group">
+                    <label>所属集群</label>
+                    <input type="text" id="server-cluster" placeholder="例如: 核心集群、业务集群">
+                </div>
+                <div class="form-group">
+                    <div style="display: flex; gap: 12px;">
+                        <div style="flex: 1;">
+                            <label>CPU（核数）</label>
+                            <input type="text" id="server-cpu" placeholder="例如: 56">
+                        </div>
+                        <div style="flex: 1;">
+                            <label>内存（GB）</label>
+                            <input type="text" id="server-memory" placeholder="例如: 512">
+                        </div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>描述</label>
+                    <textarea id="server-description" placeholder="节点描述..." rows="3"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('modal-add-server')">取消</button>
+                <button class="btn btn-primary" onclick="addServer()">确定</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加实例对话框 -->
+    <div class="modal" id="modal-add-instance" style="display: none">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>添加实例</h3>
+                <button class="modal-close" onclick="closeModal('modal-add-instance')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>实例名称</label>
+                    <input type="text" id="instance-name" placeholder="例如: MySQL-3306">
+                </div>
+                <div class="form-group">
+                    <label>端口</label>
+                    <input type="text" id="instance-port" placeholder="例如: 3306" value="3306">
+                </div>
+                <div class="form-group">
+                    <label>角色</label>
+                    <select id="instance-role" class="select-db-type">
+                        <option value="master">主节点</option>
+                        <option value="slave" selected>从节点</option>
+                        <option value="standalone">独立节点</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <div style="display: flex; gap: 12px;">
+                        <div style="flex: 1;">
+                            <label>CPU（核数）</label>
+                            <input type="text" id="instance-cpu" placeholder="例如: 4">
+                        </div>
+                        <div style="flex: 1;">
+                            <label>内存（GB）</label>
+                            <input type="text" id="instance-memory" placeholder="例如: 8">
+                        </div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>描述</label>
+                    <textarea id="instance-description" placeholder="实例描述..." rows="3"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('modal-add-instance')">取消</button>
+                <button class="btn btn-primary" onclick="addInstance()">确定</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 编辑节点对话框 -->
+    <div class="modal" id="modal-edit-server" style="display: none">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>编辑节点</h3>
+                <button class="modal-close" onclick="closeModal('modal-edit-server')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>节点名称</label>
+                    <input type="text" id="edit-server-name" placeholder="例如: 计算节点1">
+                </div>
+                <div class="form-group">
+                    <label>节点角色</label>
+                    <select id="edit-server-node-role" class="select-db-type">
+                        <option value="计算节点">🔲 计算节点</option>
+                        <option value="存储节点">💾 存储节点</option>
+                        <option value="监控节点">📊 监控节点</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>节点设备</label>
+                    <select id="edit-server-hardware-type" class="select-db-type">
+                        <option value="非信创物理机">🔶 非信创物理机</option>
+                        <option value="非信创虚拟机">🔷 非信创虚拟机</option>
+                        <option value="海光物理机">🔶 海光物理机</option>
+                        <option value="海光虚拟机">🔷 海光虚拟机</option>
+                        <option value="鲲鹏物理机">🔶 鲲鹏物理机</option>
+                        <option value="鲲鹏虚拟机">🔷 鲲鹏虚拟机</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>IP 地址</label>
+                    <input type="text" id="edit-server-host" placeholder="例如: 192.168.1.101">
+                </div>
+                <div class="form-group">
+                    <label>所属机房</label>
+                    <input type="text" id="edit-server-datacenter" placeholder="例如: 北京机房、上海机房">
+                </div>
+                <div class="form-group">
+                    <label>所属集群</label>
+                    <input type="text" id="edit-server-cluster" placeholder="例如: 核心集群、业务集群">
+                </div>
+                <div class="form-group">
+                    <div style="display: flex; gap: 12px;">
+                        <div style="flex: 1;">
+                            <label>CPU（核数）</label>
+                            <input type="text" id="edit-server-cpu" placeholder="例如: 56">
+                        </div>
+                        <div style="flex: 1;">
+                            <label>内存（GB）</label>
+                            <input type="text" id="edit-server-memory" placeholder="例如: 512">
+                        </div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>描述</label>
+                    <textarea id="edit-server-description" placeholder="节点描述..." rows="3"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('modal-edit-server')">取消</button>
+                <button class="btn btn-primary" onclick="updateServer()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 编辑租户对话框 -->
+    <div class="modal" id="modal-edit-tenant" style="display: none">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>编辑租户</h3>
+                <button class="modal-close" onclick="closeModal('modal-edit-tenant')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>租户名称</label>
+                    <input type="text" id="edit-tenant-name" placeholder="例如: 恒生风控">
+                </div>
+                <div class="form-group">
+                    <label>拓扑类型</label>
+                    <select id="edit-tenant-topology" class="select-db-type">
+                        <option value="master-slave">主从复制</option>
+                        <option value="master-master">双主复制</option>
+                        <option value="rac">RAC集群</option>
+                        <option value="cluster">集群</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>规格</label>
+                    <select id="edit-tenant-spec" class="select-db-type">
+                        <option value="micro-4c16g">微型-4C16G</option>
+                        <option value="small-8c32g">小型-8C32G</option>
+                        <option value="small-16c64g">小型-16C64G</option>
+                        <option value="medium-32c128g">中型-32C128G</option>
+                        <option value="large-64c256g">大型-64C256G</option>
+                        <option value="dedicated-128c512g">独享-128C512G</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>描述</label>
+                    <textarea id="edit-tenant-description" placeholder="租户描述..." rows="3"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('modal-edit-tenant')">取消</button>
+                <button class="btn btn-primary" onclick="updateTenant()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 编辑实例对话框 -->
+    <div class="modal" id="modal-edit-instance" style="display: none">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>编辑实例</h3>
+                <button class="modal-close" onclick="closeModal('modal-edit-instance')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>实例名称</label>
+                    <input type="text" id="edit-instance-name" placeholder="例如: MySQL-3306">
+                </div>
+                <div class="form-group">
+                    <label>端口</label>
+                    <input type="text" id="edit-instance-port" placeholder="例如: 3306">
+                </div>
+                <div class="form-group">
+                    <label>角色</label>
+                    <select id="edit-instance-role" class="select-db-type">
+                        <option value="master">主节点</option>
+                        <option value="slave">从节点</option>
+                        <option value="standalone">独立节点</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <div style="display: flex; gap: 12px;">
+                        <div style="flex: 1;">
+                            <label>CPU（核数）</label>
+                            <input type="text" id="edit-instance-cpu" placeholder="例如: 4">
+                        </div>
+                        <div style="flex: 1;">
+                            <label>内存（GB）</label>
+                            <input type="text" id="edit-instance-memory" placeholder="例如: 8">
+                        </div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>所属租户</label>
+                    <select id="edit-instance-tenant" class="select-db-type">
+                        <option value="">无</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>描述</label>
+                    <textarea id="edit-instance-description" placeholder="实例描述..." rows="3"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('modal-edit-instance')">取消</button>
+                <button class="btn btn-primary" onclick="updateInstance()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加租户对话框 -->
+    <div class="modal" id="modal-add-tenant" style="display: none">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>添加租户</h3>
+                <button class="modal-close" onclick="closeModal('modal-add-tenant')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>租户名称</label>
+                    <input type="text" id="new-tenant-name" placeholder="例如: 恒生风控">
+                </div>
+                <div class="form-group">
+                    <label>拓扑类型</label>
+                    <select id="new-tenant-topology" class="select-db-type">
+                        <option value="master-slave">主从复制</option>
+                        <option value="master-master">双主复制</option>
+                        <option value="rac">RAC集群</option>
+                        <option value="cluster">集群</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>规格</label>
+                    <select id="new-tenant-spec" class="select-db-type">
+                        <option value="micro-4c16g">微型-4C16G</option>
+                        <option value="small-8c32g">小型-8C32G</option>
+                        <option value="small-16c64g">小型-16C64G</option>
+                        <option value="medium-32c128g">中型-32C128G</option>
+                        <option value="large-64c256g">大型-64C256G</option>
+                        <option value="dedicated-128c512g">独享-128C512G</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>描述</label>
+                    <textarea id="new-tenant-description" placeholder="租户描述..." rows="3"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('modal-add-tenant')">取消</button>
+                <button class="btn btn-primary" onclick="addTenantToCluster()">添加</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 历史记录对话框 -->
+    <div class="modal" id="modal-history" style="display: none">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3>问答历史记录</h3>
+                <button class="modal-close" onclick="closeModal('modal-history')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="history-list" class="history-list">
+                    <div class="empty-message">暂无历史记录</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 文件预览对话框 -->
+    <div class="modal" id="modal-preview" style="display: none">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3 id="preview-title">文件预览</h3>
+                <button class="modal-close" onclick="closeModal('modal-preview')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <pre id="preview-content" class="preview-content"></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加命令分类对话框 -->
+    <div class="modal" id="modal-add-category" style="display: none">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>添加命令分类</h3>
+                <button class="modal-close" onclick="closeModal('modal-add-category')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>分类名称</label>
+                    <input type="text" id="category-name" placeholder="例如：安全管理">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('modal-add-category')">取消</button>
+                <button class="btn btn-primary" onclick="addCategory()">确定</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加命令对话框 -->
+    <div class="modal" id="modal-add-command" style="display: none">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>添加命令</h3>
+                <button class="modal-close" onclick="closeModal('modal-add-command')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>命令名称</label>
+                    <input type="text" id="command-name" placeholder="例如：查看用户">
+                </div>
+                <div class="form-group">
+                    <label>命令内容</label>
+                    <textarea id="command-cmd" placeholder="例如：SELECT * FROM users;" rows="3"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>命令说明</label>
+                    <input type="text" id="command-desc" placeholder="例如：查看所有用户信息">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('modal-add-command')">取消</button>
+                <button class="btn btn-primary" onclick="addCommand()">确定</button>
+            </div>
+        </div>
+    </div>
+    </div>
+
+    <!-- 添加数据库类型对话框 -->
+    <div class="modal" id="modal-add-dbtype" style="display: none">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>添加数据库类型</h3>
+                <button class="modal-close" onclick="closeModal('modal-add-dbtype')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>数据库ID</label>
+                    <input type="text" id="dbtype-id" placeholder="例如: postgresql (仅字母、数字、下划线)">
+                    <small>用于系统标识，创建后不可修改</small>
+                </div>
+                <div class="form-group">
+                    <label>数据库名称</label>
+                    <input type="text" id="dbtype-name" placeholder="例如: PostgreSQL">
+                </div>
+                <div class="form-group">
+                    <label>图标</label>
+                    <input type="text" id="dbtype-icon" placeholder="例如: 🐘" value="📁">
+                    <small>支持 Emoji 图标</small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('modal-add-dbtype')">取消</button>
+                <button class="btn btn-primary" onclick="addDBType()">确定</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 消息提示 -->
+    <div class="toast" id="toast"></div>
+
+    <script src="/static/js/utils.js?v={{ version }}"></script>
+    <script src="/static/js/api.js?v={{ version }}"></script>
+    <script src="/static/js/app.js?v={{ version }}"></script>
+    <script src="/static/js/knowledge.js?v={{ version }}"></script>
+    <script src="/static/js/qa.js?v={{ version }}"></script>
+    <script src="/static/js/agent.js?v={{ version }}"></script>
+    <script src="/static/js/log-analysis.js?v={{ version }}"></script>
+    <script src="/static/js/sql-tools.js?v={{ version }}"></script>
+    <script src="/static/js/manuals.js?v={{ version }}"></script>
+    <script src="/static/js/commands.js?v={{ version }}"></script>
+    <script src="/static/js/topology.js?v={{ version }}"></script>
+    <script src="/static/js/config.js?v={{ version }}"></script>
+</body>
+</html>
