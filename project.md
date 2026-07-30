@@ -21,7 +21,7 @@
 | 前端 | 原生 HTML/CSS/JS，单页应用，模块化 JS 架构 |
 | AI | OpenAI 兼容 API（支持多模型配置管理） |
 | RAG | sentence-transformers（moka-ai/m3e-base）+ numpy 余弦相似度 |
-| 知识图谱 | Chunk-Entity 混合图谱，SQLite 存储，vis.js 可视化 |
+| 知识图谱 | Chunk-Entity 混合图谱，SQLite 存储，**已合并到知识库模块** |
 | 主题 | CSS 变量系统，支持亮色/暗色主题切换，localStorage 持久化 |
 
 ## 目录结构
@@ -76,7 +76,7 @@ db-tool/
 
     rag/                    # 向量检索模块
         __init__.py
-        embedder.py          # 文本分块、向量嵌入、相似度检索
+        embedder.py          # 文本分块、向量嵌入、相似度检索、**知识图谱自动提取**
 
     static/
         css/style.css        # 样式（含暗色主题 CSS 变量系统）
@@ -84,9 +84,9 @@ db-tool/
             app.js           # 入口文件：主题、导航、初始化、仪表盘
             utils.js         # 通用工具函数（showToast、escapeHtml 等）
             api.js           # API 封装（apiGet、apiPost、apiPut、apiDelete）
-            knowledge.js     # 知识库模块
+            knowledge.js     # 知识库模块（**含知识图谱视图切换**）
             qa.js            # 知识问答模块（含流式输出）
-            kg.js            # 知识图谱可视化模块（vis.js 力导向图）
+            kg.js            # 知识图谱可视化模块（vis.js 力导向图，**已合并到知识库**）
             sql-tools.js     # SQL 工具模块
             log-analysis.js  # 日志分析模块
             manuals.js       # 操作手册模块
@@ -145,6 +145,7 @@ db-tool/
 - 全文搜索 + 标签过滤
 - 收藏夹功能
 - **知识图谱自动提取**：上传/重建索引时自动提取实体和关系
+- **知识图谱可视化**：知识库页面支持文件视图/图谱视图切换
 
 ### 2. 知识问答（/api/qa/*）
 - 对话式界面，调用 LLM 回答数据库问题
@@ -212,7 +213,7 @@ db-tool/
 - **只读模式**：默认只读，禁止任何修改数据的操作
 - **置信度标注**：🟢高/🟡中/🔴低 三级置信度标识
 
-### 10. 知识图谱（/api/kg/*）
+### 10. 知识图谱（已合并到知识库模块）
 - **Chunk-Entity 混合图谱**：复用现有 13,153 个 chunk 作为文档层，增量添加 44,467 个实体节点
 - **14 种实体类型**：数据库产品、版本、参数、错误码、SQL 语句、函数、系统视图、命令工具、架构、性能指标、概念、故障场景、操作系统、硬件
 - **11 种关系类型**：belongs_to、compatible_with、requires、has_parameter、similar_to 等
@@ -221,6 +222,7 @@ db-tool/
 - **QA 增强**：从检索到的 chunk 中提取关联实体，构建图谱上下文注入 prompt
 - **实体搜索**：支持模糊搜索和邻居子图展示
 - **关系推理**：版本归属、参数归属、跨产品映射等规则推理
+- **前端集成**：知识库页面支持文件视图/图谱视图切换（参考集群拓扑视图切换样式）
 
 ## 支持的数据库类型
 
@@ -253,11 +255,37 @@ db-tool/
 
 | 指标 | 数值 |
 |------|------|
-| 实体总数 | 44,467 |
-| 关系总数 | 12,549 |
-| chunk 关联 | 209,333 |
+| 实体总数 | **44,963** |
+| 关系总数 | **12,790** |
+| chunk 关联 | **211,510** |
 | 实体类型 | 14 种 |
 | 关系类型 | 5 种 |
+
+**实体类型分布：**
+| 类型 | 数量 | 说明 |
+|------|------|------|
+| parameter | 17,675 | 数据库参数 |
+| version | 14,107 | 版本号 |
+| function | 8,409 | 函数 |
+| error_code | 2,522 | 错误码 |
+| system_view | 2,126 | 系统视图 |
+| sql_statement | 30 | SQL语句 |
+| database_product | 21 | 数据库产品 |
+| command_tool | 17 | 命令工具 |
+| concept | 17 | 概念 |
+| operating_system | 12 | 操作系统 |
+| performance_metric | 12 | 性能指标 |
+| architecture | 10 | 架构 |
+| hardware | 5 | 硬件 |
+
+**关系类型分布：**
+| 类型 | 数量 | 说明 |
+|------|------|------|
+| has_version | 9,785 | 产品→版本 |
+| has_parameter | 1,783 | 产品→参数 |
+| has_error_code | 1,068 | 产品→错误码 |
+| has_architecture | 97 | 产品→架构 |
+| requires | 57 | 产品→操作系统 |
 
 ## 开发注意事项
 
@@ -268,7 +296,7 @@ db-tool/
 | `app.js` | 入口文件：主题切换、导航、初始化、仪表盘、通用函数 |
 | `utils.js` | 通用工具函数（showToast、escapeHtml、formatFileSize 等） |
 | `api.js` | API 请求封装（apiGet、apiPost、apiPut、apiDelete） |
-| `knowledge.js` | 知识库模块（文件列表、上传、搜索、收藏） |
+| `knowledge.js` | 知识库模块（文件列表、上传、搜索、收藏，**含知识图谱视图切换**） |
 | `qa.js` | 知识问答模块（对话、流式输出、历史记录） |
 | `sql-tools.js` | SQL 工具模块（审核、格式化、转换、执行计划） |
 | `log-analysis.js` | 日志分析模块（多轮 LLM 分析、SSE 流式输出） |
@@ -276,6 +304,6 @@ db-tool/
 | `commands.js` | 命令速查模块（分类、命令、删除、搜索） |
 | `topology.js` | 集群拓扑模块（集群、节点、实例、租户管理） |
 | `agent.js` | 智能运维Agent模块（ReAct循环可视化、SSH/DB连接管理） |
-| `kg.js` | 知识图谱可视化模块（vis.js 力导向图、实体搜索、邻居展开） |
+| `kg.js` | 知识图谱可视化模块（vis.js 力导向图、实体搜索、邻居展开，**已合并到知识库**） |
 | `config.js` | 系统配置模块（模型管理、数据库类型、日志） |
 

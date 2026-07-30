@@ -3410,6 +3410,36 @@ body {
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
+/* 知识库视图切换 */
+.knowledge-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.knowledge-header-row h2 {
+    margin: 0;
+}
+
+.knowledge-view-switch {
+    display: inline-flex;
+    background-color: var(--bg-module);
+    border-radius: 20px;
+    padding: 3px;
+    border: 1px solid var(--border-color);
+    transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+
+/* 知识库视图容器 */
+.knowledge-view {
+    display: none;
+}
+
+.knowledge-view.active {
+    display: block;
+}
+
 /* 标签页内容 */
 .topology-tab-content {
     display: none;

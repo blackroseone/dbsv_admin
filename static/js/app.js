@@ -94,6 +94,28 @@ document.addEventListener('DOMContentLoaded', function() {
     loadDashboard();
     initManuals();
     // loadQAHistory 在 qa.js 加载后调用
+
+    // 绑定文件上传事件（确保 DOM 已加载）
+    const fileInput = document.getElementById('file-input');
+    const folderInput = document.getElementById('folder-input');
+
+    if (fileInput) {
+        fileInput.addEventListener('change', async function(e) {
+            const files = Array.from(e.target.files);
+            if (files.length === 0) return;
+            await uploadFiles(files);
+            this.value = '';
+        });
+    }
+
+    if (folderInput) {
+        folderInput.addEventListener('change', async function(e) {
+            const files = Array.from(e.target.files);
+            if (files.length === 0) return;
+            await uploadFiles(files);
+            this.value = '';
+        });
+    }
 });
 
 // 更新侧边栏统计信息
@@ -174,8 +196,12 @@ function switchModule(module) {
     } else if (module === 'config') {
         loadDBTypesPage();
         loadLogs();
-    } else if (module === 'kg') {
-        initKGModule();
+    } else if (module === 'knowledge') {
+        loadFileList();
+        // 如果当前是图谱视图，初始化知识图谱
+        if (KnowledgeModule.currentView === 'graph') {
+            initKGModule();
+        }
     } else if (module === 'manuals') {
         loadManuals();
     } else if (module === 'commands') {
@@ -186,8 +212,6 @@ function switchModule(module) {
         loadConversations();
     } else if (module === 'agent') {
         initAgentModule();
-    } else if (module === 'kg') {
-        initKGModule();
     }
 }
 
@@ -305,8 +329,7 @@ function initKeyboardShortcuts() {
                 '6': 'manuals',
                 '7': 'commands',
                 '8': 'topology',
-                '9': 'kg',
-                '0': 'config'
+                '9': 'config'
             };
             const module = moduleMap[e.key];
             if (module) {

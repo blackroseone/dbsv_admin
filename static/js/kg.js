@@ -294,7 +294,7 @@ function clearKGSelection() {
 
 async function expandKGNodeNeighbors(nodeId) {
     try {
-        const response = await fetch(`/api/kg/entities/${nodeId}/neighbors?depth=1`);
+        const response = await fetch(`/api/kg/entities/${nodeId}/neighbors?depth=1&max_relations=30`);
         const data = await response.json();
 
         if (data.error) {
@@ -387,7 +387,7 @@ async function kgSearch() {
     }
 
     try {
-        const response = await fetch(`/api/kg/entities/search?q=${encodeURIComponent(keyword)}&neighbors=true&depth=1`);
+        const response = await fetch(`/api/kg/entities/search?q=${encodeURIComponent(keyword)}&neighbors=true&depth=1&max_relations=30`);
         const data = await response.json();
 
         if (data.error) {

@@ -5,7 +5,8 @@
 // 模块级状态
 const KnowledgeModule = {
     currentFileList: [],
-    currentDbType: null
+    currentDbType: null,
+    currentView: 'files'
 };
 
 const TAG_MAP = {
@@ -18,6 +19,38 @@ const TAG_MAP = {
     'upgrade': { name: '升级迁移', icon: '🔄', color: '#795548' },
     'case': { name: '故障案例', icon: '📋', color: '#E91E63' }
 };
+
+// ==================== 视图切换 ====================
+
+function switchKnowledgeView(view) {
+    console.log('[Knowledge] 切换到视图:', view);
+    KnowledgeModule.currentView = view;
+
+    // 更新按钮状态
+    document.querySelectorAll('.knowledge-view-switch .view-switch-btn').forEach(btn => {
+        btn.classList.remove('active');
+        if (btn.dataset.view === view) {
+            btn.classList.add('active');
+        }
+    });
+
+    // 切换视图显示
+    document.querySelectorAll('.knowledge-view').forEach(v => {
+        v.classList.remove('active');
+        v.style.display = 'none';
+    });
+
+    const targetView = document.getElementById(`knowledge-${view}-view`);
+    if (targetView) {
+        targetView.classList.add('active');
+        targetView.style.display = 'block';
+    }
+
+    // 如果切换到图谱视图，初始化知识图谱
+    if (view === 'graph') {
+        initKGModule();
+    }
+}
 
 // 防抖函数：延迟执行，避免频繁触发
 function debounce(func, wait) {

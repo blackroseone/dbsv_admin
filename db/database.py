@@ -740,6 +740,7 @@ def add_knowledge_file(db_type, filename, file_path, file_size, content_text='',
         )
         if existing:
             # 文件已存在，更新
+            file_id = existing['id']
             tx.execute(
                 "UPDATE knowledge_files SET file_path=?, file_size=?, content_text=?, tags=? "
                 "WHERE db_type=? AND filename=?",
@@ -747,12 +748,13 @@ def add_knowledge_file(db_type, filename, file_path, file_size, content_text='',
             )
         else:
             # 新文件，插入
-            tx.execute(
+            cursor = tx.execute(
                 "INSERT INTO knowledge_files (db_type, filename, file_path, file_size, content_text, tags) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (db_type, filename, file_path, file_size, content_text, tags_str)
             )
-    return True
+            file_id = cursor.lastrowid
+    return file_id
 
 
 def delete_knowledge_file(db_type, filename):

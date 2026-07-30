@@ -17,7 +17,8 @@ from db.kg_database import (
 
 def get_entity_neighbors(entity_id: int, max_depth: int = 1,
                          relation_types: List[str] = None,
-                         entity_types: List[str] = None) -> Dict:
+                         entity_types: List[str] = None,
+                         max_relations: int = 50) -> Dict:
     """获取实体的邻居子图
 
     Args:
@@ -25,6 +26,7 @@ def get_entity_neighbors(entity_id: int, max_depth: int = 1,
         max_depth: 最大搜索深度
         relation_types: 限制关系类型（None 表示不限）
         entity_types: 限制邻居实体类型（None 表示不限）
+        max_relations: 每层最大关系数（防止关系过多的实体导致性能问题）
 
     Returns:
         {'nodes': [...], 'edges': [...], 'center': {...}}
@@ -47,10 +49,28 @@ def get_entity_neighbors(entity_id: int, max_depth: int = 1,
         if depth >= max_depth:
             continue
 
-        # 获取关系
+        # 获取关系（限制数量）
         relationships = get_relationships_by_entity(current_id, direction='both')
 
+        # 按关系类型分组，每组限制数量
+        rel_groups = {}
         for rel in relationships:
+            rel_type = rel['relation_type']
+            if rel_type not in rel_groups:
+                rel_groups[rel_type] = []
+            rel_groups[rel_type].append(rel)
+
+        # 每组取前 N 个，总共不超过 max_relations
+        filtered_rels = []
+        per_type_limit = max(5, max_relations // len(rel_groups)) if rel_groups else max_relations
+        for rel_type, rels in rel_groups.items():
+            filtered_rels.extend(rels[:per_type_limit])
+
+        # 按置信度排序，取前 max_relations
+        filtered_rels.sort(key=lambda r: r.get('confidence', 0), reverse=True)
+        filtered_rels = filtered_rels[:max_relations]
+
+        for rel in filtered_rels:
             # 过滤关系类型
             if relation_types and rel['relation_type'] not in relation_types:
                 continue
@@ -238,7 +258,8 @@ def extract_subgraph(entity_ids: List[int], max_depth: int = 1,
 
 def search_entities_enhanced(keyword: str, entity_type: str = None,
                              include_neighbors: bool = False,
-                             neighbor_depth: int = 1) -> Dict:
+                             neighbor_depth: int = 1,
+                             max_relations: int = 30) -> Dict:
     """增强的实体搜索，可选包含邻居子图
 
     Args:
@@ -246,6 +267,7 @@ def search_entities_enhanced(keyword: str, entity_type: str = None,
         entity_type: 实体类型过滤
         include_neighbors: 是否包含邻居
         neighbor_depth: 邻居深度
+        max_relations: 每层最大关系数
 
     Returns:
         {'entities': [...], 'subgraph': {...} (可选)}
@@ -259,7 +281,8 @@ def search_entities_enhanced(keyword: str, entity_type: str = None,
         first_entity = entities[0]
         subgraph = get_entity_neighbors(
             first_entity['id'],
-            max_depth=neighbor_depth
+            max_depth=neighbor_depth,
+            max_relations=max_relations
         )
         result['subgraph'] = subgraph
 

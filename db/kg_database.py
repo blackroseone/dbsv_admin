@@ -120,32 +120,95 @@ def get_entity_by_name(name, entity_type=None):
 
 
 def search_entities(keyword, entity_type=None, limit=20):
-    """模糊搜索实体"""
+    """模糊搜索实体
+
+    搜索策略：
+    1. 优先精确匹配（name = keyword）
+    2. 其次前缀匹配（name LIKE 'keyword%'）
+    3. 最后模糊匹配（name LIKE '%keyword%'）
+    """
     conn = get_db()
-    pattern = f"%{keyword}%"
+    normalized = keyword.lower().strip()
+
+    # 构建查询：优先精确匹配，然后前缀匹配，最后模糊匹配
     if entity_type:
-        rows = conn.execute(
+        # 先精确匹配
+        exact_rows = conn.execute(
             """SELECT * FROM kg_entities
-            WHERE entity_type=? AND (name LIKE ? OR normalized_name LIKE ? OR description LIKE ?)
-            ORDER BY confidence DESC, name
-            LIMIT ?""",
-            (entity_type, pattern, pattern, pattern, limit)
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """SELECT * FROM kg_entities
-            WHERE name LIKE ? OR normalized_name LIKE ? OR description LIKE ?
-            ORDER BY confidence DESC, name
-            LIMIT ?""",
-            (pattern, pattern, pattern, limit)
+            WHERE entity_type=? AND (name = ? OR normalized_name = ?)
+            ORDER BY confidence DESC, name""",
+            (entity_type, keyword, normalized)
         ).fetchall()
 
+        # 再前缀匹配
+        prefix_pattern = f"{keyword}%"
+        prefix_rows = conn.execute(
+            """SELECT * FROM kg_entities
+            WHERE entity_type=? AND (name LIKE ? OR normalized_name LIKE ?)
+            AND name != ? AND normalized_name != ?
+            ORDER BY confidence DESC, name
+            LIMIT ?""",
+            (entity_type, prefix_pattern, prefix_pattern, keyword, normalized, limit)
+        ).fetchall()
+
+        # 最后模糊匹配
+        fuzzy_pattern = f"%{keyword}%"
+        fuzzy_rows = conn.execute(
+            """SELECT * FROM kg_entities
+            WHERE entity_type=? AND (name LIKE ? OR normalized_name LIKE ? OR description LIKE ?)
+            AND name != ? AND normalized_name != ?
+            AND name NOT LIKE ? AND normalized_name NOT LIKE ?
+            ORDER BY confidence DESC, name
+            LIMIT ?""",
+            (entity_type, fuzzy_pattern, fuzzy_pattern, fuzzy_pattern,
+             keyword, normalized, prefix_pattern, prefix_pattern, limit)
+        ).fetchall()
+    else:
+        # 先精确匹配
+        exact_rows = conn.execute(
+            """SELECT * FROM kg_entities
+            WHERE name = ? OR normalized_name = ?
+            ORDER BY confidence DESC, name""",
+            (keyword, normalized)
+        ).fetchall()
+
+        # 再前缀匹配
+        prefix_pattern = f"{keyword}%"
+        prefix_rows = conn.execute(
+            """SELECT * FROM kg_entities
+            WHERE (name LIKE ? OR normalized_name LIKE ?)
+            AND name != ? AND normalized_name != ?
+            ORDER BY confidence DESC, name
+            LIMIT ?""",
+            (prefix_pattern, prefix_pattern, keyword, normalized, limit)
+        ).fetchall()
+
+        # 最后模糊匹配
+        fuzzy_pattern = f"%{keyword}%"
+        fuzzy_rows = conn.execute(
+            """SELECT * FROM kg_entities
+            WHERE (name LIKE ? OR normalized_name LIKE ? OR description LIKE ?)
+            AND name != ? AND normalized_name != ?
+            AND name NOT LIKE ? AND normalized_name NOT LIKE ?
+            ORDER BY confidence DESC, name
+            LIMIT ?""",
+            (fuzzy_pattern, fuzzy_pattern, fuzzy_pattern,
+             keyword, normalized, prefix_pattern, prefix_pattern, limit)
+        ).fetchall()
+
+    # 合并结果，去重
+    seen = set()
     results = []
-    for row in rows:
+    for row in exact_rows + prefix_rows + fuzzy_rows:
         entity = dict(row)
-        entity['aliases'] = json.loads(entity.get('aliases', '[]'))
-        entity['properties'] = json.loads(entity.get('properties', '{}'))
-        results.append(entity)
+        if entity['id'] not in seen:
+            seen.add(entity['id'])
+            entity['aliases'] = json.loads(entity.get('aliases', '[]'))
+            entity['properties'] = json.loads(entity.get('properties', '{}'))
+            results.append(entity)
+            if len(results) >= limit:
+                break
+
     return results
 
 

@@ -1,8 +1,8 @@
 # DB Tool 数据库表结构文档
 
 > 用途：记录所有表结构，开发和修改函数前先阅读此文档，确保操作与表结构吻合
-> 版本：v2.3.2
-> 更新时间：2026-07-13
+> 版本：v3.0.1
+> 更新时间：2026-07-30
 
 ---
 
@@ -12,7 +12,7 @@
 |------|------|----------|
 | `config` | 键值对配置 | key, value |
 | `db_types` | 数据库类型定义 | id, name, icon |
-| `knowledge_files` | 知识库文件元数据 + 内容 | db_type, filename, file_path, file_size, content_text, tags |
+| `knowledge_files` | 知识库文件元数据 + 内容（**上传/重建时自动提取知识图谱**） | db_type, filename, file_path, file_size, content_text, tags |
 | `qa_history` | 问答历史记录 | id, db_type, question, answer, created_at |
 | `favorites` | 文件收藏 | db_type, filename |
 | `resource_pools` | 资源池信息 | id, name, db_type, environment, description |
@@ -21,10 +21,10 @@
 | `instances` | 实例 | id, server_id, tenant_id, name, port, cpu, memory, role, tenant_role, description |
 | `tenants` | 租户（实例集群） | id, resource_pool_id, cluster_id, name, topology_type, spec, description |
 | `instance_relations` | 实例间关系 | from_instance_id, to_instance_id, relation_type |
-| `embeddings` | 文本块向量嵌入 | file_id, chunk_index, chunk_text, embedding |
-| `kg_entities` | 知识图谱实体表 | entity_type, name, normalized_name, confidence |
-| `kg_relationships` | 知识图谱关系表 | from_entity_id, to_entity_id, relation_type, confidence |
-| `kg_chunk_entities` | chunk-实体关联表 | chunk_id, entity_id, mention_count |
+| `embeddings` | 文本块向量嵌入（**RAG + 知识图谱关联**） | file_id, chunk_index, chunk_text, embedding |
+| `kg_entities` | **知识图谱实体表（44,467条）** | entity_type, name, normalized_name, confidence, source_file_id |
+| `kg_relationships` | **知识图谱关系表（12,549条）** | from_entity_id, to_entity_id, relation_type, confidence |
+| `kg_chunk_entities` | **chunk-实体关联表（209,053条）** | chunk_id, entity_id, mention_count |
 | `operation_logs` | 操作日志 | id, timestamp, module, action, detail, status, ip |
 | `feature_config` | 功能配置（模块开关） | module_id, module_name, module_icon, is_enabled, sort_order |
 | `log_analysis_tasks` | 日志分析任务 | id, name, question, db_type, status, current_stage, stages, report, created_at, completed_at |
@@ -515,7 +515,8 @@ CREATE TABLE IF NOT EXISTS log_analysis_files (
 
 | 表名 | 字段 | 变更时间 | 说明 |
 |------|------|----------|------|
-| clusters | db_type | 2026-07-07 | 移除（冗余字段，通过 resource_pool_id 关联获取） |
+| knowledge_files | content_text | 2026-07-30 | 更新逻辑（`add_knowledge_file` 返回 file_id，支持知识图谱关联） |
+| knowledge_files | file_path | 2026-07-30 | 新增 GaussDB 巡检文件（2个PDF，已提取496个实体） |
 | clusters | environment | 2026-07-07 | 移除（冗余字段，通过 resource_pool_id 关联获取） |
 | clusters | topology_type | 2026-07-07 | 移除（冗余字段） |
 | servers | cpu | 2026-07-07 | 新增 |
@@ -534,9 +535,9 @@ CREATE TABLE IF NOT EXISTS log_analysis_files (
 | agent_sessions | 全部 | 2026-07-24 | 新增（Agent会话管理） |
 | agent_steps | 全部 | 2026-07-24 | 新增（Agent执行步骤记录） |
 | agent_skills | 全部 | 2026-07-24 | 新增（Agent领域技能） |
-| kg_entities | 全部 | 2026-07-29 | 新增（知识图谱实体表） |
-| kg_relationships | 全部 | 2026-07-29 | 新增（知识图谱关系表） |
-| kg_chunk_entities | 全部 | 2026-07-29 | 新增（chunk-实体关联表） |
+| kg_entities | 全部 | 2026-07-29 | 新增（知识图谱实体表，**44,467条实体**） |
+| kg_relationships | 全部 | 2026-07-29 | 新增（知识图谱关系表，**12,549条关系**） |
+| kg_chunk_entities | 全部 | 2026-07-29 | 新增（chunk-实体关联表，**209,053条关联**） |
 
 ### 3. 外键约束
 

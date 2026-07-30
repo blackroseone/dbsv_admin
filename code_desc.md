@@ -1,7 +1,7 @@
 # DB Tool 代码结构文档
 
-> 生成时间: 2026-07-28
-> 版本: v2.5.1
+> 生成时间: 2026-07-30
+> 版本: v3.0.1
 > 用途: 快速了解项目代码结构和函数功能
 
 > 📌 配套文档：
@@ -60,7 +60,7 @@ db-tool/
 │       ├── app.js           # 入口文件：主题、导航、初始化、仪表盘
 │       ├── utils.js         # 通用工具函数
 │       ├── api.js           # API 请求封装
-│       ├── knowledge.js     # 知识库模块
+│       ├── knowledge.js     # 知识库模块（**含知识图谱视图切换**）
 │       ├── qa.js            # 知识问答模块
 │       ├── sql-tools.js     # SQL 工具模块
 │       ├── log-analysis.js  # 日志分析模块
@@ -193,7 +193,7 @@ db-tool/
 |------|------|--------|------|
 | `get_knowledge_files(db_type, tag=None, keyword=None)` | `str, str, str` | `list` | 按条件获取知识库文件列表 |
 | `search_knowledge_content(db_type, keyword)` | `str, str` | `list` | 搜索知识库内容，返回匹配上下文片段 |
-| `add_knowledge_file(db_type, filename, file_path, file_size, content_text='', tags=None)` | ... | `bool` | 添加/更新知识库文件记录 |
+| `add_knowledge_file(db_type, filename, file_path, file_size, content_text='', tags=None)` | ... | **`int`** | 添加/更新知识库文件记录，**返回 file_id** |
 | `delete_knowledge_file(db_type, filename)` | `str, str` | 无 | 删除知识库文件记录 |
 | `get_knowledge_file_path(db_type, filename)` | `str, str` | `str` | 获取文件路径 |
 | `get_all_knowledge_files(db_type=None)` | `str` | `list` | 获取所有知识库文件（用于重建索引） |
@@ -336,13 +336,13 @@ db-tool/
 | 路由 | 方法 | 函数 | 说明 |
 |------|------|------|------|
 | `/api/knowledge/files/<db_type>` | GET | `get_files(db_type)` | 获取文件列表，支持 tag/keyword 过滤 |
-| `/api/knowledge/upload/<db_type>` | POST | `upload_file(db_type)` | 上传文件，自动解析内容并生成向量嵌入 |
+| `/api/knowledge/upload/<db_type>` | POST | `upload_file(db_type)` | 上传文件，自动解析内容、生成向量嵌入、**提取知识图谱** |
 | `/api/knowledge/delete/<db_type>/<filename>` | DELETE | `delete_file(db_type, filename)` | 删除文件 |
 | `/api/knowledge/download/<db_type>/<filename>` | GET | `download_file(db_type, filename)` | 下载文件 |
-| `/api/knowledge/reindex` | POST | `reindex()` | 全量重建索引（重新解析 + 向量索引） |
-| `/api/knowledge/reindex/stream` | GET | `reindex_stream()` | 流式重建索引（逐个文件，SSE 实时进度，10分钟超时） |
-| `/api/knowledge/reindex/file` | POST | `reindex_single_file()` | 单个文件重建向量索引 |
-| `/api/knowledge/reindex/db-type` | POST | `reindex_by_db_type()` | 按数据库类型重建向量索引 |
+| `/api/knowledge/reindex` | POST | `reindex()` | 全量重建索引（重新解析 + 向量索引 + **知识图谱**） |
+| `/api/knowledge/reindex/stream` | GET | `reindex_stream()` | 流式重建索引（逐个文件，SSE 实时进度，10分钟超时，**含知识图谱提取**） |
+| `/api/knowledge/reindex/file` | POST | `reindex_single_file()` | 单个文件重建向量索引（**含知识图谱提取**） |
+| `/api/knowledge/reindex/db-type` | POST | `reindex_by_db_type()` | 按数据库类型重建向量索引（**含知识图谱提取**） |
 | `/api/favorites` | GET | `get_fav()` | 获取收藏夹 |
 | `/api/favorites` | POST | `toggle_fav()` | 切换收藏状态 |
 | `/api/knowledge/preview/<db_type>/<filename>` | GET | `preview_file(db_type, filename)` | 预览文件内容 |
@@ -749,7 +749,8 @@ data: [DONE]
 | `embed_chunks(chunks)` | `list` | `list` | 批量计算文本块嵌入向量 |
 | `embed_query(query)` | `str` | `np.ndarray` | 计算查询文本的嵌入向量 |
 | `similarity_search(query, db_type=None, top_k=5)` | `str, str, int` | `list` | 向量相似度搜索，返回 top_k 结果 |
-| `rebuild_all(db_type=None)` | `str` | `int` | 重建所有知识库文件的向量索引 |
+| `rebuild_all(db_type=None, extract_kg=True)` | `str, bool` | `int` | 重建所有知识库文件的向量索引，**默认同时提取知识图谱** |
+| `rebuild_single(file_id, db_type, filepath, extract_kg=True)` | `int, str, str, bool` | `bool` | 重建单个文件的向量索引，**默认同时提取知识图谱** |
 
 ---
 
@@ -903,7 +904,8 @@ data: [DONE]
 | `downloadFile(db_type, filename)` | 下载文件 |
 | `previewFile(db_type, filename)` | 预览文件 |
 | `editFileTags(index)` | 编辑文件标签 |
-| `reindexKnowledge()` | 重建索引 |
+| `reindexKnowledge()` | 重建索引（**流式进度，含知识图谱提取**） |
+| `switchKnowledgeView(view)` | **切换知识库视图（files/graph）** |
 | `renderTags(tags)` | 渲染标签徽章 |
 | `getFavorites()` | 获取收藏夹 |
 | `toggleFavorite(db_type, filename)` | 切换收藏 |

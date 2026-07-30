@@ -139,27 +139,30 @@ def upload_file(db_type):
             tags.append('case')
 
     # 存入数据库
-    add_knowledge_file(db_type, filename, filepath, file_size, content_text, tags)
+    file_id = add_knowledge_file(db_type, filename, filepath, file_size, content_text, tags)
 
     # 记录操作日志
     add_operation_log('知识库', '上传文件', f'{db_type}/{filename}')
 
-    # 异步生成向量嵌入（如果 sentence-transformers 可用）
+    # 异步生成向量嵌入和知识图谱实体
     try:
         from rag import Embedder
         from rag.embedder import chunk_text
-        files = get_knowledge_files(db_type)
-        for f in files:
-            if f['filename'] == filename:
-                chunks = chunk_text(content_text)
-                if chunks:
-                    embedder = Embedder()
-                    embeddings = embedder.embed_chunks(chunks)
-                    from db.database import save_embeddings
-                    save_embeddings(f['id'], embeddings)
-                break
+        from db.database import save_embeddings
+
+        chunks = chunk_text(content_text)
+        if chunks:
+            embedder = Embedder()
+            embeddings = embedder.embed_chunks(chunks)
+            save_embeddings(file_id, embeddings)
+
+            # 提取知识图谱实体
+            try:
+                embedder._extract_knowledge_graph(file_id, db_type, content_text, chunks, embeddings)
+            except Exception as e:
+                print(f"[Knowledge] 知识图谱提取失败 [{filename}]: {e}")
     except Exception:
-        pass  # 向量嵌入生成失败不影响上传
+        pass  # 向量嵌入/知识图谱生成失败不影响上传
 
     return jsonify({'message': '上传成功', 'filename': filename})
 
@@ -267,6 +270,12 @@ def reindex_stream():
                                     save_embeddings(file_id, embeddings)
                                     vector_count += 1
                                     vector_generated = True
+
+                                    # 3. 提取知识图谱实体
+                                    try:
+                                        embedder._extract_knowledge_graph(file_id, db_type, content, chunks, embeddings)
+                                    except Exception as e:
+                                        print(f"[重建索引] 知识图谱提取失败: {filepath} - {e}")
                         except Exception as e:
                             print(f"[重建索引] 向量索引生成失败: {filepath} - {e}")
                 except Exception as e:
@@ -347,6 +356,12 @@ def reindex_single_file():
 
         save_embeddings(file_id, embeddings)
 
+        # 提取知识图谱实体
+        try:
+            embedder._extract_knowledge_graph(file_id, file_info['db_type'], content, chunks, embeddings)
+        except Exception as e:
+            print(f"[Knowledge] 知识图谱提取失败 [reindex {file_info['filename']}]: {e}")
+
         return jsonify({
             'message': f'文件 {file_info["filename"]} 索引重建成功',
             'file_id': file_id,
@@ -406,6 +421,12 @@ def reindex_by_db_type():
                 if embeddings:
                     save_embeddings(file_id, embeddings)
                     vector_count += 1
+
+                    # 提取知识图谱实体
+                    try:
+                        embedder._extract_knowledge_graph(file_id, db_type, content, chunks, embeddings)
+                    except Exception as e:
+                        print(f"[Knowledge] 知识图谱提取失败 [reindex {f['filename']}]: {e}")
 
             except Exception as e:
                 errors.append(f'{f["filename"]}: {str(e)}')
@@ -479,6 +500,12 @@ def scan_files():
                                 embeddings = embedder.embed_chunks(chunks)
                                 save_embeddings(file_id, embeddings)
                                 vector_count += 1
+
+                                # 提取知识图谱实体
+                                try:
+                                    embedder._extract_knowledge_graph(file_id, db_type_dir, content_text, chunks, embeddings)
+                                except Exception as e:
+                                    print(f"[Knowledge] 知识图谱提取失败 [scan {filename}]: {e}")
                     except Exception as e:
                         print(f"[扫描] 向量索引生成失败: {filepath} - {e}")
 
