@@ -22,6 +22,9 @@
 | `tenants` | 租户（实例集群） | id, resource_pool_id, cluster_id, name, topology_type, spec, description |
 | `instance_relations` | 实例间关系 | from_instance_id, to_instance_id, relation_type |
 | `embeddings` | 文本块向量嵌入 | file_id, chunk_index, chunk_text, embedding |
+| `kg_entities` | 知识图谱实体表 | entity_type, name, normalized_name, confidence |
+| `kg_relationships` | 知识图谱关系表 | from_entity_id, to_entity_id, relation_type, confidence |
+| `kg_chunk_entities` | chunk-实体关联表 | chunk_id, entity_id, mention_count |
 | `operation_logs` | 操作日志 | id, timestamp, module, action, detail, status, ip |
 | `feature_config` | 功能配置（模块开关） | module_id, module_name, module_icon, is_enabled, sort_order |
 | `log_analysis_tasks` | 日志分析任务 | id, name, question, db_type, status, current_stage, stages, report, created_at, completed_at |
@@ -483,6 +486,13 @@ CREATE TABLE IF NOT EXISTS log_analysis_files (
 | idx_log_analysis_tasks_status | log_analysis_tasks | status | 按状态查询 |
 | idx_log_analysis_tasks_db_type | log_analysis_tasks | db_type | 按数据库类型查询 |
 | idx_log_analysis_files_task | log_analysis_files | task_id | 按任务查询 |
+| idx_kg_entities_type | kg_entities | entity_type | 按实体类型查询 |
+| idx_kg_entities_name | kg_entities | normalized_name | 按规范化名称查询 |
+| idx_kg_rel_from | kg_relationships | from_entity_id | 按源实体查询 |
+| idx_kg_rel_to | kg_relationships | to_entity_id | 按目标实体查询 |
+| idx_kg_rel_type | kg_relationships | relation_type | 按关系类型查询 |
+| idx_kg_chunk_e | kg_chunk_entities | chunk_id | 按 chunk 查询 |
+| idx_kg_chunk_eid | kg_chunk_entities | entity_id | 按实体查询 |
 | idx_agent_steps_session | agent_steps | session_id | 按会话查询 |
 | idx_agent_skills_db_type | agent_skills | db_type | 按数据库类型查询 |
 | idx_agent_skills_category | agent_skills | category | 按分类查询 |
@@ -524,6 +534,9 @@ CREATE TABLE IF NOT EXISTS log_analysis_files (
 | agent_sessions | 全部 | 2026-07-24 | 新增（Agent会话管理） |
 | agent_steps | 全部 | 2026-07-24 | 新增（Agent执行步骤记录） |
 | agent_skills | 全部 | 2026-07-24 | 新增（Agent领域技能） |
+| kg_entities | 全部 | 2026-07-29 | 新增（知识图谱实体表） |
+| kg_relationships | 全部 | 2026-07-29 | 新增（知识图谱关系表） |
+| kg_chunk_entities | 全部 | 2026-07-29 | 新增（chunk-实体关联表） |
 
 ### 3. 外键约束
 
@@ -536,12 +549,108 @@ CREATE TABLE IF NOT EXISTS log_analysis_files (
 | instance_relations | from_instance_id | instances | ON DELETE CASCADE |
 | instance_relations | to_instance_id | instances | ON DELETE CASCADE |
 | embeddings | file_id | knowledge_files | ON DELETE CASCADE |
+| kg_relationships | from_entity_id | kg_entities | ON DELETE CASCADE |
+| kg_relationships | to_entity_id | kg_entities | ON DELETE CASCADE |
+| kg_chunk_entities | chunk_id | embeddings | ON DELETE CASCADE |
+| kg_chunk_entities | entity_id | kg_entities | ON DELETE CASCADE |
 | tenants | resource_pool_id | resource_pools | ON DELETE CASCADE |
 | log_analysis_files | task_id | log_analysis_tasks | ON DELETE CASCADE |
 | agent_db_connections | ssh_connection_id | agent_ssh_connections | ON DELETE SET NULL |
 | agent_steps | session_id | agent_sessions | ON DELETE CASCADE |
 
-### 4. 开发检查清单
+### 17. kg_entities — 知识图谱实体表
+
+```sql
+CREATE TABLE IF NOT EXISTS kg_entities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    aliases TEXT DEFAULT '[]',
+    description TEXT,
+    properties TEXT DEFAULT '{}',
+    source_file_id INTEGER,
+    source_chunk_id INTEGER,
+    confidence REAL DEFAULT 1.0,
+    extract_method TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(normalized_name, entity_type)
+);
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | INTEGER | 自增主键 |
+| entity_type | TEXT | 实体类型（database_product, version, parameter 等） |
+| name | TEXT | 实体名称 |
+| normalized_name | TEXT | 规范化名称（小写、去空格） |
+| aliases | TEXT | 别名数组（JSON格式） |
+| description | TEXT | 描述 |
+| properties | TEXT | 扩展属性（JSON格式） |
+| source_file_id | INTEGER | 来源文件ID |
+| source_chunk_id | INTEGER | 来源chunk ID |
+| confidence | REAL | 提取置信度（0-1） |
+| extract_method | TEXT | 提取方式（rule/llm） |
+| created_at | TIMESTAMP | 创建时间 |
+| updated_at | TIMESTAMP | 更新时间 |
+
+---
+
+### 18. kg_relationships — 知识图谱关系表
+
+```sql
+CREATE TABLE IF NOT EXISTS kg_relationships (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_entity_id INTEGER NOT NULL,
+    to_entity_id INTEGER NOT NULL,
+    relation_type TEXT NOT NULL,
+    confidence REAL DEFAULT 1.0,
+    properties TEXT DEFAULT '{}',
+    source_chunk_id INTEGER,
+    source_file_id INTEGER,
+    extract_method TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (from_entity_id) REFERENCES kg_entities(id) ON DELETE CASCADE,
+    FOREIGN KEY (to_entity_id) REFERENCES kg_entities(id) ON DELETE CASCADE
+);
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | INTEGER | 自增主键 |
+| from_entity_id | INTEGER | 源实体ID（外键） |
+| to_entity_id | INTEGER | 目标实体ID（外键） |
+| relation_type | TEXT | 关系类型（has_version, has_parameter 等） |
+| confidence | REAL | 关系置信度（0-1） |
+| properties | TEXT | 扩展属性（JSON格式） |
+| source_chunk_id | INTEGER | 来源chunk ID |
+| source_file_id | INTEGER | 来源文件ID |
+| extract_method | TEXT | 提取方式（rule/llm） |
+| created_at | TIMESTAMP | 创建时间 |
+
+---
+
+### 19. kg_chunk_entities — chunk-实体关联表
+
+```sql
+CREATE TABLE IF NOT EXISTS kg_chunk_entities (
+    chunk_id INTEGER NOT NULL,
+    entity_id INTEGER NOT NULL,
+    mention_count INTEGER DEFAULT 1,
+    PRIMARY KEY (chunk_id, entity_id),
+    FOREIGN KEY (chunk_id) REFERENCES embeddings(id) ON DELETE CASCADE,
+    FOREIGN KEY (entity_id) REFERENCES kg_entities(id) ON DELETE CASCADE
+);
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| chunk_id | INTEGER | chunk ID（外键，关联 embeddings 表） |
+| entity_id | INTEGER | 实体ID（外键，关联 kg_entities 表） |
+| mention_count | INTEGER | 该chunk中提及次数 |
+
+---
 
 在修改涉及数据库的代码前，请确认：
 

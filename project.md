@@ -21,6 +21,7 @@
 | 前端 | 原生 HTML/CSS/JS，单页应用，模块化 JS 架构 |
 | AI | OpenAI 兼容 API（支持多模型配置管理） |
 | RAG | sentence-transformers（moka-ai/m3e-base）+ numpy 余弦相似度 |
+| 知识图谱 | Chunk-Entity 混合图谱，SQLite 存储，vis.js 可视化 |
 | 主题 | CSS 变量系统，支持亮色/暗色主题切换，localStorage 持久化 |
 
 ## 目录结构
@@ -41,12 +42,14 @@ db-tool/
     db/                     # 数据库层
         __init__.py
         database.py         # SQLite 连接管理、表初始化、全部 CRUD
+        kg_database.py      # 知识图谱 CRUD（实体、关系、chunk关联）
         migration.py        # JSON → SQLite 自动迁移（首次启动执行）
 
     routes/                 # API 路由（Blueprint）
         __init__.py         # Blueprint 统一导出
         knowledge.py        # 知识库文件管理 + 收藏夹
-        qa.py               # 知识问答（支持向量检索 RAG）
+        qa.py               # 知识问答（支持向量检索 RAG + 知识图谱增强）
+        kg.py               # 知识图谱 API（实体搜索、邻居查询、路径查找、子图提取）
         sql_tools.py        # SQL 审核 / 格式化 / 转换 / 执行计划分析
         log_analysis.py     # 日志分析（多轮 LLM 分析 + RAG 增强）
         manuals.py           # 操作手册上传下载
@@ -65,6 +68,12 @@ db-tool/
         tools.py             # MCP风格工具定义（5个标准化工具）
         engine.py            # Agent核心引擎（ReAct循环 + 知识库增强）
 
+    kg/                     # 知识图谱模块
+        __init__.py
+        rules.py             # 规则实体提取器（正则+词典匹配）
+        llm_extractor.py     # LLM实体/关系提取（prompt模板）
+        graph.py             # 图谱查询引擎（邻居、路径、子图、QA增强）
+
     rag/                    # 向量检索模块
         __init__.py
         embedder.py          # 文本分块、向量嵌入、相似度检索
@@ -77,6 +86,7 @@ db-tool/
             api.js           # API 封装（apiGet、apiPost、apiPut、apiDelete）
             knowledge.js     # 知识库模块
             qa.js            # 知识问答模块（含流式输出）
+            kg.js            # 知识图谱可视化模块（vis.js 力导向图）
             sql-tools.js     # SQL 工具模块
             log-analysis.js  # 日志分析模块
             manuals.js       # 操作手册模块
@@ -115,6 +125,9 @@ db-tool/
 | tenant_instances | 租户实例关联 |
 | instance_relations | 实例间关系 |
 | embeddings | 文本块向量嵌入（RAG 用） |
+| kg_entities | 知识图谱实体表 |
+| kg_relationships | 知识图谱关系表 |
+| kg_chunk_entities | chunk-实体关联表 |
 | operation_logs | 操作日志 |
 | feature_config | 功能配置开关 |
 | agent_ssh_connections | SSH连接配置（目标服务器） |
@@ -123,7 +136,7 @@ db-tool/
 | agent_steps | Agent执行步骤（ReAct过程记录） |
 | agent_skills | Agent Skills（操作指南/领域知识） |
 
-## 八大功能模块
+## 九大功能模块
 
 ### 1. 知识库（/api/knowledge/*）
 - 按数据库类型组织文件
@@ -131,10 +144,12 @@ db-tool/
 - 上传时自动解析文件正文内容存入数据库
 - 全文搜索 + 标签过滤
 - 收藏夹功能
+- **知识图谱自动提取**：上传/重建索引时自动提取实体和关系
 
 ### 2. 知识问答（/api/qa/*）
 - 对话式界面，调用 LLM 回答数据库问题
 - RAG 增强：优先用向量检索知识库内容作为上下文
+- **知识图谱增强**：自动识别问题中的实体，注入图谱上下文（实体卡片、关系链）
 - **数据库类型自动识别**：选择"自动选择"时，系统会从问题中自动识别数据库类型并切换到对应知识库
 - 问题模板（报错处理、语法查询、性能问题等）
 - 对话历史持久化
@@ -197,17 +212,28 @@ db-tool/
 - **只读模式**：默认只读，禁止任何修改数据的操作
 - **置信度标注**：🟢高/🟡中/🔴低 三级置信度标识
 
+### 10. 知识图谱（/api/kg/*）
+- **Chunk-Entity 混合图谱**：复用现有 13,153 个 chunk 作为文档层，增量添加 44,467 个实体节点
+- **14 种实体类型**：数据库产品、版本、参数、错误码、SQL 语句、函数、系统视图、命令工具、架构、性能指标、概念、故障场景、操作系统、硬件
+- **11 种关系类型**：belongs_to、compatible_with、requires、has_parameter、similar_to 等
+- **混合提取策略**：规则匹配（正则+词典）+ LLM 提取
+- **可视化浏览**：vis.js 力导向图，支持拖拽、缩放、点击展开邻居
+- **QA 增强**：从检索到的 chunk 中提取关联实体，构建图谱上下文注入 prompt
+- **实体搜索**：支持模糊搜索和邻居子图展示
+- **关系推理**：版本归属、参数归属、跨产品映射等规则推理
+
 ## 支持的数据库类型
 
 默认：MySQL、Oracle、达梦(DM)、GoldenDB、OceanBase、TDSQL、GaussDB
 可通过 API 自定义添加更多类型。
 
-## RAG 工作流程
+## RAG + 知识图谱增强工作流程
 
 ```
 用户提问 → Embedder 计算查询向量
          → 从 embeddings 表检索最相似的 top-5 文本块
-         → 拼接为上下文 + 系统提示词
+         → 从 chunk 关联的 kg_entities 提取实体卡片和关系链
+         → 拼接为上下文（知识库内容 + 图谱实体/关系）
          → 发送给 LLM 生成回答
 ```
 
@@ -222,6 +248,16 @@ db-tool/
 | chunks 限制 | 无限制 | 不截断，确保大文件完整索引 |
 | 相似度阈值 | 0.55 | 余弦相似度阈值 |
 | 模型 | moka-ai/m3e-base | 中文语义理解更优 |
+
+### 知识图谱数据规模
+
+| 指标 | 数值 |
+|------|------|
+| 实体总数 | 44,467 |
+| 关系总数 | 12,549 |
+| chunk 关联 | 209,333 |
+| 实体类型 | 14 种 |
+| 关系类型 | 5 种 |
 
 ## 开发注意事项
 
@@ -240,5 +276,6 @@ db-tool/
 | `commands.js` | 命令速查模块（分类、命令、删除、搜索） |
 | `topology.js` | 集群拓扑模块（集群、节点、实例、租户管理） |
 | `agent.js` | 智能运维Agent模块（ReAct循环可视化、SSH/DB连接管理） |
+| `kg.js` | 知识图谱可视化模块（vis.js 力导向图、实体搜索、邻居展开） |
 | `config.js` | 系统配置模块（模型管理、数据库类型、日志） |
 

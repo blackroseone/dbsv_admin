@@ -9,6 +9,74 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v3.0.0 (2026-07-29)
+
+### 🕸️ 知识图谱模块（重大更新）
+
+#### 核心架构
+- **Chunk-Entity 混合图谱**：复用现有 13,153 个 chunk 作为文档层，增量添加 44,467 个实体节点
+- **SQLite 存储**：3 张核心表（kg_entities、kg_relationships、kg_chunk_entities）+ 7 个索引
+- **混合提取策略**：规则匹配（正则+词典）+ LLM 提取（深度提取）
+
+#### 实体提取（14 种类型）
+- **规则提取**：数据库产品（21）、版本号（14,017）、错误码（2,484）、参数（17,482）、函数（8,308）、系统视图（2,056）、SQL 语句（29）、操作系统（12）、硬件（5）、性能指标（12）、架构（10）、概念（17）、命令工具（14）
+- **LLM 提取**：复杂概念、架构模式、故障场景、跨产品关系
+
+#### 关系推理（5 种类型）
+- `has_version`（9,740）：产品 → 版本
+- `has_parameter`（1,662）：产品 → 参数
+- `has_error_code`（1,031）：产品 → 错误码
+- `has_architecture`（71）：产品 → 架构
+- `requires`（45）：产品 → 操作系统
+
+#### 可视化浏览
+- **vis.js 力导向图**：支持拖拽平移、滚轮缩放、点击展开邻居
+- **实体搜索**：模糊搜索 + 邻居子图展示
+- **类型筛选**：实体类型和关系类型筛选面板
+- **详情面板**：实体属性、关系列表、来源文档
+
+#### QA 增强
+- **自动实体识别**：从检索到的 chunk 中提取关联实体
+- **上下文注入**：将实体卡片和关系链注入 LLM prompt
+- **关系链推理**：展示实体间的路径（如 MySQL → has_parameter → innodb_buffer_pool_size）
+
+#### API 接口
+- `/api/kg/entities/search` - 实体搜索
+- `/api/kg/entities/<id>` - 实体详情
+- `/api/kg/entities/<id>/neighbors` - 邻居查询
+- `/api/kg/path` - 最短路径
+- `/api/kg/subgraph` - 子图提取
+- `/api/kg/qa-enhance` - QA 增强上下文
+- `/api/kg/stats` - 图谱统计
+- `/api/kg/entity-types` - 实体类型分布
+
+#### 前端模块
+- **导航栏**：知识图谱放在知识库之下，知识问答之上
+- **快捷键**：Ctrl+9 切换知识图谱
+- **工具栏**：重置视图、展开邻居、清除选择按钮位于图谱上方
+
+### 🔧 新增文件
+| 文件 | 功能 |
+|------|------|
+| `kg/rules.py` | 规则实体提取器（14 种实体类型） |
+| `kg/llm_extractor.py` | LLM 实体/关系提取（prompt 模板） |
+| `kg/graph.py` | 图谱查询引擎（邻居、路径、子图、QA 增强） |
+| `db/kg_database.py` | 知识图谱 CRUD 操作 |
+| `routes/kg.py` | 知识图谱 REST API（12 个接口） |
+| `static/js/kg.js` | 前端可视化（vis.js 力导向图） |
+
+### 🔧 修改文件
+| 文件 | 修改内容 |
+|------|---------|
+| `db/database.py` | 新增 kg_entities、kg_relationships、kg_chunk_entities 表 |
+| `rag/embedder.py` | 重建索引时自动提取知识图谱实体 |
+| `routes/qa.py` | 问答中融合知识图谱上下文（实体卡片 + 关系链） |
+| `templates/index.html` | 添加知识图谱导航和模块 HTML |
+| `static/js/app.js` | 添加 Ctrl+9 快捷键和 kg 模块切换 |
+| `static/css/style.css` | 添加知识图谱样式（~300 行） |
+
+---
+
 ## v2.5.1 (2026-07-28)
 
 ### 🎯 知识库 RAG 优化

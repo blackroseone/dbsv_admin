@@ -217,6 +217,9 @@ def _build_qa_messages(db_type, question, use_rag, conversation_id=None, use_top
     context = ""
     knowledge_confidence = "low"  # 知识库置信度: low/medium/high
     knowledge_sources = []  # 知识库来源记录
+    kg_context = ""  # 知识图谱上下文
+    kg_entities = []  # 知识图谱实体列表
+    use_kg = True  # 默认启用知识图谱增强
 
     if use_rag:
         search_results = []
@@ -274,6 +277,62 @@ def _build_qa_messages(db_type, question, use_rag, conversation_id=None, use_top
                         system_results = _search_with_keywords('_system', question)
             except Exception:
                 pass
+
+        # 知识图谱增强
+        if use_kg and all_vector_results:
+            try:
+                from db.database import get_db
+                from kg.graph import enhance_qa_context
+
+                conn = get_db()
+                chunk_ids = []
+                # 获取 chunk IDs
+                for result in all_vector_results[:5]:
+                    # 查找 chunk ID
+                    row = conn.execute(
+                        """SELECT e.id FROM embeddings e
+                        JOIN knowledge_files k ON e.file_id = k.id
+                        WHERE k.filename=? AND e.chunk_text=?""",
+                        (result['filename'], result['chunk_text'])
+                    ).fetchone()
+                    if row:
+                        chunk_ids.append(row['id'])
+
+                if chunk_ids:
+                    # 获取图谱增强上下文
+                    kg_enhance = enhance_qa_context(chunk_ids, question)
+
+                    # 构建图谱上下文
+                    if kg_enhance.get('entity_cards'):
+                        kg_context += "\n\n【知识图谱实体】\n"
+                        for card in kg_enhance['entity_cards'][:5]:
+                            kg_context += f"\n• {card['name']} ({card['type']})"
+                            if card.get('description'):
+                                kg_context += f" - {card['description']}"
+                            if card.get('relations'):
+                                for rel in card['relations'][:3]:
+                                    arrow = '→' if rel['direction'] == 'outgoing' else '←'
+                                    kg_context += f"\n  {arrow} [{rel['relation_type']}] {rel['target_name']}"
+                            kg_context += "\n"
+                            kg_entities.append({
+                                'name': card['name'],
+                                'type': card['type'],
+                                'relations': card.get('relations', [])
+                            })
+
+                    # 添加关系链
+                    if kg_enhance.get('relation_chains'):
+                        kg_context += "\n【实体关系链】\n"
+                        for chain in kg_enhance['relation_chains'][:3]:
+                            path_str = ' → '.join([
+                                item['name'] if 'name' in item else item['relation_type']
+                                for item in chain['path']
+                                if isinstance(item, dict)
+                            ])
+                            kg_context += f"\n• {path_str}\n"
+
+            except Exception as e:
+                print(f"[QA] 知识图谱增强失败: {e}")
 
         # 计算知识库置信度
         if all_vector_results:
@@ -337,11 +396,16 @@ def _build_qa_messages(db_type, question, use_rag, conversation_id=None, use_top
 5. 你也可以根据集群拓扑信息回答关于服务器归属、实例分布等问题
 6. 你也可以根据运维手册内容回答操作步骤和流程问题
 7. **重要**：如果知识库中没有足够信息，请明确说明，不要编造不确定的内容
+8. 如果知识图谱提供了实体关系信息，请优先使用结构化关系进行推理
 {confidence_warning}"""
 
     user_message = question
     if context:
         user_message = f"{question}\n{context}"
+
+    # 添加知识图谱上下文
+    if kg_context:
+        user_message += kg_context
 
     # 构建消息列表
     messages = [
@@ -367,7 +431,8 @@ def _build_qa_messages(db_type, question, use_rag, conversation_id=None, use_top
     metadata = {
         'confidence': knowledge_confidence,
         'knowledge_sources': knowledge_sources,
-        'has_sufficient_knowledge': knowledge_confidence in ('high', 'medium')
+        'has_sufficient_knowledge': knowledge_confidence in ('high', 'medium'),
+        'kg_entities': kg_entities  # 知识图谱实体信息
     }
 
     return messages, metadata

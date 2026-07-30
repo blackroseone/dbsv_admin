@@ -174,6 +174,8 @@ function switchModule(module) {
     } else if (module === 'config') {
         loadDBTypesPage();
         loadLogs();
+    } else if (module === 'kg') {
+        initKGModule();
     } else if (module === 'manuals') {
         loadManuals();
     } else if (module === 'commands') {
@@ -184,6 +186,8 @@ function switchModule(module) {
         loadConversations();
     } else if (module === 'agent') {
         initAgentModule();
+    } else if (module === 'kg') {
+        initKGModule();
     }
 }
 
@@ -290,7 +294,7 @@ async function loadModelSelects() {
 function initKeyboardShortcuts() {
     document.addEventListener('keydown', function(e) {
         // Ctrl/Cmd + 1~9 切换模块
-        if ((e.ctrlKey || e.metaKey) && e.key >= '1' && e.key <= '9') {
+        if ((e.ctrlKey || e.metaKey) && e.key >= '0' && e.key <= '9') {
             e.preventDefault();
             const moduleMap = {
                 '1': 'dashboard',
@@ -301,7 +305,8 @@ function initKeyboardShortcuts() {
                 '6': 'manuals',
                 '7': 'commands',
                 '8': 'topology',
-                '9': 'config'
+                '9': 'kg',
+                '0': 'config'
             };
             const module = moduleMap[e.key];
             if (module) {

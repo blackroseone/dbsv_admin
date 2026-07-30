@@ -32,6 +32,10 @@
                     <span class="icon">📚</span>
                     <span class="text">知识库</span>
                 </li>
+                <li class="nav-item" data-module="kg">
+                    <span class="icon">🕸️</span>
+                    <span class="text">知识图谱</span>
+                </li>
                 <li class="nav-item" data-module="qa">
                     <span class="icon">💬</span>
                     <span class="text">知识问答</span>
@@ -44,6 +48,10 @@
                     <span class="icon">📋</span>
                     <span class="text">日志分析</span>
                 </li>
+                <li class="nav-item" data-module="topology">
+                    <span class="icon">🗺️</span>
+                    <span class="text">集群拓扑</span>
+                </li>
                 <li class="nav-item" data-module="sql">
                     <span class="icon">🔍</span>
                     <span class="text">SQL工具</span>
@@ -55,10 +63,6 @@
                 <li class="nav-item" data-module="manuals">
                     <span class="icon">📋</span>
                     <span class="text">操作手册</span>
-                </li>
-                <li class="nav-item" data-module="topology">
-                    <span class="icon">🗺️</span>
-                    <span class="text">集群拓扑</span>
                 </li>
                 <li class="nav-item" data-module="config">
                     <span class="icon">⚙️</span>
@@ -184,7 +188,11 @@
                                 <span>集群拓扑</span>
                             </div>
                             <div class="shortcut-item">
-                                <kbd>Ctrl+8</kbd>
+                                <kbd>Ctrl+9</kbd>
+                                <span>知识图谱</span>
+                            </div>
+                            <div class="shortcut-item">
+                                <kbd>Ctrl+0</kbd>
                                 <span>系统配置</span>
                             </div>
                             <div class="shortcut-item">
@@ -909,6 +917,66 @@
                 </div>
             </div>
 
+            <!-- ==================== 知识图谱模块 ==================== -->
+            <div class="module" id="module-kg" style="display: none;">
+                <h2>🕸️ 知识图谱</h2>
+                <div class="kg-container">
+                    <!-- 左侧筛选面板 -->
+                    <div class="kg-sidebar">
+                        <div class="kg-sidebar-header">
+                            <h3>🔍 实体搜索</h3>
+                            <div class="kg-search-box">
+                                <input type="text" id="kg-search-input" placeholder="搜索实体..." onkeyup="debouncedKGSearch()">
+                                <button class="btn btn-sm btn-primary" onclick="kgSearch()">搜索</button>
+                            </div>
+                        </div>
+                        <div class="kg-filters">
+                            <h4>实体类型</h4>
+                            <div id="kg-entity-types" class="kg-filter-list">
+                                <div class="loading">加载中...</div>
+                            </div>
+                            <h4>关系类型</h4>
+                            <div id="kg-relation-types" class="kg-filter-list">
+                                <div class="loading">加载中...</div>
+                            </div>
+                        </div>
+                        <div class="kg-stats">
+                            <h4>📊 统计</h4>
+                            <div id="kg-stats-content">
+                                <div class="loading">加载中...</div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- 中间图谱可视化 -->
+                    <div class="kg-main">
+                        <div class="kg-toolbar">
+                            <button class="btn btn-sm btn-secondary" onclick="resetKGView()">🔄 重置视图</button>
+                            <button class="btn btn-sm btn-secondary" onclick="expandAllNeighbors()">🔍 展开邻居</button>
+                            <button class="btn btn-sm btn-danger" onclick="clearKGSelection()">✕ 清除选择</button>
+                            <span id="kg-selection-info"></span>
+                        </div>
+                        <div id="kg-graph-container" class="kg-graph-container">
+                            <div class="kg-welcome">
+                                <div class="welcome-icon">🕸️</div>
+                                <h3>知识图谱浏览器</h3>
+                                <p>在左侧搜索实体，或点击节点查看详情</p>
+                                <p>支持拖拽平移、滚轮缩放、点击展开邻居</p>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- 右侧详情面板 -->
+                    <div class="kg-detail" id="kg-detail" style="display: none;">
+                        <div class="detail-header">
+                            <h3 id="kg-detail-title">详情</h3>
+                            <button class="btn btn-sm btn-secondary" onclick="closeKGDetail()">✕</button>
+                        </div>
+                        <div id="kg-detail-content" class="detail-content">
+                            <!-- 详情内容 -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- ==================== 系统配置模块 ==================== -->
             <div class="module" id="module-config" style="display: none;">
                 <h2>⚙️ 系统配置</h2>
@@ -1579,6 +1647,7 @@
     <script src="/static/js/app.js?v={{ version }}"></script>
     <script src="/static/js/knowledge.js?v={{ version }}"></script>
     <script src="/static/js/qa.js?v={{ version }}"></script>
+    <script src="/static/js/kg.js?v={{ version }}"></script>
     <script src="/static/js/agent.js?v={{ version }}"></script>
     <script src="/static/js/log-analysis.js?v={{ version }}"></script>
     <script src="/static/js/sql-tools.js?v={{ version }}"></script>

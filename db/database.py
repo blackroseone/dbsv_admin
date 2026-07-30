@@ -341,6 +341,61 @@ def init_db():
             is_key_log BOOLEAN DEFAULT 0,
             FOREIGN KEY (task_id) REFERENCES log_analysis_tasks(id) ON DELETE CASCADE
         );
+
+        -- ==================== 知识图谱表 ====================
+
+        -- 实体表
+        CREATE TABLE IF NOT EXISTS kg_entities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            normalized_name TEXT NOT NULL,
+            aliases TEXT DEFAULT '[]',
+            description TEXT,
+            properties TEXT DEFAULT '{}',
+            source_file_id INTEGER,
+            source_chunk_id INTEGER,
+            confidence REAL DEFAULT 1.0,
+            extract_method TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(normalized_name, entity_type)
+        );
+
+        -- 关系表
+        CREATE TABLE IF NOT EXISTS kg_relationships (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_entity_id INTEGER NOT NULL,
+            to_entity_id INTEGER NOT NULL,
+            relation_type TEXT NOT NULL,
+            confidence REAL DEFAULT 1.0,
+            properties TEXT DEFAULT '{}',
+            source_chunk_id INTEGER,
+            source_file_id INTEGER,
+            extract_method TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (from_entity_id) REFERENCES kg_entities(id) ON DELETE CASCADE,
+            FOREIGN KEY (to_entity_id) REFERENCES kg_entities(id) ON DELETE CASCADE
+        );
+
+        -- chunk-实体关联表（多对多）
+        CREATE TABLE IF NOT EXISTS kg_chunk_entities (
+            chunk_id INTEGER NOT NULL,
+            entity_id INTEGER NOT NULL,
+            mention_count INTEGER DEFAULT 1,
+            PRIMARY KEY (chunk_id, entity_id),
+            FOREIGN KEY (chunk_id) REFERENCES embeddings(id) ON DELETE CASCADE,
+            FOREIGN KEY (entity_id) REFERENCES kg_entities(id) ON DELETE CASCADE
+        );
+
+        -- 知识图谱索引
+        CREATE INDEX IF NOT EXISTS idx_kg_entities_type ON kg_entities(entity_type);
+        CREATE INDEX IF NOT EXISTS idx_kg_entities_name ON kg_entities(normalized_name);
+        CREATE INDEX IF NOT EXISTS idx_kg_rel_from ON kg_relationships(from_entity_id);
+        CREATE INDEX IF NOT EXISTS idx_kg_rel_to ON kg_relationships(to_entity_id);
+        CREATE INDEX IF NOT EXISTS idx_kg_rel_type ON kg_relationships(relation_type);
+        CREATE INDEX IF NOT EXISTS idx_kg_chunk_e ON kg_chunk_entities(chunk_id);
+        CREATE INDEX IF NOT EXISTS idx_kg_chunk_eid ON kg_chunk_entities(entity_id);
     ''')
     conn.commit()
 

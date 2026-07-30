@@ -169,7 +169,8 @@ def create_app():
     from routes import (
         db_types_bp, knowledge_bp, qa_bp, sql_tools_bp,
         manuals_bp, commands_bp, topology_bp, config_bp,
-        dashboard_bp, log_analysis_bp, agent_bp, agent_conn_bp
+        dashboard_bp, log_analysis_bp, agent_bp, agent_conn_bp,
+        kg_bp
     )
     app.register_blueprint(db_types_bp)
     app.register_blueprint(knowledge_bp)
@@ -183,6 +184,7 @@ def create_app():
     app.register_blueprint(log_analysis_bp)
     app.register_blueprint(agent_bp)
     app.register_blueprint(agent_conn_bp)
+    app.register_blueprint(kg_bp)
 
     # 主页路由
     @app.route('/')

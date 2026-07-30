@@ -224,8 +224,13 @@ class Embedder:
         results.sort(key=lambda x: x['similarity'], reverse=True)
         return results[:top_k]
 
-    def rebuild_all(self, db_type=None):
-        """重建所有知识库文件的向量索引"""
+    def rebuild_all(self, db_type=None, extract_kg=True):
+        """重建所有知识库文件的向量索引
+
+        Args:
+            db_type: 指定数据库类型，None 则重建所有
+            extract_kg: 是否同时提取知识图谱实体（默认 True）
+        """
         from db.database import get_all_knowledge_files, save_embeddings, update_knowledge_content
         from utils import extract_content
 
@@ -257,4 +262,144 @@ class Embedder:
             save_embeddings(f['id'], embeddings)
             count += 1
 
+            # 提取知识图谱实体
+            if extract_kg:
+                try:
+                    self._extract_knowledge_graph(f['id'], f['db_type'], content, chunks, embeddings)
+                except Exception as e:
+                    print(f"[RAG] 知识图谱提取失败 [{f['filename']}]: {e}")
+
         return count
+
+    def _extract_knowledge_graph(self, file_id, db_type, content, chunks, embeddings):
+        """从文件内容中提取知识图谱实体和关系"""
+        from kg.rules import extract_all_entities, infer_relationships
+        from db.kg_database import (
+            save_entity, save_relationship, link_chunk_entity,
+            save_entities_batch, save_relationships_batch, link_chunks_entities_batch,
+            clear_entities_by_file
+        )
+
+        # 清除该文件旧的知识图谱数据
+        clear_entities_by_file(file_id)
+
+        # 1. 从完整文本提取实体（用于推断跨 chunk 关系）
+        all_text_entities = extract_all_entities(content, db_type)
+
+        # 保存全局实体
+        global_entity_map = {}  # (type, normalized_name) -> entity_id
+        for entity in all_text_entities:
+            entity_id = save_entity(
+                entity_type=entity['entity_type'],
+                name=entity['name'],
+                normalized_name=entity.get('normalized_name', entity['name'].lower().strip()),
+                aliases=entity.get('aliases', []),
+                description=entity.get('description', ''),
+                properties=entity.get('properties', {}),
+                source_file_id=file_id,
+                confidence=entity.get('confidence', 1.0),
+                extract_method=entity.get('extract_method', 'rule')
+            )
+            key = (entity['entity_type'], entity.get('normalized_name', entity['name'].lower().strip()))
+            global_entity_map[key] = entity_id
+
+        # 2. 从每个 chunk 提取实体并建立关联
+        chunk_entity_links = []
+        for i, (chunk_idx, chunk_text, emb_bytes) in enumerate(embeddings):
+            # 获取 chunk 的数据库 ID
+            from db.database import get_db
+            conn = get_db()
+            row = conn.execute(
+                "SELECT id FROM embeddings WHERE file_id=? AND chunk_index=?",
+                (file_id, chunk_idx)
+            ).fetchone()
+            if not row:
+                continue
+            chunk_db_id = row['id']
+
+            # 从 chunk 文本提取实体
+            chunk_entities = extract_all_entities(chunk_text, db_type)
+
+            for entity in chunk_entities:
+                key = (entity['entity_type'], entity.get('normalized_name', entity['name'].lower().strip()))
+                if key in global_entity_map:
+                    entity_id = global_entity_map[key]
+                else:
+                    # 新实体，保存到数据库
+                    entity_id = save_entity(
+                        entity_type=entity['entity_type'],
+                        name=entity['name'],
+                        normalized_name=entity.get('normalized_name', entity['name'].lower().strip()),
+                        aliases=entity.get('aliases', []),
+                        description=entity.get('description', ''),
+                        properties=entity.get('properties', {}),
+                        source_file_id=file_id,
+                        source_chunk_id=chunk_db_id,
+                        confidence=entity.get('confidence', 1.0),
+                        extract_method=entity.get('extract_method', 'rule')
+                    )
+                    global_entity_map[key] = entity_id
+
+                # 建立 chunk-实体关联
+                chunk_entity_links.append((chunk_db_id, entity_id, 1))
+
+        # 批量保存 chunk-实体关联
+        if chunk_entity_links:
+            link_chunks_entities_batch(chunk_entity_links)
+
+        # 3. 推断关系
+        relationships = infer_relationships(all_text_entities, content)
+
+        # 保存关系
+        for rel in relationships:
+            from_key = (rel['from_entity'].get('entity_type'), rel['from_entity'].get('normalized_name', rel['from_entity']['name'].lower()))
+            to_key = (rel['to_entity'].get('entity_type'), rel['to_entity'].get('normalized_name', rel['to_entity']['name'].lower()))
+
+            if from_key in global_entity_map and to_key in global_entity_map:
+                save_relationship(
+                    from_entity_id=global_entity_map[from_key],
+                    to_entity_id=global_entity_map[to_key],
+                    relation_type=rel['relation_type'],
+                    confidence=rel.get('confidence', 0.8),
+                    source_file_id=file_id,
+                    extract_method=rel.get('extract_method', 'rule')
+                )
+
+        print(f"[RAG] 知识图谱提取完成 [{file_id}]: {len(global_entity_map)} 实体, {len(relationships)} 关系")
+
+    def rebuild_single(self, file_id, db_type, filepath, extract_kg=True):
+        """重建单个文件的向量索引"""
+        from db.database import save_embeddings, update_knowledge_content
+        from utils import extract_content
+
+        model = _get_model()
+        if model is None:
+            return False
+
+        if not os.path.exists(filepath):
+            return False
+
+        # 提取内容
+        content = extract_content(filepath)
+        if not content:
+            return False
+
+        # 更新数据库中的文本内容
+        update_knowledge_content(file_id, content)
+
+        # 分块并计算嵌入
+        chunks = chunk_text(content)
+        if not chunks:
+            return False
+
+        embeddings = self.embed_chunks(chunks)
+        save_embeddings(file_id, embeddings)
+
+        # 提取知识图谱实体
+        if extract_kg:
+            try:
+                self._extract_knowledge_graph(file_id, db_type, content, chunks, embeddings)
+            except Exception as e:
+                print(f"[RAG] 知识图谱提取失败 [{filepath}]: {e}")
+
+        return True

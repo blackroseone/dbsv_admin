@@ -11,9 +11,11 @@ from .dashboard import dashboard_bp
 from .log_analysis import log_analysis_bp
 from .agent import agent_bp
 from .agent_connections import agent_conn_bp
+from .kg import kg_bp
 
 __all__ = [
     'db_types_bp', 'knowledge_bp', 'qa_bp', 'sql_tools_bp',
     'manuals_bp', 'commands_bp', 'topology_bp', 'config_bp',
-    'dashboard_bp', 'log_analysis_bp', 'agent_bp', 'agent_conn_bp'
+    'dashboard_bp', 'log_analysis_bp', 'agent_bp', 'agent_conn_bp',
+    'kg_bp'
 ]
