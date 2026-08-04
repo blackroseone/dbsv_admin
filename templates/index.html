@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>数据库运维工具</title>
+    <title>DBSV admin</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛠️</text></svg>">
     <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
     <!-- vis.js 用于拓扑图 -->
@@ -1224,6 +1224,10 @@
                     <input type="text" id="server-name" placeholder="例如: 计算节点1">
                 </div>
                 <div class="form-group">
+                    <label>SN 序列号</label>
+                    <input type="text" id="server-sn" placeholder="例如: SN123456789">
+                </div>
+                <div class="form-group">
                     <label>节点角色</label>
                     <select id="server-node-role" class="select-db-type">
                         <option value="计算节点">🔲 计算节点</option>
@@ -1292,7 +1296,7 @@
                 </div>
                 <div class="form-group">
                     <label>端口</label>
-                    <input type="text" id="instance-port" placeholder="例如: 3306" value="3306">
+                    <input type="text" id="instance-port" placeholder="例如: 1521" value="1521">
                 </div>
                 <div class="form-group">
                     <label>角色</label>
@@ -1313,6 +1317,12 @@
                             <input type="text" id="instance-memory" placeholder="例如: 8">
                         </div>
                     </div>
+                </div>
+                <div class="form-group">
+                    <label>所属租户</label>
+                    <select id="instance-tenant" class="select-db-type">
+                        <option value="">无</option>
+                    </select>
                 </div>
                 <div class="form-group">
                     <label>描述</label>
@@ -1337,6 +1347,10 @@
                 <div class="form-group">
                     <label>节点名称</label>
                     <input type="text" id="edit-server-name" placeholder="例如: 计算节点1">
+                </div>
+                <div class="form-group">
+                    <label>SN 序列号</label>
+                    <input type="text" id="edit-server-sn" placeholder="例如: SN123456789">
                 </div>
                 <div class="form-group">
                     <label>节点角色</label>

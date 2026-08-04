@@ -7,7 +7,7 @@ import os
 
 # ==================== 基础路径配置 ====================
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 KNOWLEDGE_DIR = os.path.join(DATA_DIR, 'knowledge')
 MANUALS_DIR = os.path.join(DATA_DIR, 'manuals')
@@ -16,7 +16,7 @@ COMMANDS_DIR = os.path.join(DATA_DIR, 'commands')
 # ==================== 应用配置 ====================
 
 # 版本号
-APP_VERSION = '2.4.2'
+APP_VERSION = '3.0.1'
 
 # Secret Key（生产环境应从环境变量读取）
 SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'db-tool-dev-secret-key-change-in-production')

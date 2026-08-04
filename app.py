@@ -271,20 +271,17 @@ def sync_topology_to_knowledge():
             temp_path = f.name
 
         # 存入知识库
-        add_knowledge_file('_system', '_topology.txt', temp_path, len(topology_text), topology_text, ['topology'])
+        file_id = add_knowledge_file('_system', '_topology.txt', temp_path, len(topology_text), topology_text, ['topology'])
 
         # 生成向量嵌入
         try:
-            files = get_knowledge_files('_system')
-            for f in files:
-                if f['filename'] == '_topology.txt':
-                    chunks = chunk_text(topology_text)
-                    if chunks:
-                        embedder = Embedder()
-                        embeddings = embedder.embed_chunks(chunks)
-                        from db.database import save_embeddings
-                        save_embeddings(f['id'], embeddings)
-                    break
+            if file_id:
+                chunks = chunk_text(topology_text)
+                if chunks:
+                    embedder = Embedder()
+                    embeddings = embedder.embed_chunks(chunks)
+                    from db.database import save_embeddings
+                    save_embeddings(file_id, embeddings)
         except (ImportError, RuntimeError, OSError) as e:
             logger.warning(f"[自动同步] 拓扑向量嵌入生成失败: {e}")
 

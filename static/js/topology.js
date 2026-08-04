@@ -188,7 +188,7 @@ function _renderServerCard(server) {
                     <span class="server-host">${escapeHtml(server.host || '')}</span>
                     <div class="server-actions">
                         <button class="btn-icon btn-add" onclick="event.stopPropagation(); showAddInstanceDialog('${escapeHtml(server.id)}')" title="添加实例">➕</button>
-                        <button class="btn-icon btn-edit" onclick="event.stopPropagation(); showEditServerDialog('${escapeHtml(server.id)}', '${escapeJs(server.name)}', '${escapeJs(server.host || '')}', '${escapeJs(server.datacenter || '')}', '${escapeJs(server.cluster_id || '')}', '${escapeJs(server.cluster_name || '')}', '${escapeJs(cpu)}', '${escapeJs(memory)}', '${escapeJs(server.description || '')}', '${escapeJs(server.node_role || '计算节点')}', '${escapeJs(server.hardware_type || '非信创物理机')}')" title="编辑节点">✏️</button>
+                        <button class="btn-icon btn-edit" onclick="event.stopPropagation(); showEditServerDialog('${escapeHtml(server.id)}', '${escapeJs(server.name)}', '${escapeJs(server.host || '')}', '${escapeJs(server.datacenter || '')}', '${escapeJs(server.cluster_id || '')}', '${escapeJs(server.cluster_name || '')}', '${escapeJs(cpu)}', '${escapeJs(memory)}', '${escapeJs(server.description || '')}', '${escapeJs(server.node_role || '计算节点')}', '${escapeJs(server.hardware_type || '非信创物理机')}', '${escapeJs(server.sn || '')}')" title="编辑节点">✏️</button>
                         <button class="btn-icon btn-delete" onclick="event.stopPropagation(); deleteServer('${escapeHtml(server.id)}')" title="删除节点">🗑️</button>
                     </div>
                 </div>
@@ -198,7 +198,7 @@ function _renderServerCard(server) {
             </div>
             <div class="server-specs">
                 ${cpu ? `<span class="spec-tag">⚡ ${escapeHtml(cpu)}C</span>` : ''}
-                ${memory ? `<span class="spec-tag">💾 ${escapeHtml(memory)}G</span>` : ''}
+                ${memory ? `<span class="spec-tag">🧠 ${escapeHtml(memory)}G</span>` : ''}
             </div>
             <div class="server-instances">
     `;
@@ -451,6 +451,10 @@ async function showServerDetail(serverId) {
             <div class="detail-item">
                 <div class="detail-label">节点名称</div>
                 <div class="detail-value">${escapeHtml(server.name)}</div>
+            </div>
+            <div class="detail-item">
+                <div class="detail-label">SN 序列号</div>
+                <div class="detail-value">${escapeHtml(server.sn || '-')}</div>
             </div>
             <div class="detail-item">
                 <div class="detail-label">IP 地址</div>
@@ -848,6 +852,7 @@ async function addCluster() {
 // 添加节点
 async function addServer() {
     const name = document.getElementById('server-name').value.trim();
+    const sn = document.getElementById('server-sn').value.trim();
     const host = document.getElementById('server-host').value.trim();
     const datacenter = document.getElementById('server-datacenter').value.trim();
     const cluster = document.getElementById('server-cluster').value.trim();
@@ -868,6 +873,7 @@ async function addServer() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 name: name,
+                sn: sn,
                 host: host,
                 datacenter: datacenter,
                 cluster_id: cluster,
@@ -884,6 +890,7 @@ async function addServer() {
             closeModal('modal-add-server');
             selectCluster(currentClusterId);
             document.getElementById('server-name').value = '';
+            document.getElementById('server-sn').value = '';
             document.getElementById('server-host').value = '';
             document.getElementById('server-datacenter').value = '';
             document.getElementById('server-cluster').value = '';
@@ -901,9 +908,10 @@ async function addServer() {
 // 编辑节点
 let currentEditServerId = null;
 
-async function showEditServerDialog(serverId, serverName, serverHost, serverDatacenter, serverClusterId, serverClusterName, serverCpu, serverMemory, serverDescription, nodeRole, hardwareType) {
+async function showEditServerDialog(serverId, serverName, serverHost, serverDatacenter, serverClusterId, serverClusterName, serverCpu, serverMemory, serverDescription, nodeRole, hardwareType, serverSn) {
     currentEditServerId = serverId;
     document.getElementById('edit-server-name').value = serverName || '';
+    document.getElementById('edit-server-sn').value = serverSn || '';
     document.getElementById('edit-server-host').value = serverHost || '';
     document.getElementById('edit-server-datacenter').value = serverDatacenter || '';
 
@@ -925,6 +933,7 @@ async function showEditServerDialog(serverId, serverName, serverHost, serverData
 
 async function updateServer() {
     const name = document.getElementById('edit-server-name').value.trim();
+    const sn = document.getElementById('edit-server-sn').value.trim();
     const host = document.getElementById('edit-server-host').value.trim();
     const datacenter = document.getElementById('edit-server-datacenter').value.trim();
     const cluster = document.getElementById('edit-server-cluster').value.trim();
@@ -945,6 +954,7 @@ async function updateServer() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 name: name,
+                sn: sn,
                 host: host,
                 datacenter: datacenter,
                 cluster_name: cluster,
@@ -1069,6 +1079,7 @@ async function addInstance() {
     const role = document.getElementById('instance-role').value;
     const cpu = document.getElementById('instance-cpu').value.trim();
     const memory = document.getElementById('instance-memory').value.trim();
+    const tenantId = document.getElementById('instance-tenant').value;
     const description = document.getElementById('instance-description').value.trim();
 
     if (!name || !port) {
@@ -1086,6 +1097,7 @@ async function addInstance() {
                 role: role,
                 cpu: cpu,
                 memory: memory,
+                tenant_id: tenantId,
                 description: description
             })
         });
@@ -1095,7 +1107,7 @@ async function addInstance() {
             closeModal('modal-add-instance');
             selectCluster(currentClusterId);
             document.getElementById('instance-name').value = '';
-            document.getElementById('instance-port').value = '3306';
+            document.getElementById('instance-port').value = '1521';
             document.getElementById('instance-role').value = 'slave';
             document.getElementById('instance-cpu').value = '';
             document.getElementById('instance-memory').value = '';
@@ -1114,10 +1126,12 @@ let currentEditInstanceId = null;
 function showAddInstanceDialog(serverId) {
     TopologyModule.currentServerId = serverId;
     document.getElementById('instance-name').value = '';
-    document.getElementById('instance-port').value = '3306';
+    document.getElementById('instance-port').value = '1521';
     document.getElementById('instance-cpu').value = '';
     document.getElementById('instance-memory').value = '';
     document.getElementById('instance-description').value = '';
+    // 加载租户选择下拉框
+    loadTenantSelectForInstanceAdd();
     document.getElementById('modal-add-instance').style.display = 'flex';
 }
 
@@ -1166,6 +1180,31 @@ async function loadTenantSelectForInstance(instanceId) {
                     select.value = detail.tenants[0].id;
                 }
             }
+        }
+    } catch (error) {
+        console.error('加载租户列表失败:', error);
+    }
+}
+
+// 加载添加实例时的租户选择下拉框
+async function loadTenantSelectForInstanceAdd() {
+    try {
+        const response = await fetch('/api/topology/clusters');
+        const data = await response.json();
+        const cluster = data.clusters.find(c => c.id === currentClusterId);
+
+        const select = document.getElementById('instance-tenant');
+        if (!select) return;
+
+        select.innerHTML = '<option value="">无</option>';
+
+        if (cluster && cluster.tenants) {
+            cluster.tenants.forEach(tenant => {
+                const option = document.createElement('option');
+                option.value = tenant.id;
+                option.textContent = tenant.name;
+                select.appendChild(option);
+            });
         }
     } catch (error) {
         console.error('加载租户列表失败:', error);

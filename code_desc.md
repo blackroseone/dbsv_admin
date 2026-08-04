@@ -225,7 +225,7 @@ db-tool/
 | `add_cluster(cluster_id, name, db_type, environment, description)` | ... | 无 | 添加集群（自动关联 resource_pool_id） |
 | `update_cluster(cluster_id, **kwargs)` | `str, dict` | 无 | 更新集群信息 |
 | `delete_cluster(cluster_id)` | `str` | 无 | 删除集群 |
-| `add_server(server_id, cluster_id, name, host, description, datacenter='', cpu='', memory='')` | ... | 无 | 添加物理机 |
+| `add_server(server_id, resource_pool_id, name, host, description, datacenter='', node_role='计算节点', hardware_type='非信创物理机', cpu='', memory='', cluster_id='', sn='')` | ... | 无 | 添加物理机 |
 | `delete_server(server_id)` | `str` | 无 | 删除物理机 |
 | `add_instance(instance_id, server_id, name, port, cpu, memory, description)` | ... | 无 | 添加实例 |
 | `delete_instance(instance_id)` | `str` | 无 | 删除实例 |
@@ -994,7 +994,7 @@ data: [DONE]
 | `showAddServerDialog()` | 显示添加物理机对话框 |
 | `addServer()` | 添加物理机 |
 | `deleteServer(serverId)` | 删除物理机 |
-| `showEditServerDialog(...)` | 显示编辑物理机对话框 |
+| `showEditServerDialog(...)` | 显示编辑物理机对话框（支持 SN 序列号） |
 | `updateServer()` | 更新物理机（支持 cluster_name 自动创建/查找集群） |
 | `showAddInstanceDialog()` | 显示添加实例对话框 |
 | `addInstance()` | 添加实例 |

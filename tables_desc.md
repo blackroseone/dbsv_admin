@@ -202,6 +202,7 @@ CREATE TABLE IF NOT EXISTS servers (
     resource_pool_id TEXT NOT NULL,
     cluster_id TEXT DEFAULT '',
     name TEXT NOT NULL,
+    sn TEXT DEFAULT '',
     host TEXT,
     datacenter TEXT DEFAULT '',
     node_role TEXT DEFAULT '计算节点',
@@ -219,6 +220,7 @@ CREATE TABLE IF NOT EXISTS servers (
 | resource_pool_id | TEXT | 所属资源池ID（外键） |
 | cluster_id | TEXT | 所属集群ID（逻辑关联，非外键） |
 | name | TEXT | 节点名称 |
+| sn | TEXT | SN序列号（2026-08-03添加） |
 | host | TEXT | IP地址 |
 | datacenter | TEXT | 所属机房 |
 | node_role | TEXT | 节点角色（计算节点/存储节点/监控节点） |
@@ -231,6 +233,7 @@ CREATE TABLE IF NOT EXISTS servers (
 - `cluster_id` 是逻辑关联，不是外键，存储的是集群名称或ID
 - `cpu` 和 `memory` 字段在2026-07-07添加
 - `node_role` 和 `hardware_type` 字段在2026-07-07添加
+- `sn` 字段在2026-08-03添加
 
 ---
 

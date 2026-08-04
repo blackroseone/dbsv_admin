@@ -143,7 +143,8 @@ def create_server(resource_pool_id):
         data.get('hardware_type', '非信创物理机'),
         data.get('cpu', ''),
         data.get('memory', ''),
-        data.get('cluster_id', '')
+        data.get('cluster_id', ''),
+        data.get('sn', '')
     )
     add_operation_log('集群拓扑', '添加物理机', data.get('name', ''))
     return jsonify({
@@ -152,6 +153,7 @@ def create_server(resource_pool_id):
             'id': server_id,
             'name': data.get('name', ''),
             'host': data.get('host', ''),
+            'sn': data.get('sn', ''),
             'datacenter': data.get('datacenter', ''),
             'cluster_id': data.get('cluster_id', ''),
             'node_role': data.get('node_role', '计算节点'),
@@ -202,8 +204,8 @@ def update_server_info(server_id):
             cluster_id = new_cluster_id
 
     conn.execute(
-        "UPDATE servers SET name=?, host=?, datacenter=?, cluster_id=?, node_role=?, hardware_type=?, cpu=?, memory=?, description=? WHERE id=?",
-        (data.get('name', ''), data.get('host', ''), data.get('datacenter', ''), cluster_id, data.get('node_role', '计算节点'), data.get('hardware_type', '非信创物理机'), data.get('cpu', ''), data.get('memory', ''), data.get('description', ''), server_id)
+        "UPDATE servers SET name=?, host=?, datacenter=?, cluster_id=?, node_role=?, hardware_type=?, cpu=?, memory=?, description=?, sn=? WHERE id=?",
+        (data.get('name', ''), data.get('host', ''), data.get('datacenter', ''), cluster_id, data.get('node_role', '计算节点'), data.get('hardware_type', '非信创物理机'), data.get('cpu', ''), data.get('memory', ''), data.get('description', ''), data.get('sn', ''), server_id)
     )
     conn.commit()
     add_operation_log('集群拓扑', '更新节点', data.get('name', server_id))
@@ -322,7 +324,7 @@ def create_tenant(cluster_id):
     tenant_id = str(uuid.uuid4())
     add_tenant(
         tenant_id,
-        cluster_id,
+        cluster_id,  # 这里 cluster_id 实际上是 resource_pool_id
         data.get('name', ''),
         data.get('topology_type', 'master-slave'),
         data.get('spec', 'small-8c32g'),

@@ -7,7 +7,7 @@ import sqlite3
 import threading
 import json
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 DB_PATH = os.environ.get('DB_TOOL_TEST_DB') or os.path.join(DATA_DIR, 'db_tool.db')
 
@@ -155,6 +155,7 @@ def init_db():
             resource_pool_id TEXT NOT NULL,
             cluster_id TEXT DEFAULT '',
             name TEXT NOT NULL,
+            sn TEXT DEFAULT '',
             host TEXT,
             datacenter TEXT DEFAULT '',
             node_role TEXT DEFAULT '计算节点',
@@ -185,7 +186,6 @@ def init_db():
         CREATE TABLE IF NOT EXISTS tenants (
             id TEXT PRIMARY KEY,
             resource_pool_id TEXT NOT NULL,
-            cluster_id TEXT DEFAULT '',
             name TEXT NOT NULL,
             topology_type TEXT DEFAULT 'master-slave',
             spec TEXT DEFAULT 'small-8c32g',
@@ -217,7 +217,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_qa_messages_conversation ON qa_messages(conversation_id);
         CREATE INDEX IF NOT EXISTS idx_servers_cluster ON servers(cluster_id);
         CREATE INDEX IF NOT EXISTS idx_instances_server ON instances(server_id);
-        CREATE INDEX IF NOT EXISTS idx_tenants_cluster ON tenants(cluster_id);
+        CREATE INDEX IF NOT EXISTS idx_tenants_resource_pool ON tenants(resource_pool_id);
         CREATE INDEX IF NOT EXISTS idx_embeddings_file ON embeddings(file_id);
 
         -- ==================== Agent模块数据表 ====================
@@ -478,6 +478,13 @@ def init_db():
         conn.execute("ALTER TABLE tenants ADD COLUMN spec TEXT DEFAULT 'small-8c32g'")
         conn.commit()
 
+    # 数据库迁移：添加 sn 字段到 servers 表
+    try:
+        conn.execute("SELECT sn FROM servers LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE servers ADD COLUMN sn TEXT DEFAULT ''")
+        conn.commit()
+
     # 数据库迁移：将 clusters 表重命名为 resource_pools 表
     try:
         conn.execute("SELECT 1 FROM resource_pools LIMIT 1")
@@ -503,15 +510,18 @@ def init_db():
         ''')
         conn.commit()
 
-    # 数据库迁移：为 tenants 表添加 resource_pool_id 字段
+    # 数据库迁移：为 tenants 表添加 resource_pool_id 字段（如果表结构还是旧的）
     try:
         conn.execute("SELECT resource_pool_id FROM tenants LIMIT 1")
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE tenants ADD COLUMN resource_pool_id TEXT")
-        # 将现有的 cluster_id 迁移到 resource_pool_id
-        conn.execute('''
-            UPDATE tenants SET resource_pool_id = cluster_id
-        ''')
+        # 尝试将现有的 cluster_id 迁移到 resource_pool_id（仅旧表结构）
+        try:
+            conn.execute('''
+                UPDATE tenants SET resource_pool_id = cluster_id
+            ''')
+        except sqlite3.OperationalError:
+            pass  # cluster_id 不存在，跳过
         conn.commit()
 
     # 数据库迁移：为 log_analysis_tasks 表添加 db_type 字段
@@ -1025,7 +1035,7 @@ def delete_resource_pool(pool_id):
 def _fetch_servers_for_cluster(conn, resource_pool_id):
     """获取指定资源池下的所有物理机及其实例"""
     servers_rows = conn.execute(
-        "SELECT id, name, host, datacenter, cluster_id, node_role, hardware_type, cpu, memory, description "
+        "SELECT id, name, sn, host, datacenter, cluster_id, node_role, hardware_type, cpu, memory, description "
         "FROM servers WHERE resource_pool_id=?",
         (resource_pool_id,)
     ).fetchall()
@@ -1259,13 +1269,13 @@ def delete_cluster(cluster_id):
     conn.commit()
 
 
-def add_server(server_id, resource_pool_id, name, host, description, datacenter='', node_role='计算节点', hardware_type='非信创物理机', cpu='', memory='', cluster_id=''):
+def add_server(server_id, resource_pool_id, name, host, description, datacenter='', node_role='计算节点', hardware_type='非信创物理机', cpu='', memory='', cluster_id='', sn=''):
     """添加物理机"""
     conn = get_db()
     conn.execute(
-        "INSERT INTO servers (id, resource_pool_id, cluster_id, name, host, datacenter, node_role, hardware_type, cpu, memory, description) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (server_id, resource_pool_id, cluster_id, name, host, datacenter, node_role, hardware_type, cpu, memory, description)
+        "INSERT INTO servers (id, resource_pool_id, cluster_id, name, sn, host, datacenter, node_role, hardware_type, cpu, memory, description) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (server_id, resource_pool_id, cluster_id, name, sn, host, datacenter, node_role, hardware_type, cpu, memory, description)
     )
     conn.commit()
 
@@ -1330,13 +1340,13 @@ def get_instance_detail(instance_id):
     return detail
 
 
-def add_tenant(tenant_id, cluster_id, name, topology_type, spec, description):
+def add_tenant(tenant_id, resource_pool_id, name, topology_type, spec, description):
     """添加租户"""
     conn = get_db()
     conn.execute(
-        "INSERT INTO tenants (id, cluster_id, name, topology_type, spec, description) "
+        "INSERT INTO tenants (id, resource_pool_id, name, topology_type, spec, description) "
         "VALUES (?, ?, ?, ?, ?, ?)",
-        (tenant_id, cluster_id, name, topology_type, spec, description)
+        (tenant_id, resource_pool_id, name, topology_type, spec, description)
     )
     conn.commit()
 
