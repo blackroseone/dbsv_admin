@@ -2,7 +2,7 @@
 
 > 用途：记录所有表结构，开发和修改函数前先阅读此文档，确保操作与表结构吻合
 > 版本：v3.0.1
-> 更新时间：2026-07-30
+> 更新时间：2026-08-05
 
 ---
 
@@ -17,9 +17,9 @@
 | `favorites` | 文件收藏 | db_type, filename |
 | `resource_pools` | 资源池信息 | id, name, db_type, environment, description |
 | `clusters` | 集群信息（属于某个资源池） | id, resource_pool_id, name, description |
-| `servers` | 物理机/节点 | id, resource_pool_id, cluster_id, name, host, datacenter, node_role, hardware_type, cpu, memory, description |
+| `servers` | 物理机/节点 | id, resource_pool_id, cluster_id, name, sn, host, datacenter, node_role, hardware_type, cpu, memory, description |
 | `instances` | 实例 | id, server_id, tenant_id, name, port, cpu, memory, role, tenant_role, description |
-| `tenants` | 租户（实例集群） | id, resource_pool_id, cluster_id, name, topology_type, spec, description |
+| `tenants` | 租户（实例集群） | id, resource_pool_id, name, topology_type, spec, description |
 | `instance_relations` | 实例间关系 | from_instance_id, to_instance_id, relation_type |
 | `embeddings` | 文本块向量嵌入（**RAG + 知识图谱关联**） | file_id, chunk_index, chunk_text, embedding |
 | `kg_entities` | **知识图谱实体表（44,467条）** | entity_type, name, normalized_name, confidence, source_file_id |
@@ -223,7 +223,7 @@ CREATE TABLE IF NOT EXISTS servers (
 | sn | TEXT | SN序列号（2026-08-03添加） |
 | host | TEXT | IP地址 |
 | datacenter | TEXT | 所属机房 |
-| node_role | TEXT | 节点角色（计算节点/存储节点/监控节点） |
+| node_role | TEXT | 节点角色（计算节点/存储节点/管理节点） |
 | hardware_type | TEXT | 硬件类型 |
 | cpu | TEXT | CPU核数 |
 | memory | TEXT | 内存大小 |
@@ -277,7 +277,6 @@ CREATE TABLE IF NOT EXISTS instances (
 CREATE TABLE IF NOT EXISTS tenants (
     id TEXT PRIMARY KEY,
     resource_pool_id TEXT NOT NULL,
-    cluster_id TEXT DEFAULT '',
     name TEXT NOT NULL,
     topology_type TEXT DEFAULT 'master-slave',
     spec TEXT DEFAULT 'small-8c32g',
@@ -290,9 +289,8 @@ CREATE TABLE IF NOT EXISTS tenants (
 |------|------|------|
 | id | TEXT | 主键，租户ID |
 | resource_pool_id | TEXT | 所属资源池ID（外键） |
-| cluster_id | TEXT | 所属集群ID |
 | name | TEXT | 租户名称 |
-| topology_type | TEXT | 拓扑类型 |
+| topology_type | TEXT | 拓扑类型（master-slave, single, mha, paxos/raft, rac） |
 | spec | TEXT | 规格 |
 | description | TEXT | 描述 |
 

@@ -7,7 +7,8 @@ import sqlite3
 import threading
 import json
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 使用项目根目录作为BASE_DIR，而不是db目录
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 DB_PATH = os.environ.get('DB_TOOL_TEST_DB') or os.path.join(DATA_DIR, 'db_tool.db')
 

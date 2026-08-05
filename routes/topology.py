@@ -11,6 +11,7 @@ from db.database import (
     add_instance_relation, remove_instance_relation,
     add_operation_log
 )
+from utils.topology_import import import_servers_from_excel, import_instances_from_excel
 
 topology_bp = Blueprint('topology', __name__)
 
@@ -605,3 +606,133 @@ def export_topology():
     """导出拓扑配置"""
     topology = get_topology_data()
     return jsonify(topology)
+
+
+# ==================== 批量导入 API ====================
+
+@topology_bp.route('/api/topology/import/servers', methods=['POST'])
+def import_servers():
+    """批量导入服务器清单"""
+    if 'file' not in request.files:
+        return jsonify({'error': '请上传Excel文件'}), 400
+
+    file = request.files['file']
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        return jsonify({'error': '请上传Excel文件(.xlsx或.xls)'}), 400
+
+    # 保存临时文件
+    import tempfile
+    import os
+    from db import database as db_module
+
+    temp_path = os.path.join(tempfile.gettempdir(), file.filename)
+    file.save(temp_path)
+
+    try:
+        success_count, errors = import_servers_from_excel(temp_path, db_module)
+
+        if errors:
+            return jsonify({
+                'message': f'导入完成，成功 {success_count} 条',
+                'success_count': success_count,
+                'errors': errors
+            }), 207  # Multi-Status
+
+        add_operation_log('集群拓扑', '批量导入服务器', f'成功导入 {success_count} 条服务器数据')
+        return jsonify({
+            'message': f'成功导入 {success_count} 条服务器数据',
+            'success_count': success_count
+        })
+
+    except Exception as e:
+        return jsonify({'error': f'导入失败: {str(e)}'}), 500
+    finally:
+        # 清理临时文件
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+@topology_bp.route('/api/topology/import/instances', methods=['POST'])
+def import_instances():
+    """批量导入实例清单"""
+    if 'file' not in request.files:
+        return jsonify({'error': '请上传Excel文件'}), 400
+
+    file = request.files['file']
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        return jsonify({'error': '请上传Excel文件(.xlsx或.xls)'}), 400
+
+    # 保存临时文件
+    import tempfile
+    import os
+    from db import database as db_module
+
+    temp_path = os.path.join(tempfile.gettempdir(), file.filename)
+    file.save(temp_path)
+
+    try:
+        success_count, errors = import_instances_from_excel(temp_path, db_module)
+
+        if errors:
+            return jsonify({
+                'message': f'导入完成，成功 {success_count} 条',
+                'success_count': success_count,
+                'errors': errors
+            }), 207  # Multi-Status
+
+        add_operation_log('集群拓扑', '批量导入实例', f'成功导入 {success_count} 条实例数据')
+        return jsonify({
+            'message': f'成功导入 {success_count} 条实例数据',
+            'success_count': success_count
+        })
+
+    except Exception as e:
+        return jsonify({'error': f'导入失败: {str(e)}'}), 500
+    finally:
+        # 清理临时文件
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+@topology_bp.route('/api/topology/import', methods=['POST'])
+def import_topology():
+    """批量导入完整拓扑（服务器+实例）"""
+    if 'file' not in request.files:
+        return jsonify({'error': '请上传Excel文件'}), 400
+
+    file = request.files['file']
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        return jsonify({'error': '请上传Excel文件(.xlsx或.xls)'}), 400
+
+    # 保存临时文件
+    import tempfile
+    import os
+    from db import database as db_module
+
+    temp_path = os.path.join(tempfile.gettempdir(), file.filename)
+    file.save(temp_path)
+
+    try:
+        # 先导入服务器
+        server_success, server_errors = import_servers_from_excel(temp_path, db_module)
+
+        # 再导入实例
+        instance_success, instance_errors = import_instances_from_excel(temp_path, db_module)
+
+        total_success = server_success + instance_success
+        all_errors = server_errors + instance_errors
+
+        add_operation_log('集群拓扑', '批量导入拓扑',
+            f'服务器: {server_success} 条, 实例: {instance_success} 条')
+
+        return jsonify({
+            'message': '导入完成',
+            'servers': {'success_count': server_success, 'errors': server_errors},
+            'instances': {'success_count': instance_success, 'errors': instance_errors}
+        })
+
+    except Exception as e:
+        return jsonify({'error': f'导入失败: {str(e)}'}), 500
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)

@@ -9,6 +9,44 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v3.0.1 (2026-08-05)
+
+### 🗂️ 集群拓扑批量导入功能
+- **Excel 导入模板**：新增 `cluster_topology_import_template_v2.xlsx`，支持两个工作表
+  - 服务器清单：资源池 + 集群 + 服务器（按 IP 去重，ID 自动生成）
+  - 实例清单：租户 + 实例（通过 IP 关联服务器，自动填入 server_id 和 resource_pool_id）
+- **下拉框数据验证**：模板中关键字段支持下拉选择
+  - 数据库类型：Oracle, PostgreSQL, MongoDB, GoldenDB, OceanBase, GaussDB, DM, TDSQL, MySQL
+  - 环境：production, dev-test, uat-prod
+  - 节点角色：计算节点, 存储节点, 管理节点
+  - 硬件类型：非信创物理机, 非信创虚拟机, 海光物理机, 海光虚拟机, 鲲鹏物理机, 鲲鹏虚拟机
+  - 租户拓扑类型：master-slave, single, mha, paxos/raft, rac
+  - 租户规格：macro-1c4g, macro-2c8g, macro-4c16g, small-8c16g, small-16c64g, medium-32C128G, large-64c256g, exlu-128c512g
+  - 实例角色：master, slave, single
+- **示例数据自动跳过**：识别斜体字体或灰色背景的行作为示例数据，导入时自动忽略
+- **导入 API**：新增 3 个批量导入接口
+  - `POST /api/topology/import/servers` — 导入服务器清单
+  - `POST /api/topology/import/instances` — 导入实例清单
+  - `POST /api/topology/import` — 一键导入完整拓扑
+
+### 🔧 前端修复
+- **添加资源池按钮修复**：将 `showAddResourcePoolDialog()` 改为 `showAddClusterDialog()`，解决按钮无响应问题
+- **节点角色统一**："监控节点" 统一改为 "管理节点"
+  - 前端下拉框选项更新（templates/index.html）
+  - 拓扑图渲染逻辑更新（static/js/topology.js）
+  - 数据库数据迁移：更新 9 条服务器记录
+
+### 🔧 数据库修复
+- **数据库路径修复**：`db/database.py` 的 `BASE_DIR` 从 `db/` 目录改为项目根目录
+  - 修复前：`D:\claude\dbsv_admin\db\data\db_tool.db`
+  - 修复后：`D:\claude\dbsv_admin\data\db_tool.db`
+  - 解决向量索引显示为 0 的问题
+
+### 🔧 代码结构优化
+- **utils 目录重构**：将 `utils.py` 改为 `utils/` 包，新增 `utils/topology_import.py` 模块
+
+---
+
 ## v3.0.0 (2026-07-29)
 
 ### 🕸️ 知识图谱模块（重大更新）

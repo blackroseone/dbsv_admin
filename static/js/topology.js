@@ -10,7 +10,7 @@ const TopologyModule = {
 const nodeTypeConfig = {
     '计算节点': { icon: '🔲', color: '#2196F3', borderColor: '#1976D2' },
     '存储节点': { icon: '💾', color: '#4CAF50', borderColor: '#388E3C' },
-    '监控节点': { icon: '📊', color: '#FF9800', borderColor: '#F57C00' },
+    '管理节点': { icon: '📊', color: '#FF9800', borderColor: '#F57C00' },
     '虚拟机': { icon: '🔷', color: '#9C27B0', borderColor: '#7B1FA2' },
     '海光物理机': { icon: '🔶', color: '#00BCD4', borderColor: '#0097A7' },
     '海光虚拟机': { icon: '🔷', color: '#00BCD4', borderColor: '#0097A7' },
@@ -256,7 +256,7 @@ function _groupServersByDatacenterAndCluster(servers) {
 
         if (nodeRole === '存储节点') {
             datacenterGroups[dc][clusterName].storage.push(server);
-        } else if (nodeRole === '监控节点') {
+        } else if (nodeRole === '管理节点') {
             datacenterGroups[dc][clusterName].monitor.push(server);
         } else if (nodeRole === '计算节点') {
             datacenterGroups[dc][clusterName].compute.push(server);
@@ -286,7 +286,7 @@ function _renderDatacenterSection(dcName, clusterGroups) {
 
         // 按角色顺序渲染：监控 → 计算 → 存储 → 其他
         const roleOrder = [
-            { key: 'monitor', label: '📊 监控节点' },
+            { key: 'monitor', label: '📊 管理节点' },
             { key: 'compute', label: '🔲 计算节点' },
             { key: 'storage', label: '💾 存储节点' },
             { key: 'other', label: '🔧 其他节点' }
@@ -590,7 +590,7 @@ function getNodeColor(role) {
 
 let currentEditClusterId = null;
 
-function showAddClusterDialog() {
+function showAddResourcePoolDialog() {
     document.getElementById('modal-add-cluster').style.display = 'flex';
 }
 

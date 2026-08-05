@@ -1,6 +1,6 @@
 # DB Tool 代码结构文档
 
-> 生成时间: 2026-07-30
+> 生成时间: 2026-08-05
 > 版本: v3.0.1
 > 用途: 快速了解项目代码结构和函数功能
 
@@ -27,6 +27,10 @@ db-tool/
 │   ├── database.py         # SQLite 连接管理、表初始化、全部 CRUD
 │   └── migration.py        # JSON → SQLite 自动迁移（首次启动执行）
 │
+├── utils/                  # 工具函数包
+│   ├── __init__.py         # 通用工具函数（文件解析、LLM 调用）
+│   └── topology_import.py  # 集群拓扑批量导入模块（Excel 解析、数据导入）
+│
 ├── routes/                 # API 路由（Blueprint）
 │   ├── __init__.py         # Blueprint 统一导出
 │   ├── db_types.py         # 数据库类型管理
@@ -36,7 +40,7 @@ db-tool/
 │   ├── log_analysis.py     # 日志分析（多轮 LLM 分析 + RAG 增强）
 │   ├── manuals.py           # 运维手册上传下载
 │   ├── commands.py          # 命令速查（按数据库类型）
-│   ├── topology.py          # 集群拓扑 CRUD
+│   ├── topology.py          # 集群拓扑 CRUD + 批量导入 API
 │   ├── config.py            # LLM API 配置 + 导入导出
 │   ├── dashboard.py         # 仪表盘统计 + 日志 + 快捷键
 │   ├── agent.py             # 智能运维Agent核心引擎（ReAct循环 + SSE流式）
@@ -529,6 +533,9 @@ data: [DONE]
 | `/api/topology/instances/relations` | POST | `create_instance_relation()` | 添加实例关系 |
 | `/api/topology/instances/relations` | DELETE | `delete_instance_relation()` | 删除实例关系 |
 | `/api/topology/export` | GET | `export_topology()` | 导出拓扑配置 |
+| `/api/topology/import/servers` | POST | `import_servers()` | 批量导入服务器清单 |
+| `/api/topology/import/instances` | POST | `import_instances()` | 批量导入实例清单 |
+| `/api/topology/import` | POST | `import_topology()` | 一键导入完整拓扑 |
 
 ---
 
@@ -987,7 +994,7 @@ data: [DONE]
 | `renderServerTable(servers)` | 渲染服务器列表表格 |
 | `updateStatsFilterOptions(data)` | 更新筛选下拉框选项 |
 | `resetStatsFilter()` | 重置筛选条件 |
-| `showAddClusterDialog()` | 显示添加集群对话框 |
+| `showAddResourcePoolDialog()` | 显示添加资源池对话框 |
 | `addCluster()` | 添加集群 |
 | `deleteCluster(clusterId)` | 删除集群 |
 | `editClusterName(clusterId, currentName)` | 编辑集群名称 |

@@ -45,6 +45,10 @@ db-tool/
         kg_database.py      # 知识图谱 CRUD（实体、关系、chunk关联）
         migration.py        # JSON → SQLite 自动迁移（首次启动执行）
 
+    utils/                  # 工具函数包
+        __init__.py         # 通用工具函数（文件解析、LLM 调用）
+        topology_import.py  # 集群拓扑批量导入模块（Excel 解析、数据导入）
+
     routes/                 # API 路由（Blueprint）
         __init__.py         # Blueprint 统一导出
         knowledge.py        # 知识库文件管理 + 收藏夹
@@ -59,6 +63,7 @@ db-tool/
         dashboard.py         # 仪表盘统计 + 日志 + 快捷键
         agent.py             # 智能运维Agent核心引擎（ReAct循环 + SSE流式）
         agent_connections.py # SSH/数据库连接管理
+        kg.py                # 知识图谱 API（实体搜索、邻居查询、路径查找、子图提取）
 
     agent/                  # 智能运维Agent模块
         __init__.py
@@ -104,6 +109,9 @@ db-tool/
         commands/            # 命令库 JSON 文件
         models/              # sentence-transformers 模型缓存
         json_backup/         # 迁移前的 JSON 文件备份
+
+    create_import_template.py  # Excel 导入模板生成脚本
+    cluster_topology_import_template_v2.xlsx  # 集群拓扑批量导入模板
 ```
 
 ## 数据库表结构
@@ -177,16 +185,19 @@ db-tool/
 - 跨库搜索命令
 
 ### 6. 集群拓扑（/api/topology/*）
-- 集群管理（增删改查）
+- 资源池管理（增删改查）
+- 集群管理（属于某个资源池）
 - 节点管理（支持 CPU、内存、机房信息展示）
 - 实例管理（主/从/CN/DN/GTM 角色）
+- 租户管理（实例集群的逻辑分组）
 - **统计视图**：聚合展示所有集群的宏观数据（集群数、服务器数、实例数、租户数），支持按集群/数据中心/数据库类型/环境筛选
 - **拓扑视图**：HTML 渲染拓扑图，按机房层级分组展示
+- **批量导入**：支持从 Excel 文件批量导入服务器和实例数据
 - 支持单机/主从/双主/集群/分布式拓扑类型
 - **机房层级分组展示**
 - 集群名称点击重命名
 - 节点设备类型：非信创物理机/非信创虚拟机/海光物理机/海光虚拟机/鲲鹏物理机/鲲鹏虚拟机
-- 节点角色：计算节点/存储节点/监控节点
+- 节点角色：计算节点/存储节点/管理节点
 
 ### 7. API 配置（/api/config/*）
 - **多模型配置管理**：支持添加、编辑、删除多个 LLM 模型
@@ -226,7 +237,7 @@ db-tool/
 
 ## 支持的数据库类型
 
-默认：MySQL、Oracle、达梦(DM)、GoldenDB、OceanBase、TDSQL、GaussDB
+默认：MySQL、Oracle、达梦(DM)、GoldenDB、OceanBase、TDSQL、GaussDB、PostgreSQL、MongoDB
 可通过 API 自定义添加更多类型。
 
 ## RAG + 知识图谱增强工作流程
