@@ -54,6 +54,8 @@ async function loadClusters() {
                     // 计算该资源池的统计数据
                     const clusterCount = pool.cluster_count || 0;
                     const serverCount = pool.server_count || 0;
+                    const pmCount = pool.pm_count || 0;
+                    const vmCount = pool.vm_count || 0;
                     const tenantCount = pool.tenant_count || 0;
                     const instanceCount = pool.instance_count || 0;
 
@@ -61,7 +63,7 @@ async function loadClusters() {
                         <div class="cluster-item ${currentClusterId === pool.id ? 'active' : ''}"
                              onclick="selectCluster('${escapeHtml(pool.id)}')">
                             <div class="cluster-name">${dbType ? dbType.icon : ''} ${escapeHtml(pool.name)}</div>
-                            <div class="cluster-info">${envMap[pool.environment] || ''} | ${serverCount}节点 | ${clusterCount}集群 | ${instanceCount}实例 | ${tenantCount}租户</div>
+                            <div class="cluster-info">${envMap[pool.environment] || ''} | ${pmCount}物理机 ${vmCount}虚拟机 | ${clusterCount}集群 | ${instanceCount}实例 | ${tenantCount}租户</div>
                         </div>
                     `;
                 }).join('');
@@ -132,15 +134,27 @@ function _renderClusterSummary(cluster) {
     // 渲染集群概览信息
     let totalCpu = 0;
     let totalMem = 0;
+    let pmCount = 0;
+    let vmCount = 0;
     cluster.servers.forEach(s => {
         if (s.cpu) totalCpu += parseInt(s.cpu) || 0;
         if (s.memory) totalMem += parseInt(s.memory) || 0;
+        const hwType = s.hardware_type || '';
+        if (hwType.includes('虚拟机')) {
+            vmCount++;
+        } else if (hwType.includes('物理机')) {
+            pmCount++;
+        } else {
+            // 默认归为物理机
+            pmCount++;
+        }
     });
     const totalInstances = cluster.servers.reduce((sum, s) => sum + (s.instances ? s.instances.length : 0), 0);
 
     return `
         <div class="cluster-summary">
-            <span class="summary-item">🖥️ ${cluster.servers.length} 物理机</span>
+            <span class="summary-item">🔲 ${pmCount} 物理机</span>
+            <span class="summary-item">🔷 ${vmCount} 虚拟机</span>
             <span class="summary-item">⚡ ${totalCpu}C CPU</span>
             <span class="summary-item">💾 ${totalMem}G 内存</span>
             <span class="summary-item">📦 ${totalInstances} 实例</span>
@@ -389,7 +403,7 @@ function renderTopology(cluster) {
         html += `
             <div class="welcome-message">
                 <div class="welcome-icon">🖥️</div>
-                <h3>暂无物理机</h3>
+                <h3>暂无节点</h3>
                 <p>点击"➕ 添加节点"添加节点</p>
             </div>
         `;
@@ -1350,6 +1364,173 @@ async function exportTopology() {
         showToast('拓扑配置已导出', 'success');
     } catch (error) {
         showToast('导出失败', 'error');
+    }
+}
+
+// ==================== 批量导入弹窗 ====================
+
+let selectedImportFile = null;
+
+function showImportTopologyDialog() {
+    // 重置状态
+    selectedImportFile = null;
+    document.getElementById('import-file-input').value = '';
+    document.getElementById('import-upload-placeholder').style.display = 'flex';
+    document.getElementById('import-filename').style.display = 'none';
+    document.getElementById('import-progress').style.display = 'none';
+    document.getElementById('import-result').style.display = 'none';
+    document.getElementById('import-submit-btn').disabled = true;
+    document.getElementById('import-upload-area').classList.remove('upload-active');
+
+    document.getElementById('modal-import-topology').style.display = 'flex';
+}
+
+function downloadImportTemplate() {
+    const a = document.createElement('a');
+    a.href = '/api/topology/import/template';
+    a.download = 'cluster_topology_import_template_v2.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    showToast('模板下载已开始', 'success');
+}
+
+function handleImportFileSelect(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) {
+        showToast('请选择 Excel 文件 (.xlsx 或 .xls)', 'error');
+        input.value = '';
+        return;
+    }
+
+    selectedImportFile = file;
+
+    // 更新UI显示文件名
+    document.getElementById('import-upload-placeholder').style.display = 'none';
+    const filenameDiv = document.getElementById('import-filename');
+    filenameDiv.innerHTML = `
+        <span class="file-icon">📄</span>
+        <span class="file-name">${escapeHtml(file.name)}</span>
+        <span class="file-size">(${(file.size / 1024).toFixed(1)} KB)</span>
+        <button class="btn-remove-file" onclick="removeImportFile(event)" title="移除">&times;</button>
+    `;
+    filenameDiv.style.display = 'flex';
+    document.getElementById('import-upload-area').classList.add('upload-active');
+    document.getElementById('import-submit-btn').disabled = false;
+}
+
+function removeImportFile(event) {
+    event.stopPropagation();
+    selectedImportFile = null;
+    document.getElementById('import-file-input').value = '';
+    document.getElementById('import-upload-placeholder').style.display = 'flex';
+    document.getElementById('import-filename').style.display = 'none';
+    document.getElementById('import-upload-area').classList.remove('upload-active');
+    document.getElementById('import-submit-btn').disabled = true;
+}
+
+async function submitTopologyImport() {
+    if (!selectedImportFile) {
+        showToast('请先选择 Excel 文件', 'error');
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', selectedImportFile);
+
+    // 显示进度条
+    document.getElementById('import-progress').style.display = 'block';
+    document.getElementById('import-result').style.display = 'none';
+    document.getElementById('import-progress-fill').style.width = '30%';
+    document.getElementById('import-progress-text').textContent = '正在上传文件...';
+    document.getElementById('import-submit-btn').disabled = true;
+
+    try {
+        document.getElementById('import-progress-fill').style.width = '60%';
+        document.getElementById('import-progress-text').textContent = '正在解析数据...';
+
+        const response = await fetch('/api/topology/import', {
+            method: 'POST',
+            body: formData
+        });
+
+        document.getElementById('import-progress-fill').style.width = '90%';
+        document.getElementById('import-progress-text').textContent = '正在处理结果...';
+
+        const result = await response.json();
+
+        document.getElementById('import-progress-fill').style.width = '100%';
+        document.getElementById('import-progress-text').textContent = '导入完成';
+
+        // 显示结果
+        const resultDiv = document.getElementById('import-result');
+        if (response.ok) {
+            const serverSuccess = result.servers ? result.servers.success_count : 0;
+            const serverErrors = result.servers ? result.servers.errors : [];
+            const instanceSuccess = result.instances ? result.instances.success_count : 0;
+            const instanceErrors = result.instances ? result.instances.errors : [];
+
+            let resultHtml = `
+                <div class="import-result-success">
+                    <h4>✅ 导入成功</h4>
+                    <div class="import-result-stats">
+                        <div class="result-stat-item">
+                            <span class="result-stat-label">服务器</span>
+                            <span class="result-stat-value">${serverSuccess} 条成功</span>
+                        </div>
+                        <div class="result-stat-item">
+                            <span class="result-stat-label">实例</span>
+                            <span class="result-stat-value">${instanceSuccess} 条成功</span>
+                        </div>
+                    </div>
+            `;
+
+            if (serverErrors.length > 0 || instanceErrors.length > 0) {
+                resultHtml += `<div class="import-result-errors"><h5>警告/错误 (${serverErrors.length + instanceErrors.length} 条)</h5><ul>`;
+                [...serverErrors, ...instanceErrors].forEach(err => {
+                    resultHtml += `<li>${escapeHtml(err)}</li>`;
+                });
+                resultHtml += `</ul></div>`;
+            }
+
+            resultHtml += `</div>`;
+            resultDiv.innerHTML = resultHtml;
+            resultDiv.style.display = 'block';
+
+            showToast('导入完成', 'success');
+
+            // 刷新拓扑视图
+            loadClusters();
+            if (currentClusterId) {
+                selectCluster(currentClusterId);
+            }
+        } else {
+            resultDiv.innerHTML = `
+                <div class="import-result-error">
+                    <h4>❌ 导入失败</h4>
+                    <p>${escapeHtml(result.error || '未知错误')}</p>
+                </div>
+            `;
+            resultDiv.style.display = 'block';
+            showToast(result.error || '导入失败', 'error');
+        }
+    } catch (error) {
+        document.getElementById('import-progress-fill').style.width = '100%';
+        document.getElementById('import-progress-text').textContent = '导入失败';
+
+        const resultDiv = document.getElementById('import-result');
+        resultDiv.innerHTML = `
+            <div class="import-result-error">
+                <h4>❌ 导入失败</h4>
+                <p>${escapeHtml(error.message)}</p>
+            </div>
+        `;
+        resultDiv.style.display = 'block';
+        showToast('导入失败: ' + error.message, 'error');
+    } finally {
+        document.getElementById('import-submit-btn').disabled = false;
     }
 }
 

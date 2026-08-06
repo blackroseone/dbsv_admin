@@ -951,6 +951,7 @@
                             <div class="topology-actions">
                                 <button class="btn btn-primary" onclick="showAddResourcePoolDialog()">➕ 添加资源池</button>
                                 <button class="btn btn-secondary" onclick="exportTopology()">📥 导出</button>
+                                <button class="btn btn-secondary" onclick="showImportTopologyDialog()">📤 导入</button>
                             </div>
                             <div id="topology-cluster-list" class="cluster-list">
                                 <div class="empty-message">暂无集群</div>
@@ -1652,6 +1653,59 @@
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeModal('modal-add-dbtype')">取消</button>
                 <button class="btn btn-primary" onclick="addDBType()">确定</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 导入拓扑对话框 -->
+    <div class="modal" id="modal-import-topology" style="display: none">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>📤 批量导入集群拓扑</h3>
+                <button class="modal-close" onclick="closeModal('modal-import-topology')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="import-guide">
+                    <h4>📋 导入步骤</h4>
+                    <ol class="import-steps">
+                        <li>下载 Excel 模板，按格式填写数据</li>
+                        <li>上传填写好的 Excel 文件</li>
+                        <li>系统自动导入服务器和实例数据</li>
+                    </ol>
+                </div>
+                <div class="import-template-section">
+                    <div class="template-info">
+                        <span class="template-icon">📄</span>
+                        <div class="template-text">
+                            <strong>cluster_topology_import_template_v2.xlsx</strong>
+                            <p>包含「服务器清单」和「实例清单」两个工作表</p>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" onclick="downloadImportTemplate()">⬇️ 下载模板</button>
+                </div>
+                <div class="import-upload-section">
+                    <label class="upload-label">选择 Excel 文件</label>
+                    <div class="upload-area" id="import-upload-area" onclick="document.getElementById('import-file-input').click()">
+                        <div class="upload-placeholder" id="import-upload-placeholder">
+                            <span class="upload-icon">📁</span>
+                            <p>点击选择或拖拽文件到此处</p>
+                            <small>支持 .xlsx, .xls 格式</small>
+                        </div>
+                        <div class="upload-filename" id="import-filename" style="display: none;"></div>
+                    </div>
+                    <input type="file" id="import-file-input" accept=".xlsx,.xls" style="display: none" onchange="handleImportFileSelect(this)">
+                </div>
+                <div class="import-progress" id="import-progress" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="import-progress-fill"></div>
+                    </div>
+                    <p class="progress-text" id="import-progress-text">正在导入...</p>
+                </div>
+                <div class="import-result" id="import-result" style="display: none;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('modal-import-topology')">取消</button>
+                <button class="btn btn-primary" id="import-submit-btn" onclick="submitTopologyImport()" disabled>开始导入</button>
             </div>
         </div>
     </div>

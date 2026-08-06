@@ -967,6 +967,8 @@ def get_resource_pools():
             rp.description,
             rp.created_at,
             COALESCE(s.server_count, 0) as server_count,
+            COALESCE(sv.vm_count, 0) as vm_count,
+            COALESCE(sp.pm_count, 0) as pm_count,
             COALESCE(i.instance_count, 0) as instance_count,
             COALESCE(t.tenant_count, 0) as tenant_count,
             COALESCE(c.cluster_count, 0) as cluster_count
@@ -976,6 +978,18 @@ def get_resource_pools():
             FROM servers
             GROUP BY resource_pool_id
         ) s ON rp.id = s.resource_pool_id
+        LEFT JOIN (
+            SELECT resource_pool_id, COUNT(*) as vm_count
+            FROM servers
+            WHERE hardware_type LIKE '%虚拟机%'
+            GROUP BY resource_pool_id
+        ) sv ON rp.id = sv.resource_pool_id
+        LEFT JOIN (
+            SELECT resource_pool_id, COUNT(*) as pm_count
+            FROM servers
+            WHERE hardware_type LIKE '%物理机%'
+            GROUP BY resource_pool_id
+        ) sp ON rp.id = sp.resource_pool_id
         LEFT JOIN (
             SELECT s.resource_pool_id, COUNT(*) as instance_count
             FROM instances i
@@ -1025,8 +1039,20 @@ def update_resource_pool(pool_id, **kwargs):
 
 
 def delete_resource_pool(pool_id):
-    """删除资源池"""
+    """删除资源池（级联删除关联的服务器、集群、租户和实例）"""
     conn = get_db()
+    # 先删除该资源池下的所有实例（通过服务器关联）
+    conn.execute("""
+        DELETE FROM instances
+        WHERE server_id IN (SELECT id FROM servers WHERE resource_pool_id=?)
+    """, (pool_id,))
+    # 删除该资源池下的所有服务器
+    conn.execute("DELETE FROM servers WHERE resource_pool_id=?", (pool_id,))
+    # 删除该资源池下的所有集群
+    conn.execute("DELETE FROM clusters WHERE resource_pool_id=?", (pool_id,))
+    # 删除该资源池下的所有租户
+    conn.execute("DELETE FROM tenants WHERE resource_pool_id=?", (pool_id,))
+    # 最后删除资源池
     conn.execute("DELETE FROM resource_pools WHERE id=?", (pool_id,))
     conn.commit()
 

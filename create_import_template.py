@@ -33,7 +33,7 @@ def create_import_template(output_path):
         ("pool_db_type", "数据库类型", "如: MySQL, Oracle, PostgreSQL, MongoDB"),
         ("pool_env", "环境", "如: production, development, test"),
         ("cluster_name", "集群名称", "可选，如: 主库集群A"),
-        ("server_name", "服务器名称", "必填，如: db-server-01"),
+        ("server_name", "服务器名称", "可选，留空则根据IP自动生成，如: node-192.168.1.10"),
         ("sn", "SN序列号", "可选，服务器硬件序列号"),
         ("ip", "IP地址", "必填，唯一标识服务器，如: 192.168.1.10"),
         ("datacenter", "数据中心", "可选，如: 北京机房"),
@@ -45,17 +45,17 @@ def create_import_template(output_path):
     ]
     _write_sheet(ws_server, server_headers, "服务器清单", header_fill, header_font, required_fill, thin_border)
     _add_example(ws_server, [
-        "生产环境", "MySQL", "production",
+        "示例数据-生产环境", "MySQL", "production",
         "主库集群A", "db-server-01", "SN123456789", "192.168.1.10",
         "北京机房", "计算节点", "非信创物理机", "32核", "128GB", "主库服务器"
     ])
     _add_example(ws_server, [
-        "生产环境", "MySQL", "production",
+        "示例数据-生产环境", "MySQL", "production",
         "从库集群B", "db-server-02", "SN987654321", "192.168.1.11",
         "北京机房", "计算节点", "非信创物理机", "32核", "128GB", "从库服务器"
     ])
     _add_example(ws_server, [
-        "测试环境", "MySQL", "test",
+        "示例数据-测试环境", "MySQL", "test",
         "", "test-server-01", "", "192.168.2.10",
         "上海机房", "计算节点", "虚拟机", "16核", "64GB", "测试服务器"
     ])
@@ -75,29 +75,29 @@ def create_import_template(output_path):
         ("tenant_spec", "租户规格", "如: small-8c32g, medium-16c64g, large-32c128g"),
         ("instance_name", "实例名称", "必填，如: mysql-master-01"),
         ("port", "端口", "如: 3306, 1521, 5432, 27017"),
-        ("role", "实例角色", "如: master, slave, primary, secondary"),
+        ("role", "实例角色", "如: master, slave, standalone"),
         ("cpu", "CPU", "可选，如: 8核"),
         ("memory", "内存", "可选，如: 32GB"),
         ("description", "描述", "可选"),
     ]
     _write_sheet(ws_instance, instance_headers, "实例清单", header_fill, header_font, required_fill, thin_border)
     _add_example(ws_instance, [
-        "192.168.1.10", "业务系统A", "master-slave", "medium-16c64g",
+        "示例数据-192.168.1.10", "业务系统A", "master-slave", "medium-16c64g",
         "mysql-master-01", "3306", "master", "8核", "32GB", "主实例"
     ])
     _add_example(ws_instance, [
-        "192.168.1.11", "业务系统A", "master-slave", "medium-16c64g",
+        "示例数据-192.168.1.11", "业务系统A", "master-slave", "medium-16c64g",
         "mysql-slave-01", "3306", "slave", "8核", "32GB", "从实例"
     ])
     _add_example(ws_instance, [
-        "192.168.2.10", "测试业务", "single", "small-8c32g",
-        "mysql-single-01", "3306", "single", "4核", "16GB", "单实例"
+        "示例数据-192.168.2.10", "测试业务", "single", "small-8c32g",
+        "mysql-single-01", "3306", "standalone", "4核", "16GB", "单实例"
     ])
 
     # 添加下拉框数据验证
     _add_dropdown_validation(ws_instance, "C", "master-slave,single,mha,paxos/raft,rac", 5)
     _add_dropdown_validation(ws_instance, "D", "macro-1c4g,macro-2c8g,macro-4c16g,small-8c16g,small-16c64g,medium-32C128G,large-64c256g,exlu-128c512g", 5)
-    _add_dropdown_validation(ws_instance, "G", "master,slave,single", 5)
+    _add_dropdown_validation(ws_instance, "G", "master,slave,standalone", 5)
 
     # ============ 工作表3: 导入说明 ============
     ws_guide = wb.create_sheet("导入说明")
@@ -203,7 +203,7 @@ def _write_guide(ws, header_fill, header_font, thin_border):
         ("租户规格", "如: small-8c32g, medium-16c64g, large-32c128g。标识租户的资源规格。"),
         ("实例名称", "必填。建议有意义的命名，如 mysql-master-01。"),
         ("端口", "数据库监听端口。如: 3306(MySQL), 1521(Oracle), 5432(PostgreSQL)。"),
-        ("实例角色", "如: master, slave, primary, secondary。标识实例在集群中的角色。"),
+        ("实例角色", "如: master, slave, standalone。标识实例在集群中的角色。"),
         ("", ""),
         ("导入规则", ""),
         ("", ""),

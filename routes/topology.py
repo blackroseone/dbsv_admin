@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """集群拓扑 API"""
+import os
 import uuid
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, send_file
 from db.database import (
     get_topology_data, add_cluster, update_cluster, delete_cluster,
     get_resource_pools, add_resource_pool, update_resource_pool, delete_resource_pool,
@@ -14,6 +15,19 @@ from db.database import (
 from utils.topology_import import import_servers_from_excel, import_instances_from_excel
 
 topology_bp = Blueprint('topology', __name__)
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+@topology_bp.route('/api/topology/import/template', methods=['GET'])
+def download_import_template():
+    """下载集群拓扑导入模板"""
+    template_path = os.path.join(BASE_DIR, 'cluster_topology_import_template_v2.xlsx')
+    if not os.path.exists(template_path):
+        # 如果模板不存在，动态生成
+        from create_import_template import create_import_template
+        create_import_template(template_path)
+    return send_file(template_path, as_attachment=True, download_name='cluster_topology_import_template_v2.xlsx')
 
 
 # ==================== 资源池 API ====================

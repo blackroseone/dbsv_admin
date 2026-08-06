@@ -14,19 +14,18 @@ def _is_example_row(ws, row_idx, headers):
     """
     判断某一行是否是示例数据行
     示例数据的特征：
-    1. 字体是斜体（italic=True）
-    2. 或者单元格背景色是灰色（F0F0F0）
+    第一个有值的单元格内容以"示例数据"开头
     """
-    # 检查第一个有值的单元格的字体和填充色
+    # 检查第一个有值的单元格的内容
     for col_idx in range(1, len(headers) + 1):
         cell = ws.cell(row=row_idx, column=col_idx)
         if cell.value:  # 有值的单元格
-            # 检查字体是否为斜体
-            if cell.font and cell.font.italic:
+            val = str(cell.value).strip()
+            # 检查内容是否以"示例数据"开头
+            if val.startswith('示例数据'):
                 return True
-            # 检查背景色是否为灰色（示例数据的标记）
-            if cell.fill and cell.fill.start_color and cell.fill.start_color.rgb == '00F0F0F0':
-                return True
+            # 如果不是示例数据，则返回False
+            return False
     return False
 
 
@@ -82,7 +81,7 @@ def import_servers_from_excel(filepath, db_module):
 def _import_single_server(data, conn):
     """导入单个服务器（包含资源池、集群）"""
     pool_name = data.get('pool_name', '').strip()
-    pool_db_type = data.get('pool_db_type', 'MySQL').strip()
+    pool_db_type = data.get('pool_db_type', 'MySQL').strip().lower()
     pool_env = data.get('pool_env', 'production').strip()
     cluster_name = data.get('cluster_name', '').strip()
     server_name = data.get('server_name', '').strip()
@@ -97,19 +96,27 @@ def _import_single_server(data, conn):
 
     if not pool_name:
         raise ValueError("资源池名称不能为空")
-    if not server_name:
-        raise ValueError("服务器名称不能为空")
     if not ip:
         raise ValueError("IP地址不能为空")
 
+    # 如果服务器名称为空，根据IP自动生成
+    if not server_name:
+        server_name = f"node-{ip}"
+
     # 1. 查找或创建资源池
     pool_row = conn.execute(
-        "SELECT id FROM resource_pools WHERE name=?",
+        "SELECT id, db_type FROM resource_pools WHERE name=?",
         (pool_name,)
     ).fetchone()
 
     if pool_row:
         pool_id = pool_row['id']
+        # 如果数据库类型有变化，更新资源池
+        if pool_db_type and pool_db_type != pool_row['db_type']:
+            conn.execute(
+                "UPDATE resource_pools SET db_type=? WHERE id=?",
+                (pool_db_type, pool_id)
+            )
     else:
         pool_id = str(uuid.uuid4())
         conn.execute(
