@@ -425,6 +425,8 @@ body {
 
 .nav-item .text {
     font-size: 0.9rem;
+    /* 行高设为 1.2，使文字行盒不高于图标，折叠/展开时导航项高度一致 */
+    line-height: 1.2;
 }
 
 .sidebar-footer {
