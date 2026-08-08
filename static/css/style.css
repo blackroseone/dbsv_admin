@@ -2453,13 +2453,6 @@ body {
     transition: color 0.3s ease;
 }
 
-/* markdown 空行：窄间距占位，替代整行空行 */
-.md-blank {
-    display: block;
-    height: 0.5em;
-    line-height: 0;
-}
-
 /* markdown 表格 */
 .md-table {
     width: 100%;

@@ -93,10 +93,10 @@ function formatMarkdown(text) {
         return '@@MD_BLOCK' + (mdProtected.length - 1) + '@@';
     });
 
-    // 统一换行符，避免 \r\n 干扰空行识别
+    // 统一换行符
     html = html.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    // 空行（一个或多个，含仅空白字符的行）→ 单个小间距占位；普通换行 → <br>
-    html = html.replace(/\n(?:[ \t]*\n)+/g, '<span class="md-blank"></span>');
+    // 删除空行（一个或多个，含仅空白字符的行）：折叠为单个换行，段落间只留一个普通换行
+    html = html.replace(/\n(?:[ \t]*\n)+/g, '\n');
     html = html.replace(/\n/g, '<br>');
 
     // 还原被保护的代码块/表格
@@ -104,12 +104,10 @@ function formatMarkdown(text) {
         return mdProtected[+i];
     });
 
-    // 去掉紧邻块级元素（标题/列表/代码/表格）的 <br> 与空行占位，
+    // 去掉紧邻块级元素（标题/列表/代码/表格）的 <br>，
     // 避免标题前出现整行空行（标题自带 margin 负责间距）
     html = html.replace(/<br>\s*(?=<h[1-3]|<ul|<ol|<pre|<table)/g, '');
     html = html.replace(/(<\/h[1-3]>|<\/ul>|<\/ol>|<\/pre>|<\/table>)\s*<br>/g, '$1');
-    html = html.replace(/<span class="md-blank"><\/span>\s*(?=<h[1-3]|<ul|<ol|<pre|<table)/g, '');
-    html = html.replace(/(<\/h[1-3]>|<\/ul>|<\/ol>|<\/pre>|<\/table>)\s*<span class="md-blank"><\/span>/g, '$1');
 
     return html;
 }
