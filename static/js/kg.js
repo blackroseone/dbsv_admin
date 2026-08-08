@@ -189,14 +189,14 @@ async function showKGNodeDetail(nodeId) {
             <div class="kg-detail-section">
                 <div class="kg-detail-type">
                     <span class="kg-type-badge" style="background: ${ENTITY_COLORS[data.entity.entity_type] || ENTITY_COLORS['default']}">
-                        ${data.entity.entity_type}
+                        ${escapeHtml(data.entity.entity_type)}
                     </span>
                     <span class="kg-confidence">置信度: ${(data.entity.confidence * 100).toFixed(0)}%</span>
                 </div>
-                ${data.entity.description ? `<p class="kg-description">${data.entity.description}</p>` : ''}
+                ${data.entity.description ? `<p class="kg-description">${escapeHtml(data.entity.description)}</p>` : ''}
                 ${data.entity.aliases && data.entity.aliases.length > 0 ? `
                     <div class="kg-aliases">
-                        <strong>别名:</strong> ${data.entity.aliases.join(', ')}
+                        <strong>别名:</strong> ${escapeHtml(data.entity.aliases.join(', '))}
                     </div>
                 ` : ''}
             </div>
@@ -215,10 +215,10 @@ async function showKGNodeDetail(nodeId) {
                 const arrow = rel.direction === 'outgoing' ? '→' : '←';
                 html += `
                     <div class="kg-relation-item" onclick="navigateToKGNode(${rel.direction === 'outgoing' ? rel.to_entity_id : rel.from_entity_id})">
-                        <span class="kg-relation-type">${rel.relation_type}</span>
+                        <span class="kg-relation-type">${escapeHtml(rel.relation_type)}</span>
                         <span class="kg-relation-arrow">${arrow}</span>
-                        <span class="kg-relation-target">${targetName}</span>
-                        <span class="kg-type-badge-sm" style="background: ${ENTITY_COLORS[targetType] || ENTITY_COLORS['default']}">${targetType}</span>
+                        <span class="kg-relation-target">${escapeHtml(targetName)}</span>
+                        <span class="kg-type-badge-sm" style="background: ${ENTITY_COLORS[targetType] || ENTITY_COLORS['default']}">${escapeHtml(targetType)}</span>
                     </div>
                 `;
             });
@@ -235,8 +235,8 @@ async function showKGNodeDetail(nodeId) {
             data.chunks.slice(0, 5).forEach(chunk => {
                 html += `
                     <div class="kg-chunk-item">
-                        <div class="kg-chunk-file">${chunk.filename}</div>
-                        <div class="kg-chunk-text">${chunk.chunk_text.substring(0, 150)}...</div>
+                        <div class="kg-chunk-file">${escapeHtml(chunk.filename)}</div>
+                        <div class="kg-chunk-text">${escapeHtml(chunk.chunk_text.substring(0, 150))}...</div>
                         <div class="kg-chunk-meta">提及次数: ${chunk.mention_count}</div>
                     </div>
                 `;
@@ -251,7 +251,7 @@ async function showKGNodeDetail(nodeId) {
         html += `
             <div class="kg-detail-actions">
                 <button class="btn btn-sm btn-primary" onclick="expandKGNodeNeighbors(${nodeId})">展开邻居</button>
-                <button class="btn btn-sm btn-secondary" onclick="useEntityInQA(${nodeId}, '${data.entity.name}')">在问答中使用</button>
+                <button class="btn btn-sm btn-secondary" onclick="useEntityInQA(${nodeId}, '${escapeJsAttr(data.entity.name)}')">在问答中使用</button>
             </div>
         `;
 
@@ -475,9 +475,9 @@ async function loadKGEntityTypes() {
 
         container.innerHTML = data.types.map(t => `
             <label class="kg-filter-item">
-                <input type="checkbox" value="${t.entity_type}" checked onchange="filterKGByType()">
+                <input type="checkbox" value="${escapeHtml(t.entity_type)}" checked onchange="filterKGByType()">
                 <span class="kg-filter-color" style="background: ${ENTITY_COLORS[t.entity_type] || ENTITY_COLORS['default']}"></span>
-                <span class="kg-filter-name">${t.entity_type}</span>
+                <span class="kg-filter-name">${escapeHtml(t.entity_type)}</span>
                 <span class="kg-filter-count">${t.count}</span>
             </label>
         `).join('');
@@ -502,9 +502,9 @@ async function loadKGRelationTypes() {
 
         container.innerHTML = data.relation_types.map(t => `
             <label class="kg-filter-item">
-                <input type="checkbox" value="${t.relation_type}" checked onchange="filterKGByRelation()">
+                <input type="checkbox" value="${escapeHtml(t.relation_type)}" checked onchange="filterKGByRelation()">
                 <span class="kg-filter-color" style="background: ${RELATION_COLORS[t.relation_type] || RELATION_COLORS['default']}"></span>
-                <span class="kg-filter-name">${t.relation_type}</span>
+                <span class="kg-filter-name">${escapeHtml(t.relation_type)}</span>
                 <span class="kg-filter-count">${t.count}</span>
             </label>
         `).join('');

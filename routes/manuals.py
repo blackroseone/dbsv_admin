@@ -3,8 +3,8 @@
 import os
 from datetime import datetime
 from flask import Blueprint, request, jsonify, send_from_directory
-from werkzeug.utils import secure_filename
 from db.database import add_operation_log
+from utils import safe_filename, safe_join
 
 manuals_bp = Blueprint('manuals', __name__)
 
@@ -47,18 +47,8 @@ def upload_manual():
     if file.filename == '':
         return jsonify({'error': '未选择文件'}), 400
 
-    # 保留原始中文文件名，secure_filename 会过滤非ASCII字符
-    original_filename = file.filename
-    filename = secure_filename(original_filename)
-    # 如果 secure_filename 过滤后为空（纯中文文件名），使用原始文件名
-    if not filename or filename == '':
-        filename = original_filename
-    # 如果过滤后的文件名与原始不同（包含中文），优先使用原始文件名
-    elif filename != original_filename:
-        # 检查原始文件名是否安全（只包含常见字符）
-        import re
-        if re.match(r'^[\w\s\-\.一-鿿　-〿＀-￯]+$', original_filename):
-            filename = original_filename
+    # 安全化文件名，保留中文
+    filename = safe_filename(file.filename)
 
     os.makedirs(MANUALS_DIR, exist_ok=True)
     filepath = os.path.join(MANUALS_DIR, filename)
@@ -77,7 +67,9 @@ def upload_manual():
 @manuals_bp.route('/api/manuals/<filename>', methods=['DELETE'])
 def delete_manual(filename):
     import time
-    filepath = os.path.join(MANUALS_DIR, filename)
+    filepath = safe_join(MANUALS_DIR, filename)
+    if filepath is None:
+        return jsonify({'error': '无效的文件名'}), 400
     if not os.path.exists(filepath):
         return jsonify({'error': '文件不存在'}), 404
     for _ in range(3):
@@ -92,6 +84,8 @@ def delete_manual(filename):
 
 @manuals_bp.route('/api/manuals/<filename>', methods=['GET'])
 def download_manual(filename):
+    if safe_join(MANUALS_DIR, filename) is None:
+        return jsonify({'error': '无效的文件名'}), 400
     if not os.path.exists(os.path.join(MANUALS_DIR, filename)):
         return jsonify({'error': '文件不存在'}), 404
     return send_from_directory(MANUALS_DIR, filename, as_attachment=True)
@@ -100,7 +94,9 @@ def download_manual(filename):
 @manuals_bp.route('/api/manuals/preview/<filename>', methods=['GET'])
 def preview_manual(filename):
     """预览手册内容"""
-    filepath = os.path.join(MANUALS_DIR, filename)
+    filepath = safe_join(MANUALS_DIR, filename)
+    if filepath is None:
+        return jsonify({'error': '无效的文件名'}), 400
 
     if not os.path.exists(filepath):
         return jsonify({'error': '文件不存在'}), 404

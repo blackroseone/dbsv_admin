@@ -4,7 +4,7 @@ import os
 import uuid
 from flask import Blueprint, request, jsonify, send_file
 from db.database import (
-    get_topology_data, add_cluster, update_cluster, delete_cluster,
+    get_topology_data,
     get_resource_pools, add_resource_pool, update_resource_pool, delete_resource_pool,
     add_server, delete_server,
     add_instance, delete_instance, get_instance_detail,
@@ -95,10 +95,10 @@ def get_clusters_list():
 
 @topology_bp.route('/api/topology/clusters', methods=['POST'])
 def create_cluster():
-    """添加物理集群"""
+    """添加集群（即资源池，GET /api/topology/clusters 返回的顶级实体）"""
     data = request.get_json()
     cluster_id = str(uuid.uuid4())
-    add_cluster(
+    add_resource_pool(
         cluster_id,
         data.get('name', ''),
         data.get('db_type', ''),
@@ -120,9 +120,9 @@ def create_cluster():
 
 @topology_bp.route('/api/topology/clusters/<cluster_id>', methods=['PUT'])
 def update_cluster_info(cluster_id):
-    """更新物理集群"""
+    """更新集群（即资源池）"""
     data = request.get_json()
-    update_cluster(
+    update_resource_pool(
         cluster_id,
         name=data.get('name'),
         db_type=data.get('db_type'),
@@ -134,8 +134,8 @@ def update_cluster_info(cluster_id):
 
 @topology_bp.route('/api/topology/clusters/<cluster_id>', methods=['DELETE'])
 def delete_cluster_info(cluster_id):
-    """删除物理集群"""
-    delete_cluster(cluster_id)
+    """删除集群（即资源池，级联删除其下服务器/集群/租户）"""
+    delete_resource_pool(cluster_id)
     add_operation_log('集群拓扑', '删除集群', cluster_id)
     return jsonify({'message': '删除成功'})
 
@@ -639,7 +639,8 @@ def import_servers():
     import os
     from db import database as db_module
 
-    temp_path = os.path.join(tempfile.gettempdir(), file.filename)
+    temp_fd, temp_path = tempfile.mkstemp(suffix=os.path.splitext(file.filename)[1])
+    os.close(temp_fd)
     file.save(temp_path)
 
     try:
@@ -681,7 +682,8 @@ def import_instances():
     import os
     from db import database as db_module
 
-    temp_path = os.path.join(tempfile.gettempdir(), file.filename)
+    temp_fd, temp_path = tempfile.mkstemp(suffix=os.path.splitext(file.filename)[1])
+    os.close(temp_fd)
     file.save(temp_path)
 
     try:
@@ -723,7 +725,8 @@ def import_topology():
     import os
     from db import database as db_module
 
-    temp_path = os.path.join(tempfile.gettempdir(), file.filename)
+    temp_fd, temp_path = tempfile.mkstemp(suffix=os.path.splitext(file.filename)[1])
+    os.close(temp_fd)
     file.save(temp_path)
 
     try:

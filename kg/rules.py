@@ -151,37 +151,38 @@ CONCEPTS = {
 
 # ==================== 正则模式 ====================
 
-# 版本号模式
+def _word(alias):
+    """构造对中文语境安全的词边界：仅对拉丁字母/数字/下划线生效，
+    避免 \b 在「使用MySQL数据库」等汉字紧邻场景失配"""
+    return r'(?<![A-Za-z0-9_])' + re.escape(alias) + r'(?![A-Za-z0-9_])'
+
+
+# 版本号模式（版本组支持 Oracle 19c 等字母后缀）
 VERSION_PATTERN = re.compile(
-    r'\b(?:MySQL|Oracle|PostgreSQL|SQL Server|DB2|OceanBase|GaussDB|'
+    r'(?<![A-Za-z0-9_])(?:MySQL|Oracle|PostgreSQL|SQL Server|DB2|OceanBase|GaussDB|'
     r'GoldenDB|达梦|DM|TiDB|MariaDB|Redis|MongoDB|Elasticsearch|'
     r'Kafka|ClickHouse|CentOS|RHEL|Ubuntu|Windows|AIX)\s*'
     r'(?:V|v|Version|版本)?\s*'
-    r'(\d+(?:\.\d+)*(?:\s*(?:R|r)?\d+)?)',
+    r'(\d+(?:\.\d+)*(?:[a-zA-Z]\d*)?(?:\s*(?:R|r)?\d+)?)',
     re.IGNORECASE
 )
 
 # 通用版本号模式（数字.数字.数字）
 GENERIC_VERSION_PATTERN = re.compile(
-    r'\b(\d+\.\d+(?:\.\d+)?(?:[-_.]?(?:alpha|beta|rc|RC|ga|GA|sp|SP)\d*)?)\b'
+    r'(?<![A-Za-z0-9_])(\d+\.\d+(?:\.\d+)?(?:[-_.]?(?:alpha|beta|rc|RC|ga|GA|sp|SP)\d*)?)(?![A-Za-z0-9_])'
 )
 
 # 错误码模式
 ERROR_CODE_PATTERNS = {
     'oracle': re.compile(r'\bORA-\d{5,6}\b'),
     'mysql': re.compile(r'\bERROR\s+(\d{4,5})\b', re.IGNORECASE),
-    'postgresql': re.compile(r'\bERROR\s*:\s*\w+\b'),
+    # PostgreSQL 仅在出现 SQLSTATE 码时提取，避免把 "ERROR: <任意文本>" 建成噪音实体
+    'postgresql': re.compile(r'\bSQLSTATE[:\s]*\d{2}[A-Z0-9]{3}\b', re.IGNORECASE),
     'oceanbase': re.compile(r'\bOB-\d{4,6}\b'),
     'gaussdb': re.compile(r'\bGS-\d{4,6}\b'),
     'sqlserver': re.compile(r'\bMsg\s+\d+\b', re.IGNORECASE),
     'db2': re.compile(r'\bSQL\d{4}[N|W|E]\b'),
 }
-
-# 参数模式（通常是大写下划线格式或驼峰格式）
-PARAMETER_PATTERN = re.compile(
-    r'\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b'  # snake_case
-    r'|\b([a-z]+[A-Z][a-zA-Z0-9]*)\b'  # camelCase (至少一个大写)
-)
 
 # 常见参数前缀（提高参数识别准确率）
 PARAMETER_PREFIXES = {
@@ -218,34 +219,46 @@ PARAMETER_PREFIXES = {
 
 # SQL 关键字模式
 SQL_KEYWORDS = re.compile(
-    r'\b(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|TRUNCATE|'
+    r'(?<![A-Za-z0-9_])(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|TRUNCATE|'
     r'GRANT|REVOKE|COMMIT|ROLLBACK|BEGIN|END|SAVEPOINT|'
     r'EXPLAIN|ANALYZE|OPTIMIZE|LOCK|UNLOCK|CALL|EXECUTE|'
-    r'MERGE|UPSERT|REPLACE|LOAD|UNLOAD|COPY|IMPORT|EXPORT)\b',
+    r'MERGE|UPSERT|REPLACE|LOAD|UNLOAD|COPY|IMPORT|EXPORT)(?![A-Za-z0-9_])',
     re.IGNORECASE
 )
 
-# 系统视图模式
+# 系统视图模式（去掉无前缀限定的 all_/user_，避免把普通文本误判为系统视图）
 SYSTEM_VIEW_PATTERN = re.compile(
-    r'\b(v\$\w+|information_schema\.\w+|pg_\w+|sys\.\w+|'
-    r'performance_schema\.\w+|mysql\.\w+|dba_\w+|all_\w+|user_\w+)\b',
+    r'(?<![A-Za-z0-9_])(v\$\w+|information_schema\.\w+|pg_\w+|sys\.\w+|'
+    r'performance_schema\.\w+|mysql\.\w+|dba_\w+)(?![A-Za-z0-9_])',
     re.IGNORECASE
 )
 
 # 函数模式
 FUNCTION_PATTERN = re.compile(
-    r'\b([A-Z_][A-Z0-9_]*\s*\()',
+    r'(?<![A-Za-z0-9_])([A-Z_][A-Z0-9_]*\s*\()',
     re.IGNORECASE
 )
 
+# 不应被识别为函数的 SQL 关键字/子句词（过滤 IN( / OVER( / CASE( 等误报）
+FUNCTION_STOPLIST = {
+    'select', 'from', 'where', 'and', 'or', 'not', 'in', 'over', 'case',
+    'when', 'then', 'else', 'end', 'if', 'values', 'set', 'update', 'insert',
+    'delete', 'create', 'alter', 'drop', 'truncate', 'grant', 'revoke',
+    'group', 'order', 'having', 'limit', 'offset', 'join', 'left', 'right',
+    'inner', 'outer', 'cross', 'using', 'on', 'as', 'by', 'union', 'all',
+    'distinct', 'exists', 'between', 'like', 'null', 'true', 'false',
+    'begin', 'commit', 'rollback', 'savepoint', 'lock', 'unlock', 'call',
+    'execute', 'return', 'declare', 'into',
+}
+
 # 命令行工具模式
 COMMAND_PATTERN = re.compile(
-    r'\b(mysqldump|mysql|mysqladmin|obd|obclient|gs_ctl|gs_guc|'
+    r'(?<![A-Za-z0-9_])(mysqldump|mysql|mysqladmin|obd|obclient|gs_ctl|gs_guc|'
     r'gs_dump|gs_restore|sqlplus|exp|imp|expdp|impdp|rman|'
     r'pg_dump|pg_restore|psql|createdb|dropdb|vacuumdb|'
     r'obproxy|ob_admin|ob_config|ob_check|ob_clean|'
     r'redis-cli|mongo|mongodump|mongoexport|mongoimport|'
-    r'kafka-topics|kafka-console-consumer|kafka-console-producer)\b',
+    r'kafka-topics|kafka-console-consumer|kafka-console-producer)(?![A-Za-z0-9_])',
     re.IGNORECASE
 )
 
@@ -263,8 +276,8 @@ def extract_database_products(text: str) -> List[Dict]:
         # 构建匹配模式（支持大小写不敏感）
         aliases = DATABASE_PRODUCTS[std_name]
         for product_name in aliases:
-            # 使用单词边界匹配
-            pattern = re.compile(r'\b' + re.escape(product_name) + r'\b', re.IGNORECASE)
+            # 使用 ASCII 词边界匹配（中文语境安全）
+            pattern = re.compile(_word(product_name), re.IGNORECASE)
             matches = list(pattern.finditer(text))
             if matches:
                 found.add(std_name)
@@ -285,63 +298,76 @@ def extract_database_products(text: str) -> List[Dict]:
 
 
 def extract_versions(text: str) -> List[Dict]:
-    """提取版本号实体"""
+    """提取版本号实体
+
+    去重键为 (product, version)：同一版本号归属不同产品时保留各自实体
+    （如 "MySQL 8.0 和 Oracle 8.0" 各出一个）。
+    """
     entities = []
-    found = set()
+    found = set()  # {(product_std, version)}
 
     # 带产品名的版本
     for match in VERSION_PATTERN.finditer(text):
         full_match = match.group(0)
         version = match.group(1)
-        if version and version not in found:
-            found.add(version)
-            # 提取产品名
-            product_text = full_match[:match.start(1) - match.start()].strip()
-            # 查找对应的产品实体
-            product_std = None
-            for alias, std in PRODUCT_ALIAS_MAP.items():
-                if alias in product_text.lower():
-                    product_std = std
-                    break
-
-            entities.append({
-                'entity_type': 'version',
-                'name': full_match.strip(),
-                'normalized_name': f"{product_std}_{version}" if product_std else version,
-                'aliases': [version],
-                'description': f"{product_text} 的版本号" if product_text else "版本号",
-                'properties': {'version': version, 'product': product_std},
-                'confidence': 0.9,
-                'extract_method': 'rule',
-                'positions': [(match.start(), match.end())]
-            })
+        if not version:
+            continue
+        # 提取产品名
+        product_text = full_match[:match.start(1) - match.start()].strip()
+        product_std = None
+        for alias, std in PRODUCT_ALIAS_MAP.items():
+            if alias in product_text.lower():
+                product_std = std
+                break
+        key = (product_std, version)
+        if key in found:
+            continue
+        found.add(key)
+        entities.append({
+            'entity_type': 'version',
+            'name': full_match.strip(),
+            'normalized_name': f"{product_std}_{version}" if product_std else version,
+            'aliases': [version],
+            'description': f"{product_text} 的版本号" if product_text else "版本号",
+            'properties': {'version': version, 'product': product_std},
+            'confidence': 0.9,
+            'extract_method': 'rule',
+            'positions': [(match.start(), match.end())]
+        })
 
     # 通用版本号（如果前面没有产品名）
     for match in GENERIC_VERSION_PATTERN.finditer(text):
         version = match.group(1)
-        if version not in found:
-            # 检查上下文是否有产品名
-            context_start = max(0, match.start() - 50)
-            context = text[context_start:match.start()]
-            product_std = None
-            for alias, std in PRODUCT_ALIAS_MAP.items():
-                if alias in context.lower():
-                    product_std = std
-                    break
+        # 检查上下文是否有产品名
+        context_start = max(0, match.start() - 50)
+        context = text[context_start:match.start()]
+        product_std = None
+        for alias, std in PRODUCT_ALIAS_MAP.items():
+            if alias in context.lower():
+                product_std = std
+                break
+        if not product_std:
+            continue
 
-            if product_std:  # 只提取有产品上下文关联的版本
-                found.add(version)
-                entities.append({
-                    'entity_type': 'version',
-                    'name': version,
-                    'normalized_name': f"{product_std}_{version}",
-                    'aliases': [],
-                    'description': f"{product_std} 的版本号",
-                    'properties': {'version': version, 'product': product_std},
-                    'confidence': 0.7,
-                    'extract_method': 'rule',
-                    'positions': [(match.start(), match.end())]
-                })
+        key = (product_std, version)
+        if key in found:
+            continue
+        # 避免对已提取的完整版本（如 8.0.1）再建前缀版本（8.0）实体
+        if any(p == product_std and v.startswith(version + '.') for p, v in found):
+            continue
+
+        found.add(key)
+        entities.append({
+            'entity_type': 'version',
+            'name': version,
+            'normalized_name': f"{product_std}_{version}",
+            'aliases': [],
+            'description': f"{product_std} 的版本号",
+            'properties': {'version': version, 'product': product_std},
+            'confidence': 0.7,
+            'extract_method': 'rule',
+            'positions': [(match.start(), match.end())]
+        })
 
     return entities
 
@@ -382,7 +408,7 @@ def extract_operating_systems(text: str) -> List[Dict]:
 
         aliases = OPERATING_SYSTEMS[std_name]
         for os_name in aliases:
-            pattern = re.compile(r'\b' + re.escape(os_name) + r'\b', re.IGNORECASE)
+            pattern = re.compile(_word(os_name), re.IGNORECASE)
             matches = list(pattern.finditer(text))
             if matches:
                 found.add(std_name)
@@ -419,7 +445,7 @@ def extract_parameters(text: str, db_type: str = None) -> List[Dict]:
     for prefix in prefixes:
         # 匹配 prefix_xxx 或 prefix.xxx 格式
         pattern = re.compile(
-            r'\b(' + re.escape(prefix) + r'[a-zA-Z0-9_]+)\b',
+            r'(?<![A-Za-z0-9_])(' + re.escape(prefix) + r'[a-zA-Z0-9_]+)(?![A-Za-z0-9_])',
             re.IGNORECASE
         )
         for match in pattern.finditer(text):
@@ -449,7 +475,7 @@ def extract_parameters(text: str, db_type: str = None) -> List[Dict]:
                 })
 
     # 通用参数模式（大写下划线格式）
-    for match in re.finditer(r'\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b', text):
+    for match in re.finditer(r'(?<![A-Za-z0-9_])([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)(?![A-Za-z0-9_])', text):
         param = match.group(1)
         param_lower = param.lower()
         if param_lower not in found and len(param) > 5:
@@ -520,7 +546,8 @@ def extract_functions(text: str) -> List[Dict]:
     for match in FUNCTION_PATTERN.finditer(text):
         func = match.group(1).rstrip('(').strip()
         func_lower = func.lower()
-        if func_lower not in found and len(func) > 2:
+        # 过滤 SQL 关键字（IN/OVER/CASE/WHEN 等）误报为函数
+        if func_lower not in found and len(func) > 2 and func_lower not in FUNCTION_STOPLIST:
             found.add(func_lower)
             entities.append({
                 'entity_type': 'function',
@@ -565,7 +592,7 @@ def extract_architectures(text: str) -> List[Dict]:
 
     for std_name, aliases in ARCHITECTURES.items():
         for arch_name in aliases:
-            pattern = re.compile(r'\b' + re.escape(arch_name) + r'\b', re.IGNORECASE)
+            pattern = re.compile(_word(arch_name), re.IGNORECASE)
             matches = list(pattern.finditer(text))
             if matches:
                 if std_name not in found:
@@ -591,7 +618,7 @@ def extract_concepts(text: str) -> List[Dict]:
 
     for std_name, aliases in CONCEPTS.items():
         for concept_name in aliases:
-            pattern = re.compile(r'\b' + re.escape(concept_name) + r'\b', re.IGNORECASE)
+            pattern = re.compile(_word(concept_name), re.IGNORECASE)
             matches = list(pattern.finditer(text))
             if matches:
                 if std_name not in found:
@@ -617,7 +644,7 @@ def extract_performance_metrics(text: str) -> List[Dict]:
 
     for std_name, aliases in PERFORMANCE_METRICS.items():
         for metric_name in aliases:
-            pattern = re.compile(r'\b' + re.escape(metric_name) + r'\b', re.IGNORECASE)
+            pattern = re.compile(_word(metric_name), re.IGNORECASE)
             matches = list(pattern.finditer(text))
             if matches:
                 if std_name not in found:
@@ -643,7 +670,7 @@ def extract_hardware(text: str) -> List[Dict]:
 
     for std_name, aliases in HARDWARE.items():
         for hw_name in aliases:
-            pattern = re.compile(r'\b' + re.escape(hw_name) + r'\b', re.IGNORECASE)
+            pattern = re.compile(_word(hw_name), re.IGNORECASE)
             matches = list(pattern.finditer(text))
             if matches:
                 if std_name not in found:
@@ -696,6 +723,18 @@ def extract_all_entities(text: str, db_type: str = None) -> List[Dict]:
 
 # ==================== 关系推理 ====================
 
+def _nearby(entity_a: Dict, entity_b: Dict, max_distance: int = 200) -> bool:
+    """判断两个实体在文本中的位置是否邻近（任一位置对的距离 <= max_distance），
+    避免同文本任意共现就全量建边（笛卡尔积污染）"""
+    pos_a = entity_a.get('positions', [])
+    pos_b = entity_b.get('positions', [])
+    for sa, _ in pos_a:
+        for sb, _ in pos_b:
+            if abs(sa - sb) <= max_distance:
+                return True
+    return False
+
+
 def infer_relationships(entities: List[Dict], text: str) -> List[Dict]:
     """基于提取的实体推断关系"""
     relationships = []
@@ -742,11 +781,13 @@ def infer_relationships(entities: List[Dict], text: str) -> List[Dict]:
                     break
 
     # 3. 操作系统依赖：database_product -> requires -> operating_system
+    #    仅当产品与操作系统在文本中位置邻近时建边，避免 n×m 笛卡尔积
     os_entities = [e for e in entities if e['entity_type'] == 'operating_system']
     if os_entities and products:
-        # 如果同一段文本中同时出现数据库产品和操作系统
         for p in products:
             for os in os_entities:
+                if not _nearby(p, os):
+                    continue
                 relationships.append({
                     'from_entity': p,
                     'to_entity': os,
@@ -772,10 +813,12 @@ def infer_relationships(entities: List[Dict], text: str) -> List[Dict]:
                     break
 
     # 5. 架构归属：architecture -> part_of -> database_product
+    #    仅当架构与产品位置邻近时建边
     archs = [e for e in entities if e['entity_type'] == 'architecture']
     for arch in archs:
-        # 查找同文本中的数据库产品
         for p in products:
+            if not _nearby(arch, p):
+                continue
             relationships.append({
                 'from_entity': p,
                 'to_entity': arch,

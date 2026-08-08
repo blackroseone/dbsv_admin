@@ -118,7 +118,7 @@ function renderActiveTaskCard(task) {
         : '';
 
     return `
-        <div class="task-card active-task-card" data-task-id="${task.id}" onclick="viewTaskProgress('${task.id}')">
+        <div class="task-card active-task-card" data-task-id="${escapeHtml(task.id)}" onclick="viewTaskProgress('${escapeJsAttr(task.id)}')">
             <div class="task-header">
                 <h4>${escapeHtml(task.name)}</h4>
                 <span class="task-status status-analyzing">🔬 分析中</span>
@@ -130,7 +130,7 @@ function renderActiveTaskCard(task) {
             <div class="task-db-type">${dbTypeHtml}</div>
             ${filesHtml}
             <div class="task-actions">
-                <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); viewTaskProgress('${task.id}')">查看进度</button>
+                <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); viewTaskProgress('${escapeJsAttr(task.id)}')">查看进度</button>
             </div>
         </div>
     `;
@@ -152,17 +152,17 @@ function renderHistoryTaskCard(task) {
 
     let actionButton = '';
     if (task.status === 'analyzing') {
-        actionButton = `<button class="btn btn-sm btn-primary" onclick="viewTaskProgress('${task.id}')">查看进度</button>`;
+        actionButton = `<button class="btn btn-sm btn-primary" onclick="viewTaskProgress('${escapeJsAttr(task.id)}')">查看进度</button>`;
     } else if (task.status === 'completed') {
-        actionButton = `<button class="btn btn-sm btn-primary" onclick="viewTaskReport('${task.id}')">查看报告</button>`;
+        actionButton = `<button class="btn btn-sm btn-primary" onclick="viewTaskReport('${escapeJsAttr(task.id)}')">查看报告</button>`;
     } else if (task.status === 'failed') {
-        actionButton = `<button class="btn btn-sm btn-primary" onclick="viewTaskReport('${task.id}')">查看详情</button>`;
+        actionButton = `<button class="btn btn-sm btn-primary" onclick="viewTaskReport('${escapeJsAttr(task.id)}')">查看详情</button>`;
     } else {
-        actionButton = `<button class="btn btn-sm btn-primary" onclick="viewTaskReport('${task.id}')">查看报告</button>`;
+        actionButton = `<button class="btn btn-sm btn-primary" onclick="viewTaskReport('${escapeJsAttr(task.id)}')">查看报告</button>`;
     }
 
     return `
-        <div class="task-card" data-task-id="${task.id}">
+        <div class="task-card" data-task-id="${escapeHtml(task.id)}">
             <div class="task-header">
                 <h4>${escapeHtml(task.name)}</h4>
                 <span class="task-status status-${task.status}">${statusIcon} ${statusText}</span>
@@ -175,7 +175,7 @@ function renderHistoryTaskCard(task) {
             ${filesHtml}
             <div class="task-actions">
                 ${actionButton}
-                <button class="btn btn-sm btn-danger" onclick="deleteAnalysisTask('${task.id}')">删除</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteAnalysisTask('${escapeJsAttr(task.id)}')">删除</button>
             </div>
         </div>
     `;
@@ -606,7 +606,7 @@ function updateProgressStep(stage, status, message, taskId) {
         if (infoDiv) {
             const taskData = getTaskStepData(taskId);
             const timeStr = taskData.stepTimes[stage] ? ` (${(taskData.stepTimes[stage] / 1000).toFixed(1)}s)` : '';
-            infoDiv.innerHTML += `<div class="info-item">✅ ${message || stage + ' 完成'}${timeStr}</div>`;
+            infoDiv.innerHTML += `<div class="info-item">✅ ${escapeHtml(message || stage + ' 完成')}${timeStr}</div>`;
         }
     }
 }
@@ -820,7 +820,7 @@ function generateTimingHtml(task) {
 
         const rows = timingData.map(item => `
             <tr>
-                <td>${item.stage}</td>
+                <td>${escapeHtml(item.stage)}</td>
                 <td class="time-value">${(item.time / 1000).toFixed(1)}s</td>
             </tr>
         `).join('');

@@ -143,13 +143,17 @@ def find_shortest_path(from_entity_id: int, to_entity_id: int,
         if len(path) // 2 >= max_depth:
             continue
 
-        relationships = get_relationships_by_entity(current_id, direction='outgoing')
+        relationships = get_relationships_by_entity(current_id, direction='both')
 
         for rel in relationships:
             if relation_types and rel['relation_type'] not in relation_types:
                 continue
 
-            neighbor_id = rel['to_entity_id']
+            # 入边方向邻居取 from 端，出边方向取 to 端
+            if rel.get('direction') == 'outgoing':
+                neighbor_id = rel['to_entity_id']
+            else:
+                neighbor_id = rel['from_entity_id']
 
             if neighbor_id == to_entity_id:
                 # 找到路径
@@ -321,8 +325,9 @@ def enhance_qa_context(chunk_ids: List[int], question: str) -> Dict:
         # 获取实体的关系
         relationships = get_relationships_by_entity(eid, direction='both')
 
-        # 只保留重要的关系（置信度 > 0.7）
+        # 只保留重要的关系（置信度 > 0.7），按置信度降序取前 N 条
         important_rels = [r for r in relationships if r.get('confidence', 0) > 0.7]
+        important_rels.sort(key=lambda r: r.get('confidence', 0), reverse=True)
 
         # 限制关系数量
         important_rels = important_rels[:5]

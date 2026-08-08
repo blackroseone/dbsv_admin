@@ -13,6 +13,9 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Temporary scripts
+temp_scripts/
+
 # Logs
 *.log
 

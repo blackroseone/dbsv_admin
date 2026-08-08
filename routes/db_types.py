@@ -24,6 +24,11 @@ def add_db_type_api():
     if not db_id or not db_name:
         return jsonify({'error': '请填写数据库ID和名称'}), 400
 
+    # 数据库ID将作为知识库/命令目录名，限制为常规字符防止路径穿越
+    import re
+    if re.match(r'^[a-z0-9_-]+$', db_id) is None:
+        return jsonify({'error': '数据库ID仅支持字母、数字、下划线和连字符'}), 400
+
     success, error = add_db_type(db_id, db_name, db_icon)
     if not success:
         return jsonify({'error': error}), 400

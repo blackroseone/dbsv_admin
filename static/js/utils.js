@@ -16,21 +16,26 @@ function escapeHtml(text) {
     if (!text) return '';
     const div = document.createElement('div');
     div.textContent = text;
-    return div.innerHTML;
+    // 补充引号转义：文本内容与双引号属性上下文均安全
+    return div.innerHTML
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
-function escapeJs(text) {
+function escapeJsAttr(text) {
+    // 用于 inline 事件处理器（onclick 等）内的 JS 字符串字面量。
+    // 该上下文经过「HTML 属性实体解码 → JS 引擎解析」两道处理，
+    // 因此必须用反斜杠转义（HTML 解码不触碰反斜杠），且先转义反斜杠
+    // 再插入 \x.. 序列，避免产物被二次转义。转义后不含裸 ' " & 。
     if (!text) return '';
-    // 先进行 HTML 转义，再处理 JS 特殊字符
-    return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#x27;')
+    return String(text)
         .replace(/\\/g, '\\\\')
+        .replace(/&/g, '\\x26')
+        .replace(/'/g, '\\x27')
+        .replace(/"/g, '\\x22')
         .replace(/\n/g, '\\n')
-        .replace(/\r/g, '\\r');
+        .replace(/\r/g, '\\r')
+        .replace(/\t/g, '\\t');
 }
 
 function formatFileSize(bytes) {

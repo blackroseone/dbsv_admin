@@ -244,10 +244,12 @@ def _build_qa_messages(db_type, question, use_rag, conversation_id=None, use_top
                                 'similarity': r.get('similarity', 0)
                             } for r in filtered_results]
                             all_vector_results.extend(filtered_results)
-                        # 即使过滤后为空，也不回退到关键词检索（避免低质量结果）
-                    # 向量检索返回空结果，不回退到关键词检索（保证质量）
+                    elif not embedder.is_available():
+                        # 模型不可用导致检索为空，回退到关键词检索（兜底）
+                        search_results = _search_with_keywords(db_type, question)
+                    # 模型可用但无命中：不回退（避免低质量结果）
                 except Exception:
-                    # 向量检索不可用，回退到关键词检索（兜底）
+                    # 向量检索异常，回退到关键词检索（兜底）
                     search_results = _search_with_keywords(db_type, question)
 
         # 检索 _system 类型的知识库文件（拓扑 + 运维手册）
@@ -271,9 +273,11 @@ def _build_qa_messages(db_type, question, use_rag, conversation_id=None, use_top
                                     'similarity': r.get('similarity', 0)
                                 } for r in filtered_results]
                                 all_vector_results.extend(filtered_results)
-                        # 不回退到关键词检索
+                        elif not embedder.is_available():
+                            # 模型不可用导致检索为空，回退到关键词检索（兜底）
+                            system_results = _search_with_keywords('_system', question)
                     except Exception:
-                        # 向量检索不可用，回退到关键词检索（兜底）
+                        # 向量检索异常，回退到关键词检索（兜底）
                         system_results = _search_with_keywords('_system', question)
             except Exception:
                 pass

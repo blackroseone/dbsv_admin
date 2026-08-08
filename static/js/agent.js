@@ -10,6 +10,7 @@ let agentSessions = [];
 let agentIsRunning = false;
 let agentCurrentSSHConn = null;
 let agentCurrentDBConn = null;
+let agentAbortController = null;
 
 // ==================== 模块初始化 ====================
 function initAgentModule() {
@@ -52,12 +53,12 @@ function renderAgentSSHConnections() {
 
     container.innerHTML = agentSSHConnections.map(conn => `
         <div class="connection-item ${agentCurrentSSHConn === conn.id ? 'active' : ''}"
-             onclick="selectSSHConnection('${conn.id}')">
+             onclick="selectSSHConnection('${escapeJsAttr(conn.id)}')">
             <div class="conn-name">${escapeHtml(conn.name)}</div>
             <div class="conn-info">
-                <span class="conn-host">${escapeHtml(conn.host)}:${conn.port}</span>
-                <span class="conn-type">${conn.db_type}</span>
-                <span class="conn-status ${conn.status}">${conn.status === 'active' ? '🟢' : '🔴'}</span>
+                <span class="conn-host">${escapeHtml(conn.host)}:${escapeHtml(conn.port)}</span>
+                <span class="conn-type">${escapeHtml(conn.db_type)}</span>
+                <span class="conn-status ${escapeHtml(conn.status)}">${conn.status === 'active' ? '🟢' : '🔴'}</span>
             </div>
         </div>
     `).join('');
@@ -74,12 +75,12 @@ function renderAgentDBConnections() {
 
     container.innerHTML = agentDBConnections.map(conn => `
         <div class="connection-item ${agentCurrentDBConn === conn.id ? 'active' : ''}"
-             onclick="selectDBConnection('${conn.id}')">
+             onclick="selectDBConnection('${escapeJsAttr(conn.id)}')">
             <div class="conn-name">${escapeHtml(conn.name)}</div>
             <div class="conn-info">
                 <span class="conn-host">${escapeHtml(conn.host)}</span>
-                <span class="conn-type">${conn.db_type}</span>
-                <span class="conn-status ${conn.status}">${conn.status === 'active' ? '🟢' : '🔴'}</span>
+                <span class="conn-type">${escapeHtml(conn.db_type)}</span>
+                <span class="conn-status ${escapeHtml(conn.status)}">${conn.status === 'active' ? '🟢' : '🔴'}</span>
             </div>
         </div>
     `).join('');
@@ -147,10 +148,10 @@ function renderAgentSessions() {
 
     container.innerHTML = agentSessions.map(session => `
         <div class="session-item ${agentCurrentSession === session.id ? 'active' : ''}"
-             onclick="loadAgentSession('${session.id}')">
+             onclick="loadAgentSession('${escapeJsAttr(session.id)}')">
             <div class="session-title">${escapeHtml(session.title)}</div>
             <div class="session-meta">
-                <span class="session-status ${session.status}">${getStatusIcon(session.status)}</span>
+                <span class="session-status ${escapeHtml(session.status)}">${getStatusIcon(session.status)}</span>
                 <span class="session-time">${formatTime(session.created_at)}</span>
             </div>
         </div>
@@ -237,6 +238,9 @@ async function sendAgentQuestion() {
     input.value = '';
 
     agentIsRunning = true;
+    agentAbortController = new AbortController();
+    const stopBtn = document.getElementById('agent-stop-btn');
+    if (stopBtn) stopBtn.style.display = 'inline-block';
 
     try {
         const response = await fetch('/api/agent/run', {
@@ -245,7 +249,8 @@ async function sendAgentQuestion() {
             body: JSON.stringify({
                 session_id: agentCurrentSession,
                 question: question
-            })
+            }),
+            signal: agentAbortController.signal
         });
 
         const reader = response.body.getReader();
@@ -275,10 +280,24 @@ async function sendAgentQuestion() {
             }
         }
     } catch (error) {
-        console.error('Agent执行失败:', error);
-        addAgentMessage('error', `执行失败: ${error.message}`);
+        if (error.name === 'AbortError') {
+            addAgentMessage('error', '⏹ 已手动停止');
+        } else {
+            console.error('Agent执行失败:', error);
+            addAgentMessage('error', `执行失败: ${error.message}`);
+        }
     } finally {
         agentIsRunning = false;
+        agentAbortController = null;
+        if (stopBtn) stopBtn.style.display = 'none';
+        loadAgentSessions();  // 刷新会话状态
+    }
+}
+
+// 停止Agent执行
+function stopAgent() {
+    if (agentAbortController) {
+        agentAbortController.abort();
     }
 }
 
@@ -332,6 +351,9 @@ function handleAgentEvent(event) {
         case 'error':
             renderAgentError(event.message);
             break;
+        case 'done':
+            removeAgentLoading();
+            break;
     }
 }
 
@@ -369,7 +391,7 @@ function renderKnowledgeRefs(refs) {
             <div class="ref-header">
                 <span class="ref-num">[${i+1}]</span>
                 <span class="ref-file">${escapeHtml(ref.file)}</span>
-                <span class="ref-similarity">相似度: ${ref.similarity}</span>
+                <span class="ref-similarity">相似度: ${escapeHtml(ref.similarity)}</span>
             </div>
             <div class="ref-content">${escapeHtml(ref.chunk)}</div>
         </div>
@@ -415,14 +437,16 @@ function showAgentThinking(step) {
     div.className = 'agent-message thinking';
     div.id = `agent-thinking-${step}`;
     div.innerHTML = `
-        <div class="message-header">
-            <span class="icon">🤔</span>
-            <span class="label">思考中</span>
-            <span class="thinking-indicator"></span>
-        </div>
-        <div class="message-content">
-            <pre class="thinking-content"></pre>
-        </div>
+        <details class="agent-collapse" open>
+            <summary class="message-header">
+                <span class="icon">🤔</span>
+                <span class="label">思考中</span>
+                <span class="thinking-indicator"></span>
+            </summary>
+            <div class="message-content">
+                <pre class="thinking-content"></pre>
+            </div>
+        </details>
     `;
     chat.appendChild(div);
     chat.scrollTop = chat.scrollHeight;
@@ -447,16 +471,18 @@ function renderAgentToolCall(tool, params) {
     const div = document.createElement('div');
     div.className = 'agent-message tool';
     div.innerHTML = `
-        <div class="message-header">
-            <span class="icon">🔧</span>
-            <span class="label">执行: ${escapeHtml(tool)}</span>
-        </div>
-        <div class="message-content">
-            <div class="tool-params">
-                <pre><code>${escapeHtml(JSON.stringify(params, null, 2))}</code></pre>
+        <details class="agent-collapse" open>
+            <summary class="message-header">
+                <span class="icon">🔧</span>
+                <span class="label">执行: ${escapeHtml(tool)}</span>
+                <span class="tool-status">执行中...</span>
+            </summary>
+            <div class="message-content">
+                <div class="tool-params">
+                    <pre><code>${escapeHtml(JSON.stringify(params, null, 2))}</code></pre>
+                </div>
             </div>
-            <div class="tool-status">执行中...</div>
-        </div>
+        </details>
     `;
     chat.appendChild(div);
     chat.scrollTop = chat.scrollHeight;
@@ -464,33 +490,67 @@ function renderAgentToolCall(tool, params) {
 
 function renderAgentResult(result) {
     const toolDiv = document.querySelector('.agent-message.tool:last-child');
-    if (toolDiv) {
-        const statusDiv = toolDiv.querySelector('.tool-status');
-        statusDiv.innerHTML = '<span class="status-success">✅ 完成</span>';
+    if (!toolDiv) return;
 
-        if (result.rows && result.columns) {
-            const resultDiv = document.createElement('div');
-            resultDiv.className = 'tool-result';
-            resultDiv.innerHTML = `
-                <details>
-                    <summary>查看结果 (${result.rows.length} 行)</summary>
-                    <div class="result-table-wrapper">
-                        <table class="result-table">
-                            <thead>
-                                <tr>${result.columns.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr>
-                            </thead>
-                            <tbody>
-                                ${result.rows.map(row => `
-                                    <tr>${row.map(cell => `<td>${escapeHtml(String(cell))}</td>`).join('')}</tr>
-                                `).join('')}
-                            </tbody>
-                        </table>
-                    </div>
-                </details>
-            `;
-            toolDiv.querySelector('.message-content').appendChild(resultDiv);
-        }
+    const statusDiv = toolDiv.querySelector('.tool-status');
+    if (result.error) {
+        statusDiv.innerHTML = '<span class="status-error">❌ 失败</span>';
+    } else {
+        statusDiv.innerHTML = '<span class="status-success">✅ 完成</span>';
     }
+
+    const contentDiv = toolDiv.querySelector('.message-content');
+    if (!contentDiv) return;
+
+    // 表格：查询 / schema / 性能指标
+    if (result.rows && result.columns) {
+        contentDiv.appendChild(buildResultTable(result.columns, result.rows));
+    } else if (result.tables && result.columns) {
+        contentDiv.appendChild(buildResultTable(result.columns, result.tables));
+    } else if (result.metrics && result.columns) {
+        contentDiv.appendChild(buildResultTable(result.columns, result.metrics));
+    }
+    // 命令输出
+    if (result.stdout !== undefined) {
+        const pre = document.createElement('pre');
+        pre.className = 'tool-output';
+        pre.textContent = (result.stdout || '(无输出)') + (result.stderr ? `\n[stderr] ${result.stderr}` : '');
+        contentDiv.appendChild(pre);
+    }
+    // 知识检索结果
+    if (result.results && Array.isArray(result.results)) {
+        const list = document.createElement('div');
+        list.className = 'tool-result';
+        list.innerHTML = result.results.length
+            ? result.results.map(r =>
+                `<div class="kg-ref-item"><span class="kg-ref-file">${escapeHtml(r.filename || '未知')}</span> <span class="kg-ref-sim">相似度: ${escapeHtml(r.similarity)}</span></div>`
+              ).join('')
+            : '<div class="empty-message">无检索结果</div>';
+        contentDiv.appendChild(list);
+    }
+}
+
+function buildResultTable(columns, rows) {
+    const div = document.createElement('div');
+    div.className = 'tool-result';
+    div.innerHTML = `
+        <details>
+            <summary>查看结果 (${rows.length} 行)</summary>
+            <div class="result-table-wrapper">
+                <table class="result-table">
+                    <thead>
+                        <tr>${columns.map(c => `<th>${escapeHtml(String(c))}</th>`).join('')}</tr>
+                    </thead>
+                    <tbody>
+                        ${rows.map(row => `
+                            <tr>${row.map(cell => `<td>${escapeHtml(String(cell))}</td>`).join('')}</tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    `;
+    return div;
 }
 
 function renderAgentObservation(observation) {
@@ -588,6 +648,11 @@ function showAgentLoading(message) {
     chat.scrollTop = chat.scrollHeight;
 }
 
+function removeAgentLoading() {
+    const chat = document.getElementById('agent-chat');
+    chat.querySelectorAll('.agent-message.loading').forEach(el => el.remove());
+}
+
 // ==================== 工具函数 ====================
 function clearAgentChat() {
     const chat = document.getElementById('agent-chat');
@@ -608,16 +673,25 @@ function clearAgentChat() {
 }
 
 function renderAgentStep(step) {
+    // 持久化的 action 是 JSON 字符串，先解析
+    if (typeof step.action === 'string' && step.action) {
+        try {
+            step.action = JSON.parse(step.action);
+        } catch (e) {
+            step.action = null;
+        }
+    }
+
     // 渲染历史步骤
     switch (step.phase) {
         case 'thinking':
             showAgentThinking(step.step_number);
-            appendAgentThinking(step.thought);
+            appendAgentThinking(step.thought || '');
             finalizeAgentThinking();
             break;
         case 'executing':
             if (step.action) {
-                renderAgentToolCall(step.action.tool, step.action.parameters);
+                renderAgentToolCall(step.action.tool, step.action.parameters || {});
             }
             if (step.observation) {
                 renderAgentObservation(step.observation);
@@ -625,20 +699,105 @@ function renderAgentStep(step) {
             break;
         case 'concluding':
             showAgentConclusion();
-            appendAgentConclusion(step.thought);
+            appendAgentConclusion(step.thought || '');
             finalizeAgentConclusion();
             break;
     }
 }
 
 function showAddSSHDialog() {
-    // TODO: 实现添加SSH连接对话框
-    showToast('添加SSH连接功能开发中', 'info');
+    document.getElementById('modal-add-ssh').style.display = 'flex';
 }
 
 function showAddDBDialog() {
-    // TODO: 实现添加DB连接对话框
-    showToast('添加DB连接功能开发中', 'info');
+    document.getElementById('modal-add-db').style.display = 'flex';
+}
+
+// 保存SSH连接
+async function saveSSHConnection() {
+    const name = document.getElementById('agent-ssh-name').value.trim();
+    const host = document.getElementById('agent-ssh-host').value.trim();
+    const port = document.getElementById('agent-ssh-port').value;
+    const username = document.getElementById('agent-ssh-username').value.trim();
+    const authType = document.getElementById('agent-ssh-auth-type').value;
+    const password = document.getElementById('agent-ssh-password').value;
+    const privateKey = document.getElementById('agent-ssh-private-key').value;
+    const passphrase = document.getElementById('agent-ssh-passphrase').value;
+    const dbType = document.getElementById('agent-ssh-db-type').value;
+
+    if (!name || !host || !username) {
+        showToast('请填写名称、主机和用户名', 'warning');
+        return;
+    }
+    if (authType === 'password' && !password) {
+        showToast('密码认证需要填写密码', 'warning');
+        return;
+    }
+    if (authType === 'key' && !privateKey) {
+        showToast('密钥认证需要填写私钥', 'warning');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/agent/ssh-connections', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name, host, port: parseInt(port) || 22, username,
+                auth_type: authType, password, private_key: privateKey,
+                passphrase, db_type: dbType, os_type: 'linux'
+            })
+        });
+        const data = await response.json();
+        if (response.ok) {
+            showToast('SSH连接添加成功', 'success');
+            closeModal('modal-add-ssh');
+            loadAgentSSHConnections();
+        } else {
+            showToast(data.error || '添加失败', 'error');
+        }
+    } catch (error) {
+        showToast('添加失败', 'error');
+    }
+}
+
+// 保存数据库连接
+async function saveDBConnection() {
+    const name = document.getElementById('agent-db-name').value.trim();
+    const dbType = document.getElementById('agent-db-type').value;
+    const host = document.getElementById('agent-db-host').value.trim();
+    const port = document.getElementById('agent-db-port').value;
+    const username = document.getElementById('agent-db-username').value.trim();
+    const password = document.getElementById('agent-db-password').value;
+    const database = document.getElementById('agent-db-database').value.trim();
+    const sid = document.getElementById('agent-db-sid').value.trim();
+    const serviceName = document.getElementById('agent-db-service-name').value.trim();
+
+    if (!name || !dbType || !host) {
+        showToast('请填写名称、数据库类型和主机', 'warning');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/agent/db-connections', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name, db_type: dbType, host, port: parseInt(port) || 3306,
+                username, password, database, sid, service_name: serviceName
+            })
+        });
+        const data = await response.json();
+        if (response.ok) {
+            showToast('数据库连接添加成功', 'success');
+            closeModal('modal-add-db');
+            loadAgentDBConnections();
+        } else {
+            showToast(data.error || '添加失败', 'error');
+        }
+    } catch (error) {
+        showToast('添加失败', 'error');
+    }
 }
 
 function formatTime(timestamp) {

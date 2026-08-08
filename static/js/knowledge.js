@@ -78,7 +78,7 @@ function renderTags(tags) {
     }
     return tagsArray.map(tag => {
         const info = TAG_MAP[tag] || { name: tag, icon: '🏷️', color: '#999' };
-        return `<span class="tag-badge" style="background-color: ${info.color}20; color: ${info.color}; border: 1px solid ${info.color}40;">${info.icon} ${info.name}</span>`;
+        return `<span class="tag-badge" style="background-color: ${info.color}20; color: ${info.color}; border: 1px solid ${info.color}40;">${escapeHtml(info.icon)} ${escapeHtml(info.name)}</span>`;
     }).join(' ');
 }
 
@@ -115,12 +115,12 @@ async function loadFileList() {
                 <td>${escapeHtml(file.name)}</td>
                 <td>${formatFileSize(file.size)}</td>
                 <td>${renderTags(tags)}</td>
-                <td>${file.modified || ''}</td>
+                <td>${escapeHtml(file.modified || '')}</td>
                 <td class="actions">
                     <button class="btn btn-sm btn-secondary" onclick="editFileTags(${index})">🏷️ 标签</button>
-                    ${file.can_preview ? `<button class="btn btn-sm btn-secondary" onclick="previewFile('${dbType}', '${escapeHtml(file.name)}')">预览</button>` : ''}
-                    <button class="btn btn-sm btn-primary" onclick="downloadFile('${dbType}', '${escapeHtml(file.name)}')">下载</button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteFile('${dbType}', '${escapeHtml(file.name)}')">删除</button>
+                    ${file.can_preview ? `<button class="btn btn-sm btn-secondary" onclick="previewFile('${escapeJsAttr(dbType)}', '${escapeJsAttr(file.name)}')">预览</button>` : ''}
+                    <button class="btn btn-sm btn-primary" onclick="downloadFile('${escapeJsAttr(dbType)}', '${escapeJsAttr(file.name)}')">下载</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteFile('${escapeJsAttr(dbType)}', '${escapeJsAttr(file.name)}')">删除</button>
                 </td>
             </tr>
             `;
@@ -146,7 +146,7 @@ function showTagDialog(dbType, filename, currentTags) {
     const tagOptions = Object.entries(TAG_MAP).map(([id, info]) => {
         const checked = currentTags.includes(id) ? 'checked' : '';
         return `<label class="tag-option">
-            <input type="checkbox" value="${id}" ${checked}> ${info.icon} ${info.name}
+            <input type="checkbox" value="${escapeHtml(id)}" ${checked}> ${escapeHtml(info.icon)} ${escapeHtml(info.name)}
         </label>`;
     }).join('');
 
@@ -164,7 +164,7 @@ function showTagDialog(dbType, filename, currentTags) {
                 </div>
                 <div class="modal-footer">
                     <button class="btn btn-secondary" onclick="closeModal('modal-tags')">取消</button>
-                    <button class="btn btn-primary" onclick="saveFileTags('${dbType}', '${escapeHtml(filename)}')">保存</button>
+                    <button class="btn btn-primary" onclick="saveFileTags('${escapeJsAttr(dbType)}', '${escapeJsAttr(filename)}')">保存</button>
                 </div>
             </div>
         </div>

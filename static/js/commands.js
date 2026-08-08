@@ -25,7 +25,7 @@ async function loadCommands() {
                 <div class="command-category">
                     <div class="command-category-header">
                         <h4>${escapeHtml(category.category)}</h4>
-                        <button class="btn btn-sm btn-secondary" onclick="showAddCommandDialog('${escapeHtml(category.category)}')">➕ 添加命令</button>
+                        <button class="btn btn-sm btn-secondary" onclick="showAddCommandDialog('${escapeJsAttr(category.category)}')">➕ 添加命令</button>
                     </div>
                     ${category.commands.map((cmd, index) => `
                         <div class="command-item">
@@ -34,10 +34,10 @@ async function loadCommands() {
                                 <div class="cmd-desc">${escapeHtml(cmd.desc)}</div>
                             </div>
                             <div class="cmd-actions">
-                                <code class="cmd-text" onclick="copyText('${escapeHtml(cmd.cmd)}')" title="点击复制">
+                                <code class="cmd-text" onclick="copyText('${escapeJsAttr(cmd.cmd)}')" title="点击复制">
                                     ${escapeHtml(cmd.cmd)}
                                 </code>
-                                <button class="btn-icon btn-delete cmd-delete-btn" style="opacity:0;" onclick="event.stopPropagation(); deleteCommand('${escapeHtml(category.category)}', ${index})" title="删除命令">×</button>
+                                <button class="btn-icon btn-delete cmd-delete-btn" style="opacity:0;" onclick="event.stopPropagation(); deleteCommand('${escapeJsAttr(category.category)}', ${index})" title="删除命令">×</button>
                             </div>
                         </div>
                     `).join('')}
@@ -242,7 +242,7 @@ async function searchCommands() {
                         </div>
                         <div class="cmd-desc">[${escapeHtml(cmd.category)}] ${escapeHtml(cmd.desc)}</div>
                     </div>
-                    <code class="cmd-text" onclick="copyText('${escapeHtml(cmd.cmd)}')" title="点击复制">
+                    <code class="cmd-text" onclick="copyText('${escapeJsAttr(cmd.cmd)}')" title="点击复制">
                         ${escapeHtml(cmd.cmd)}
                     </code>
                 </div>

@@ -14,6 +14,107 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+def safe_filename(filename):
+    """安全化上传文件名：保留中文，去除路径分隔与危险字符
+
+    仅影响新上传文件的落盘名称，不保证与原始名一致。
+    """
+    if not filename:
+        return 'unnamed_file'
+    # 去掉路径部分（兼容 / 与 \）
+    filename = filename.replace('\\', '/').rsplit('/', 1)[-1]
+    if filename in ('.', '..'):
+        return 'unnamed_file'
+    import re
+    # 仅保留字母/数字/中文/下划线/连字符/点/空格
+    filename = re.sub(r'[^\w一-鿿\-\. ]', '_', filename)
+    # 去掉开头的点，防止隐藏文件与相对路径
+    filename = filename.lstrip('.')
+    # 折叠连续下划线并清理首尾
+    filename = re.sub(r'_+', '_', filename).strip('_').strip()
+    return filename if filename else 'unnamed_file'
+
+
+def safe_join(base_dir, *parts):
+    """拼接路径并校验结果仍位于 base_dir 内，越界返回 None
+
+    Args:
+        base_dir: 允许的根目录（应为绝对路径）
+        parts: 待拼接的子路径段，可包含用户输入
+
+    Returns:
+        str: 校验通过后的绝对路径；若解析后越出 base_dir 返回 None
+    """
+    filepath = os.path.realpath(os.path.join(base_dir, *parts))
+    rel = os.path.relpath(filepath, base_dir)
+    if rel.startswith('..' + os.sep) or rel == '..' or os.path.isabs(rel):
+        return None
+    return filepath
+
+
+_CRED_KEY_CACHE = None
+
+
+def _credential_key():
+    """由 SECRET_KEY 派生 Fernet 密钥（PBKDF2-SHA256），结果缓存"""
+    global _CRED_KEY_CACHE
+    if _CRED_KEY_CACHE:
+        return _CRED_KEY_CACHE
+    import hashlib
+    import base64
+    from config import SECRET_KEY
+    derived = hashlib.pbkdf2_hmac(
+        'sha256', SECRET_KEY.encode('utf-8'), b'dbsv_cred', 100000)
+    _CRED_KEY_CACHE = base64.urlsafe_b64encode(derived)
+    return _CRED_KEY_CACHE
+
+
+def encrypt_secret(plaintext):
+    """加密凭据（Fernet），cryptography 不可用或加密失败时记警告并回退明文
+
+    Args:
+        plaintext: 待加密的明文（密码/私钥/passphrase）
+
+    Returns:
+        str: 密文 token；回退时返回原明文
+    """
+    if not plaintext:
+        return plaintext
+    try:
+        from cryptography.fernet import Fernet
+    except ImportError:
+        print("[utils] 警告: cryptography 未安装，凭据将以明文存储")
+        return plaintext
+    try:
+        f = Fernet(_credential_key())
+        return f.encrypt(plaintext.encode('utf-8')).decode('utf-8')
+    except Exception as e:
+        print(f"[utils] 凭据加密失败，回退明文: {e}")
+        return plaintext
+
+
+def decrypt_secret(token):
+    """解密凭据；无法解密（旧明文或密钥变更）时原样返回
+
+    Args:
+        token: Fernet 密文 token 或历史明文
+
+    Returns:
+        str: 解密后的明文；无法解密时返回原值
+    """
+    if not token:
+        return token
+    try:
+        from cryptography.fernet import Fernet
+    except ImportError:
+        return token
+    try:
+        f = Fernet(_credential_key())
+        return f.decrypt(token.encode('utf-8')).decode('utf-8')
+    except Exception:
+        return token
+
+
 def extract_content(filepath):
     """根据文件扩展名提取文本内容"""
     ext = filepath.rsplit('.', 1)[-1].lower() if '.' in filepath else ''

@@ -10,7 +10,15 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 COMMANDS_DIR = os.path.join(BASE_DIR, 'data', 'commands')
 
 
+def _is_safe_db_type(db_type):
+    """校验数据库类型标识，仅允许常规字符，防止路径穿越"""
+    import re
+    return bool(db_type) and re.match(r'^[A-Za-z0-9_-]+$', db_type) is not None
+
+
 def _load_commands_file(db_type):
+    if not _is_safe_db_type(db_type):
+        return None
     filepath = os.path.join(COMMANDS_DIR, f"{db_type}.json")
     if os.path.exists(filepath):
         with open(filepath, 'r', encoding='utf-8') as f:
@@ -19,6 +27,8 @@ def _load_commands_file(db_type):
 
 
 def _save_commands_file(db_type, data):
+    if not _is_safe_db_type(db_type):
+        raise ValueError('无效的数据库类型')
     os.makedirs(COMMANDS_DIR, exist_ok=True)
     filepath = os.path.join(COMMANDS_DIR, f"{db_type}.json")
     with open(filepath, 'w', encoding='utf-8') as f:
@@ -28,6 +38,8 @@ def _save_commands_file(db_type, data):
 @commands_bp.route('/api/commands', methods=['GET'])
 def get_commands():
     db_type = request.args.get('db_type', '')
+    if not _is_safe_db_type(db_type):
+        return jsonify({'error': '无效的数据库类型'}), 400
 
     saved = _load_commands_file(db_type)
     if saved:
@@ -45,6 +57,8 @@ def save_commands():
 
     if not db_type:
         return jsonify({'error': '请指定数据库类型'}), 400
+    if not _is_safe_db_type(db_type):
+        return jsonify({'error': '无效的数据库类型'}), 400
 
     _save_commands_file(db_type, {'commands': commands})
     return jsonify({'message': '保存成功'})
@@ -59,6 +73,8 @@ def add_category():
 
     if not db_type or not category_name:
         return jsonify({'error': '请填写完整信息'}), 400
+    if not _is_safe_db_type(db_type):
+        return jsonify({'error': '无效的数据库类型'}), 400
 
     # 加载现有命令
     saved = _load_commands_file(db_type)
@@ -94,6 +110,8 @@ def add_command():
 
     if not db_type or not category or not name or not cmd:
         return jsonify({'error': '请填写完整信息'}), 400
+    if not _is_safe_db_type(db_type):
+        return jsonify({'error': '无效的数据库类型'}), 400
 
     # 加载现有命令
     saved = _load_commands_file(db_type)
@@ -133,6 +151,8 @@ def delete_command():
 
     if not db_type or not category or index < 0:
         return jsonify({'error': '请指定数据库类型、分类和命令索引'}), 400
+    if not _is_safe_db_type(db_type):
+        return jsonify({'error': '无效的数据库类型'}), 400
 
     # 加载现有命令
     saved = _load_commands_file(db_type)

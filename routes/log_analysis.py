@@ -12,7 +12,7 @@ from db.database import (
     get_log_analysis_files, delete_log_analysis_files,
     add_operation_log
 )
-from utils import allowed_file, extract_content, call_llm, call_llm_stream
+from utils import allowed_file, extract_content, call_llm, call_llm_stream, safe_filename
 
 log_analysis_bp = Blueprint('log_analysis', __name__)
 
@@ -156,7 +156,7 @@ def upload_files(task_id):
             failed.append({'filename': file.filename, 'reason': '不支持的文件格式'})
             continue
 
-        filename = file.filename
+        filename = safe_filename(file.filename)
         filepath = os.path.join(task_dir, filename)
         file.save(filepath)
 

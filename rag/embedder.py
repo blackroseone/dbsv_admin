@@ -92,13 +92,19 @@ def _get_model():
     return _model
 
 
-def chunk_text(text, chunk_size=2000, overlap=100):
+def chunk_text(text, chunk_size=None, overlap=None):
     """将文本按段落分块，每块约 chunk_size 字符，重叠 overlap 字符
 
     参数:
-        chunk_size: 每块目标大小（默认2000字符，平衡存储和语义完整性）
-        overlap: 相邻块重叠字符数（默认100，保持上下文连贯）
+        chunk_size: 每块目标大小（默认取 config.CHUNK_SIZE，当前2000）
+        overlap: 相邻块重叠字符数（默认取 config.CHUNK_OVERLAP，当前100）
     """
+    if chunk_size is None or overlap is None:
+        from config import CHUNK_SIZE, CHUNK_OVERLAP
+        if chunk_size is None:
+            chunk_size = CHUNK_SIZE
+        if overlap is None:
+            overlap = CHUNK_OVERLAP
     if not text or not text.strip():
         return []
 
@@ -189,6 +195,10 @@ class Embedder:
         embedding = model.encode([query], show_progress_bar=False, normalize_embeddings=True)
         return embedding[0]
 
+    def is_available(self):
+        """模型是否可用：用于区分「模型不可用导致检索为空」与「模型可用但无命中」"""
+        return _get_model() is not None
+
     def similarity_search(self, query, db_type=None, top_k=5):
         """
         向量相似度搜索
@@ -215,6 +225,7 @@ class Embedder:
             # 已经 normalize 过，直接点积即余弦相似度
             similarity = float(np.dot(query_emb, stored_emb))
             results.append({
+                'chunk_id': row['id'],
                 'filename': row['filename'],
                 'chunk_text': row['chunk_text'],
                 'similarity': similarity
@@ -305,17 +316,19 @@ class Embedder:
 
         # 2. 从每个 chunk 提取实体并建立关联
         chunk_entity_links = []
+        # 一次性取回该文件所有 chunk 的 id，避免逐 chunk 查询
+        from db.database import get_db
+        conn = get_db()
+        chunk_id_map = {}
+        for row in conn.execute(
+                "SELECT id, chunk_index FROM embeddings WHERE file_id=?", (file_id,)
+        ).fetchall():
+            chunk_id_map[row['chunk_index']] = row['id']
+
         for i, (chunk_idx, chunk_text, emb_bytes) in enumerate(embeddings):
-            # 获取 chunk 的数据库 ID
-            from db.database import get_db
-            conn = get_db()
-            row = conn.execute(
-                "SELECT id FROM embeddings WHERE file_id=? AND chunk_index=?",
-                (file_id, chunk_idx)
-            ).fetchone()
-            if not row:
+            chunk_db_id = chunk_id_map.get(chunk_idx)
+            if not chunk_db_id:
                 continue
-            chunk_db_id = row['id']
 
             # 从 chunk 文本提取实体
             chunk_entities = extract_all_entities(chunk_text, db_type)

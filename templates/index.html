@@ -459,6 +459,7 @@
                             <div class="agent-actions">
                                 <button class="btn btn-primary" onclick="newAgentSession()">📝 新会话</button>
                                 <button class="btn btn-secondary" onclick="clearAgentChat()">🗑️ 清空</button>
+                                <button class="btn btn-danger" id="agent-stop-btn" onclick="stopAgent()" style="display:none;">⏹ 停止</button>
                             </div>
                         </div>
 
@@ -490,6 +491,113 @@
                                 <span>💡 试试：查看慢查询 | 检查集群状态 | 分析AWR报告</span>
                             </div>
                         </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Agent SSH连接对话框 -->
+            <div class="modal" id="modal-add-ssh" style="display: none">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h3>添加SSH连接</h3>
+                        <button class="modal-close" onclick="closeModal('modal-add-ssh')">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label>连接名称</label>
+                            <input type="text" id="agent-ssh-name" placeholder="例如: 生产MySQL主机">
+                        </div>
+                        <div class="form-group">
+                            <label>主机地址</label>
+                            <input type="text" id="agent-ssh-host" placeholder="IP或主机名">
+                        </div>
+                        <div class="form-group">
+                            <label>端口</label>
+                            <input type="number" id="agent-ssh-port" value="22">
+                        </div>
+                        <div class="form-group">
+                            <label>用户名</label>
+                            <input type="text" id="agent-ssh-username" placeholder="如 root / dba">
+                        </div>
+                        <div class="form-group">
+                            <label>认证方式</label>
+                            <select id="agent-ssh-auth-type">
+                                <option value="password">密码</option>
+                                <option value="key">密钥</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>密码</label>
+                            <input type="password" id="agent-ssh-password" placeholder="密码认证时填写">
+                        </div>
+                        <div class="form-group">
+                            <label>私钥内容</label>
+                            <textarea id="agent-ssh-private-key" rows="4" placeholder="密钥认证时粘贴私钥"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label>私钥口令</label>
+                            <input type="password" id="agent-ssh-passphrase" placeholder="私钥口令（可选）">
+                        </div>
+                        <div class="form-group">
+                            <label>数据库类型</label>
+                            <select id="agent-ssh-db-type" class="select-db-type"></select>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="closeModal('modal-add-ssh')">取消</button>
+                        <button class="btn btn-primary" onclick="saveSSHConnection()">保存</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Agent数据库连接对话框 -->
+            <div class="modal" id="modal-add-db" style="display: none">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h3>添加数据库连接</h3>
+                        <button class="modal-close" onclick="closeModal('modal-add-db')">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label>连接名称</label>
+                            <input type="text" id="agent-db-name" placeholder="例如: 生产MySQL">
+                        </div>
+                        <div class="form-group">
+                            <label>数据库类型</label>
+                            <select id="agent-db-type" class="select-db-type"></select>
+                        </div>
+                        <div class="form-group">
+                            <label>主机地址</label>
+                            <input type="text" id="agent-db-host" placeholder="IP或主机名">
+                        </div>
+                        <div class="form-group">
+                            <label>端口</label>
+                            <input type="number" id="agent-db-port" value="3306">
+                        </div>
+                        <div class="form-group">
+                            <label>用户名</label>
+                            <input type="text" id="agent-db-username" placeholder="数据库用户">
+                        </div>
+                        <div class="form-group">
+                            <label>密码</label>
+                            <input type="password" id="agent-db-password" placeholder="数据库密码">
+                        </div>
+                        <div class="form-group">
+                            <label>数据库名</label>
+                            <input type="text" id="agent-db-database" placeholder="可选（MySQL/PG）">
+                        </div>
+                        <div class="form-group">
+                            <label>SID</label>
+                            <input type="text" id="agent-db-sid" placeholder="可选（Oracle）">
+                        </div>
+                        <div class="form-group">
+                            <label>Service Name</label>
+                            <input type="text" id="agent-db-service-name" placeholder="可选（Oracle）">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="closeModal('modal-add-db')">取消</button>
+                        <button class="btn btn-primary" onclick="saveDBConnection()">保存</button>
                     </div>
                 </div>
             </div>

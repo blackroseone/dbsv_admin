@@ -17,7 +17,7 @@ async function loadConfig() {
             try {
                 const oldResponse = await fetch('/api/config/llm');
                 const oldData = await oldResponse.json();
-                if (oldData.api_url && oldData.api_key) {
+                if (oldData.api_url && oldData.api_key_masked) {
                     // 创建默认模型记录
                     currentModels = [{
                         id: 'default',
@@ -60,10 +60,10 @@ function renderModelsList() {
                 ${model.is_default ? '<span class="model-badge default">默认</span>' : ''}
             </div>
             <div class="model-actions">
-                <button class="btn btn-sm btn-primary" onclick="testModelConnection('${model.id}')">测试</button>
-                <button class="btn btn-sm btn-secondary" onclick="editModel('${model.id}')">编辑</button>
-                ${!model.is_default ? `<button class="btn btn-sm btn-success" onclick="setDefaultModel('${model.id}')">设为默认</button>` : ''}
-                <button class="btn btn-sm btn-danger" onclick="deleteModel('${model.id}')">删除</button>
+                <button class="btn btn-sm btn-primary" onclick="testModelConnection('${escapeJsAttr(model.id)}')">测试</button>
+                <button class="btn btn-sm btn-secondary" onclick="editModel('${escapeJsAttr(model.id)}')">编辑</button>
+                ${!model.is_default ? `<button class="btn btn-sm btn-success" onclick="setDefaultModel('${escapeJsAttr(model.id)}')">设为默认</button>` : ''}
+                <button class="btn btn-sm btn-danger" onclick="deleteModel('${escapeJsAttr(model.id)}')">删除</button>
             </div>
         </div>
     `).join('');
@@ -253,7 +253,7 @@ async function loadDBTypesPage() {
                         <div class="dbtype-name">${escapeHtml(type.name)}</div>
                         <div class="dbtype-id">${escapeHtml(type.id)}</div>
                     </div>
-                    <button class="btn btn-sm btn-danger" onclick="deleteDBType('${escapeHtml(type.id)}')">
+                    <button class="btn btn-sm btn-danger" onclick="deleteDBType('${escapeJsAttr(type.id)}')">
                         删除
                     </button>
                 </div>
@@ -419,11 +419,11 @@ async function loadLogs() {
         if (data.logs && data.logs.length > 0) {
             tbody.innerHTML = data.logs.map(log => `
                 <tr>
-                    <td>${log.timestamp}</td>
+                    <td>${escapeHtml(log.timestamp)}</td>
                     <td>${escapeHtml(log.module)}</td>
                     <td>${escapeHtml(log.action)}</td>
                     <td>${escapeHtml(log.detail || '-')}</td>
-                    <td><span class="status-${log.status}">${log.status}</span></td>
+                    <td><span class="status-${escapeHtml(log.status)}">${escapeHtml(log.status)}</span></td>
                 </tr>
             `).join('');
         } else {
@@ -492,13 +492,13 @@ async function loadFeatureConfig() {
             container.innerHTML = data.features.map(feature => `
                 <div class="feature-config-item">
                     <div class="feature-config-info">
-                        <div class="feature-config-icon">${feature.module_icon}</div>
+                        <div class="feature-config-icon">${escapeHtml(feature.module_icon)}</div>
                         <div class="feature-config-name">${escapeHtml(feature.module_name)}</div>
                     </div>
                     <label class="toggle-switch">
                         <input type="checkbox"
                                ${feature.is_enabled ? 'checked' : ''}
-                               onchange="toggleFeature('${feature.module_id}', this.checked)">
+                               onchange="toggleFeature('${escapeJsAttr(feature.module_id)}', this.checked)">
                         <span class="toggle-slider"></span>
                     </label>
                 </div>

@@ -55,7 +55,7 @@ python -c "from app import create_app; app = create_app(); print('OK')"
 ### RAG（rag/embedder.py）
 
 - sentence-transformers `moka-ai/m3e-base`，单例懒加载（首次调用才下载/加载，失败则标记 `_model_load_failed` 并回退关键词匹配）。模型缓存在 `data/models/`，检测到缓存时设 `TRANSFORMERS_OFFLINE=1` 跳过网络；设置 `HF_ENDPOINT=https://hf-mirror.com` 镜像。
-- `chunk_text()` 默认 chunk_size=2000、overlap=100（**注意：`config.py` 里的 CHUNK_SIZE=500/CHUNK_OVERLAP=50 与 embedder 默认值不一致，改动时留意以哪个为准**）。
+- `chunk_text()` 默认分块参数统一从 `config.py` 的 `CHUNK_SIZE`/`CHUNK_OVERLAP` 读取（当前 2000/100），改动分块行为时只需改 config.py。
 - 向量存 `embeddings` 表（BLOB），余弦相似度检索，阈值 0.55。`rebuild_all()`/`rebuild_single()` 重建索引时**同时提取知识图谱**。
 
 ### 知识图谱（kg/）

@@ -226,7 +226,8 @@ async function loadDBTypes() {
         const selects = [
             'knowledge-db-type', 'qa-db-type', 'sql-db-type',
             'sql-source-db', 'sql-target-db', 'explain-db-type',
-            'commands-db-type', 'cluster-db-type', 'edit-cluster-db-type'
+            'commands-db-type', 'cluster-db-type', 'edit-cluster-db-type',
+            'agent-ssh-db-type', 'agent-db-type'
         ];
 
         selects.forEach(selectId => {
@@ -422,7 +423,7 @@ function renderDBChart(byDbType) {
 
         return `
             <div class="chart-bar-item">
-                <div class="chart-label">${icon} ${name}</div>
+                <div class="chart-label">${escapeHtml(icon)} ${escapeHtml(name)}</div>
                 <div class="chart-bar-container">
                     <div class="chart-bar" style="width: ${percentage}%"></div>
                     <span class="chart-value">${count}</span>
@@ -451,7 +452,7 @@ function renderEmbeddingChart(embeddingsByDbType) {
 
         return `
             <div class="chart-bar-item">
-                <div class="chart-label">${icon} ${name}</div>
+                <div class="chart-label">${escapeHtml(icon)} ${escapeHtml(name)}</div>
                 <div class="chart-bar-container">
                     <div class="chart-bar chart-bar-embedding" style="width: ${percentage}%"></div>
                     <span class="chart-value">${count}</span>
@@ -470,8 +471,8 @@ async function loadRecentLogs() {
         if (data.logs && data.logs.length > 0) {
             logsDiv.innerHTML = data.logs.map(log => `
                 <div class="log-item">
-                    <span class="log-time">${log.timestamp}</span>
-                    <span class="log-module">[${log.module}]</span>
+                    <span class="log-time">${escapeHtml(log.timestamp)}</span>
+                    <span class="log-module">[${escapeHtml(log.module)}]</span>
                     <span class="log-action">${escapeHtml(log.action)}</span>
                 </div>
             `).join('');
@@ -495,7 +496,7 @@ async function loadSystemHealth() {
         if (health.checks) {
             for (const [key, check] of Object.entries(health.checks)) {
                 const checkIcon = check.status === 'ok' ? '✅' : check.status === 'warning' ? '⚠️' : '❌';
-                checksHtml += `<div class="health-check">${checkIcon} ${check.message}</div>`;
+                checksHtml += `<div class="health-check">${checkIcon} ${escapeHtml(check.message)}</div>`;
             }
         }
 
