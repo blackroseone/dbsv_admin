@@ -6,6 +6,28 @@ let isStreaming = false;
 let currentAbortController = null;
 let currentConversationId = null; // 当前会话ID
 
+// 智能滚动：用户在底部附近时自动跟随新内容，手动上滚则暂停跟随
+let qaAutoScroll = true;
+
+// 监听聊天区滚动，判断是否处于底部附近
+document.addEventListener('DOMContentLoaded', () => {
+    const chatEl = document.getElementById('qa-chat');
+    if (chatEl) {
+        chatEl.addEventListener('scroll', () => {
+            const nearBottom = chatEl.scrollTop + chatEl.clientHeight >= chatEl.scrollHeight - 60;
+            qaAutoScroll = nearBottom;
+        });
+    }
+});
+
+function qaScrollIfNeeded() {
+    if (!qaAutoScroll) return;
+    const chatEl = document.getElementById('qa-chat');
+    if (chatEl) {
+        chatEl.scrollTop = chatEl.scrollHeight;
+    }
+}
+
 // 页面加载完成后初始化
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initQA);
@@ -425,12 +447,10 @@ async function _doStreamResponse(conversationId, dbType, question, useRag, useTo
                                 const bubble = document.getElementById(msgId)?.querySelector('.chat-bubble');
                                 if (bubble) {
                                     bubble.innerHTML = formatMarkdown(fullAnswer) + '<span class="typing-cursor">▊</span>';
+                                    qaScrollIfNeeded();
                                 }
                                 pendingContent = '';
                                 lastRenderTime = now;
-
-                                // 输出过程中不强制滚动，让用户自由阅读
-                                // 只在首次输出时滚动到底部（可选）
                             }
                         }
                     } catch (e) {
@@ -453,6 +473,7 @@ async function _doStreamResponse(conversationId, dbType, question, useRag, useTo
         if (bubble) {
             bubble.innerHTML = formatMarkdown(fullAnswer);
         }
+        qaScrollIfNeeded();
 
         // 保存助手回答到数据库
         await fetch(`/api/qa/conversations/${conversationId}/messages`, {

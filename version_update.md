@@ -24,6 +24,15 @@
 - **前端改版**：SSH/DB 连接配置弹窗、停止按钮（AbortController）、折叠式消息、结果表格化、完整 Agent 样式
 - 检索阈值对齐 0.55/0.60
 
+### 🎨 前端视觉优化
+- **主题重构**：亮色主题现代化（侧边栏改中性深色、单强调色、中性阴影），明暗主题统一蓝色 accent，补齐 `--primary-color` 定义
+- **统计卡片渐变收敛**：5 组随机鲜艳渐变改为冷色系蓝青 + 暖色琥珀点缀
+- **导航 SVG 图标**：10 个导航项 + logo 从 emoji 换为 stroke 风格 SVG（当前色自适应主题）
+- **字体层级**：中文字体栈 + 抗锯齿，标题字重/字距统一
+- **模块样式均衡**：补齐 `btn-success`/`btn-xs`/`btn-icon` 按钮变体、Agent 知识引用块、tab-content、拓扑服务器标签等无样式组件
+- **交互与可访问性**：模块切换淡入动画、`:focus-visible` 焦点环、按钮/表单禁用态
+- **响应式**：侧边栏可折叠（图标栏模式，localStorage 记忆）+ 窄屏（<768px）自动收窄
+
 ### 🛡️ 安全加固
 - **路径净化**：新增 `safe_filename`/`safe_join`，修复 knowledge/manuals/log_analysis/topology/commands 多处路径穿越（任意文件读写）
 - **Agent 防线**：`validate_sql` 剥离注释后逐语句校验 + 危险关键字 token 扫描；`validate_command` 按操作级别约束 + 动作词 + 危险特征；移除可内嵌 SQL 的客户端命令

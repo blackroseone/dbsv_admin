@@ -85,6 +85,7 @@ function updateThemeUI(isDark) {
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', function() {
     initTheme();
+    initSidebar();
     initNavigation();
     initKeyboardShortcuts();
     loadDBTypes();
@@ -117,6 +118,23 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 });
+
+// ==================== 侧边栏折叠 ====================
+function toggleSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    const content = document.querySelector('.content');
+    if (!sidebar || !content) return;
+    const collapsed = sidebar.classList.toggle('collapsed');
+    content.classList.toggle('sidebar-collapsed', collapsed);
+    localStorage.setItem('sidebar_collapsed', collapsed ? '1' : '0');
+}
+
+function initSidebar() {
+    if (localStorage.getItem('sidebar_collapsed') === '1') {
+        document.getElementById('sidebar')?.classList.add('collapsed');
+        document.querySelector('.content')?.classList.add('sidebar-collapsed');
+    }
+}
 
 // 更新侧边栏统计信息
 async function updateSidebarStats() {
@@ -176,13 +194,15 @@ function switchModule(module) {
         navItem.classList.add('active');
     }
 
-    // 更新内容区显示
+    // 更新内容区显示（切换 .active 以触发入场动画，display 用内联保证覆盖初始 none）
     document.querySelectorAll('.module').forEach(m => {
         m.style.display = 'none';
+        m.classList.remove('active');
     });
     const moduleDiv = document.getElementById(`module-${module}`);
     if (moduleDiv) {
         moduleDiv.style.display = 'block';
+        moduleDiv.classList.add('active');
     }
 
     currentModule = module;

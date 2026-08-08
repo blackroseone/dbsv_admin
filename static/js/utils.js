@@ -68,9 +68,48 @@ function formatMarkdown(text) {
     html = html.replace(/^\s*[-*]\s(.*$)/gm, '<li>$1</li>');
     html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
 
-    // 换行：将多个连续空行压缩为单个换行
-    html = html.replace(/\n{3,}/g, '\n\n');
+    // 表格：连续以 | 开头结尾的行（含 |---| 分隔行）渲染为 HTML 表格
+    html = html.replace(/((?:^\|[^\n]*\|\s*\n)+)/gm, function(block) {
+        const lines = block.trim().split('\n').map(l => l.trim());
+        const sepIdx = lines.findIndex(l => /^\|[\s\-|:]+\|$/.test(l));
+        if (sepIdx <= 0) return block;  // 无分隔行，视为普通文本
+        const headerCells = lines[0].replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+        const bodyLines = lines.slice(sepIdx + 1).filter(l => /^\|.*\|$/.test(l));
+        let tableHtml = '<table class="md-table"><thead><tr>';
+        tableHtml += headerCells.map(c => `<th>${c}</th>`).join('');
+        tableHtml += '</tr></thead><tbody>';
+        for (const line of bodyLines) {
+            const cells = line.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+            tableHtml += `<tr>${cells.map(c => `<td>${c}</td>`).join('')}</tr>`;
+        }
+        tableHtml += '</tbody></table>';
+        return tableHtml;
+    });
+
+    // 保护代码块与表格内的换行，避免被换行处理破坏
+    const mdProtected = [];
+    html = html.replace(/<pre[\s\S]*?<\/pre>|<table[\s\S]*?<\/table>/g, function(m) {
+        mdProtected.push(m);
+        return '@@MD_BLOCK' + (mdProtected.length - 1) + '@@';
+    });
+
+    // 统一换行符，避免 \r\n 干扰空行识别
+    html = html.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    // 空行（一个或多个，含仅空白字符的行）→ 单个小间距占位；普通换行 → <br>
+    html = html.replace(/\n(?:[ \t]*\n)+/g, '<span class="md-blank"></span>');
     html = html.replace(/\n/g, '<br>');
+
+    // 还原被保护的代码块/表格
+    html = html.replace(/@@MD_BLOCK(\d+)@@/g, function(_, i) {
+        return mdProtected[+i];
+    });
+
+    // 去掉紧邻块级元素（标题/列表/代码/表格）的 <br> 与空行占位，
+    // 避免标题前出现整行空行（标题自带 margin 负责间距）
+    html = html.replace(/<br>\s*(?=<h[1-3]|<ul|<ol|<pre|<table)/g, '');
+    html = html.replace(/(<\/h[1-3]>|<\/ul>|<\/ol>|<\/pre>|<\/table>)\s*<br>/g, '$1');
+    html = html.replace(/<span class="md-blank"><\/span>\s*(?=<h[1-3]|<ul|<ol|<pre|<table)/g, '');
+    html = html.replace(/(<\/h[1-3]>|<\/ul>|<\/ol>|<\/pre>|<\/table>)\s*<span class="md-blank"><\/span>/g, '$1');
 
     return html;
 }
