@@ -1,4 +1,4 @@
-# 数据库运维工具（DB Tool）
+# 数据库运维工具（DBSV Admin）
 
 ## 开发人：顾云波
 
@@ -33,7 +33,7 @@
 > - `deploy.md` — 部署指南（含依赖清单）
 
 ```
-db-tool/
+dbsv_admin/
     app.py                  # 应用工厂 + 启动入口
     utils.py                # 工具函数（文件解析、LLM 调用）
     deploy.md               # 部署指南（含依赖清单）

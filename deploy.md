@@ -21,7 +21,7 @@
 ## 二、安装依赖
 
 ```bash
-cd /path/to/db-tool
+cd /path/to/dbsv_admin
 
 # 创建虚拟环境（推荐）
 python -m venv venv
@@ -94,17 +94,17 @@ serve(app, host='0.0.0.0', port=5000)
 
 ## 四、Linux systemd 服务（开机自启）
 
-创建 `/etc/systemd/system/db-tool.service`：
+创建 `/etc/systemd/system/dbsv-admin.service`：
 
 ```ini
 [Unit]
-Description=DB Tool Service
+Description=DBSV Admin Service
 After=network.target
 
 [Service]
 User=www-data
-WorkingDirectory=/path/to/db-tool
-ExecStart=/path/to/db-tool/venv/bin/gunicorn -w 4 -b 0.0.0.0:5000 "app:create_app()"
+WorkingDirectory=/path/to/dbsv_admin
+ExecStart=/path/to/dbsv_admin/venv/bin/gunicorn -w 4 -b 0.0.0.0:5000 "app:create_app()"
 Restart=always
 
 [Install]
@@ -115,9 +115,9 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable db-tool
-sudo systemctl start db-tool
-sudo systemctl status db-tool
+sudo systemctl enable dbsv-admin
+sudo systemctl start dbsv-admin
+sudo systemctl status dbsv-admin
 ```
 
 ---
@@ -127,7 +127,7 @@ sudo systemctl status db-tool
 ```nginx
 server {
     listen 80;
-    server_name db-tool.yourcompany.com;
+    server_name dbsv-admin.yourcompany.com;
 
     client_max_body_size 100m;
 
@@ -140,7 +140,7 @@ server {
     }
 
     location /static/ {
-        alias /path/to/db-tool/static/;
+        alias /path/to/dbsv_admin/static/;
         expires 7d;
     }
 }
@@ -247,13 +247,13 @@ conn.close()
 ### 备份
 
 ```bash
-tar -czf db-tool-backup-$(date +%Y%m%d).tar.gz data/
+tar -czf dbsv-admin-backup-$(date +%Y%m%d).tar.gz data/
 ```
 
 ### 恢复
 
 ```bash
-tar -xzf db-tool-backup-YYYYMMDD.tar.gz -C /path/to/db-tool/
+tar -xzf dbsv-admin-backup-YYYYMMDD.tar.gz -C /path/to/dbsv_admin/
 ```
 
 ---

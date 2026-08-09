@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-DBSV 数据库运维工具（DB Tool）：面向 DBA 的 Web 端数据库运维平台。Flask 后端 + 原生 HTML/CSS/JS 单页前端，SQLite 存储，集成知识库、RAG 问答、SQL 工具、集群拓扑、日志分析、智能运维 Agent 等 9 大模块。UI 与代码注释均为中文，开发人：顾云波。
+DBSV 数据库运维工具（DBSV Admin）：面向 DBA 的 Web 端数据库运维平台。Flask 后端 + 原生 HTML/CSS/JS 单页前端，SQLite 存储，集成知识库、RAG 问答、SQL 工具、集群拓扑、日志分析、智能运维 Agent 等 9 大模块。UI 与代码注释均为中文，开发人：顾云波。
 
 **配套文档（优先阅读，比本文件更详细）**：
 - `project.md` — 项目概述、模块功能

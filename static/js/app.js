@@ -50,7 +50,7 @@ let topologyNetwork = DBTool.topologyNetwork;
 
 // ==================== 主题切换 ====================
 function initTheme() {
-    const savedTheme = localStorage.getItem('db-tool-theme');
+    const savedTheme = localStorage.getItem('dbsv-admin-theme');
     if (savedTheme === 'dark') {
         document.documentElement.setAttribute('data-theme', 'dark');
         updateThemeUI(true);
@@ -64,11 +64,11 @@ function toggleTheme() {
     const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
     if (isDark) {
         document.documentElement.removeAttribute('data-theme');
-        localStorage.setItem('db-tool-theme', 'light');
+        localStorage.setItem('dbsv-admin-theme', 'light');
         updateThemeUI(false);
     } else {
         document.documentElement.setAttribute('data-theme', 'dark');
-        localStorage.setItem('db-tool-theme', 'dark');
+        localStorage.setItem('dbsv-admin-theme', 'dark');
         updateThemeUI(true);
     }
 }

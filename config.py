@@ -19,7 +19,7 @@ COMMANDS_DIR = os.path.join(DATA_DIR, 'commands')
 APP_VERSION = '3.0.2'
 
 # Secret Key（生产环境应从环境变量读取）
-SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'db-tool-dev-secret-key-change-in-production')
+SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dbsv-admin-dev-secret-key-change-in-production')
 
 # Session 配置
 SESSION_CONFIG = {
