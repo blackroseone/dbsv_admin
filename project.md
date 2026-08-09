@@ -67,11 +67,12 @@ db-tool/
 
     agent/                  # 智能运维Agent模块
         __init__.py
-        harness.py           # 安全约束框架（SQL白名单 + 命令白名单）
+        harness.py           # 安全约束框架（SQL白名单 + 命令白名单 + 操作级别）
+        connectors.py        # 工具连接器（DB/SSH连接加载解密 + 查询执行 + 指标/Schema生成）
         skills.py            # 领域知识与操作指南（6个内置技能）
         state.py             # Agent状态管理（ReAct状态机）
-        tools.py             # MCP风格工具定义（5个标准化工具）
-        engine.py            # Agent核心引擎（ReAct循环 + 知识库增强）
+        tools.py             # MCP风格工具定义（5个真实工具 + ToolContext）
+        engine.py            # Agent核心引擎（ReAct循环 + 知识库/图谱增强 + 状态持久化）
 
     kg/                     # 知识图谱模块
         __init__.py
@@ -215,12 +216,21 @@ db-tool/
 - 结构化报告：包含问题根因、影响范围、解决方案、预防措施、关注指标
 
 ### 9. 智能运维Agent（/api/agent/*）
-- **ReAct 循环引擎**：Thought → Action → Observation → Conclusion 自主决策
-- **Harness 安全约束框架**：SQL 白名单 + 命令白名单，禁止危险操作
+- **ReAct 循环引擎**：Thought → Action → Observation → Conclusion 自主决策，观察结果回流对话历史实现链式推理
+- **真实工具执行**：5 个工具均为真实实现
+  - `query_database` — 按 db_type 连接目标库执行只读 SQL（pymysql/oracledb/psycopg2/dmPython）
+  - `execute_command` — 通过 paramiko SSH 执行白名单数据库命令
+  - `get_schema_info` — 表清单/表结构查询（按 db_type 生成）
+  - `get_performance_metrics` — 会话/锁/等待/Top SQL/表占用指标
+  - `retrieve_knowledge` — 知识库向量检索
+  - 工具执行双重安全校验（引擎 + 工具自身），表名经白名单校验防注入
+- **Harness 安全约束框架**：SQL 白名单 + 命令白名单（按操作级别），剥离注释校验、移除 SQL 客户端直通，禁止危险操作
+- **知识库 + 知识图谱双增强**：执行前检索知识库（阈值 0.55/0.60），并注入图谱实体卡片/关系链上下文
 - **Skills 领域知识**：6 个内置技能（慢查询诊断、Oracle RAC 检查、备份检查、MySQL 性能分析、AWR 分析、达梦状态检查）
-- **知识库增强**：执行前自动检索知识库，无足够知识时发出警告
-- **SSE 流式输出**：实时展示思考过程、工具执行、观察结果
-- **SSH/数据库连接管理**：支持配置多个目标服务器和数据库连接
+- **SSE 流式输出**：实时展示思考过程、工具执行、观察结果、最终结论
+- **SSH/数据库连接管理**：前端表单配置多个目标服务器和数据库连接（凭据加密存储）
+- **会话持久化**：每步写入 `agent_steps`，会话状态更新到 `agent_sessions`，历史可回放
+- **前端交互**：停止按钮（可中断 SSE）、折叠式思考/工具消息、结果表格化渲染
 - **只读模式**：默认只读，禁止任何修改数据的操作
 - **置信度标注**：🟢高/🟡中/🔴低 三级置信度标识
 

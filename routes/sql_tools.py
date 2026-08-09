@@ -365,13 +365,15 @@ def check_sql_stream():
         if is_valid is None:
             # 不支持该方言，回退到 LLM
             yield f"data: {json.dumps({'content': message})}\n\n"
-            yield f"data: {json.dumps({'content': '\\n正在使用 LLM 进行审核...\\n'})}\n\n"
+            llm_hint = '\\n正在使用 LLM 进行审核...\\n'
+            yield f"data: {json.dumps({'content': llm_hint})}\n\n"
             yield "data: [DONE]\n\n"
             return
 
         # 返回检查结果
         if is_valid:
-            yield f"data: {json.dumps({'content': f'{message}\\n'})}\n\n"
+            check_content = str(message) + '\\n'
+            yield f"data: {json.dumps({'content': check_content})}\n\n"
 
             # 获取 SQL 详细信息
             sql_info = get_sql_info(sql, db_type)
@@ -385,7 +387,8 @@ def check_sql_stream():
                     info_text += f"- 涉及列: {', '.join(sql_info['columns'][:10])}\n"
                 yield f"data: {json.dumps({'content': info_text})}\n\n"
         else:
-            yield f"data: {json.dumps({'content': f'{message}\\n'})}\n\n"
+            err_content = str(message) + '\\n'
+            yield f"data: {json.dumps({'content': err_content})}\n\n"
 
             # 返回详细信息
             if details.get('errors'):
@@ -395,7 +398,8 @@ def check_sql_stream():
                 yield f"data: {json.dumps({'content': error_text})}\n\n"
 
             if details.get('suggestion'):
-                yield f"data: {json.dumps({'content': f"\\n**建议：** {details['suggestion']}"})}\n\n"
+                suggestion_content = '\\n**建议：** ' + str(details.get('suggestion', ''))
+                yield f"data: {json.dumps({'content': suggestion_content})}\n\n"
 
         yield "data: [DONE]\n\n"
 

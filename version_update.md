@@ -9,6 +9,46 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v3.0.2 (2026-08-08)
+
+### 🤖 智能运维 Agent 全面接通（阶段1-4）
+- **真实工具执行**：5 个工具从桩改为真实实现
+  - `query_database`：按 db_type 连接目标库执行只读 SQL（新增 `agent/connectors.py`，支持 pymysql/oracledb/psycopg2/dmPython）
+  - `execute_command`：通过 paramiko SSH 执行白名单数据库命令
+  - `get_schema_info` / `get_performance_metrics`：按 db_type 生成只读查询
+  - `retrieve_knowledge`：知识库向量检索
+  - 工具执行双重安全校验 + 表名白名单防注入；新增 `ToolContext` 注入连接上下文
+- **ReAct 链式推理**：观察结果回流对话历史，模型可基于工具结果继续推理
+- **知识图谱接入**：检索 chunk 后注入图谱实体卡片/关系链（RAG + 图谱双增强）
+- **会话持久化**：每步写入 `agent_steps`，会话状态更新到 `agent_sessions`，历史可回放
+- **前端改版**：SSH/DB 连接配置弹窗、停止按钮（AbortController）、折叠式消息、结果表格化、完整 Agent 样式
+- 检索阈值对齐 0.55/0.60
+
+### 🎨 前端视觉优化
+- **主题重构**：亮色主题现代化（侧边栏改中性深色、单强调色、中性阴影），明暗主题统一蓝色 accent，补齐 `--primary-color` 定义
+- **统计卡片渐变收敛**：5 组随机鲜艳渐变改为冷色系蓝青 + 暖色琥珀点缀
+- **导航 SVG 图标**：10 个导航项 + logo 从 emoji 换为 stroke 风格 SVG（当前色自适应主题）
+- **字体层级**：中文字体栈 + 抗锯齿，标题字重/字距统一
+- **模块样式均衡**：补齐 `btn-success`/`btn-xs`/`btn-icon` 按钮变体、Agent 知识引用块、tab-content、拓扑服务器标签等无样式组件
+- **交互与可访问性**：模块切换淡入动画、`:focus-visible` 焦点环、按钮/表单禁用态
+- **响应式**：侧边栏可折叠（图标栏模式，localStorage 记忆）+ 窄屏（<768px）自动收窄
+
+### 🛡️ 安全加固
+- **路径净化**：新增 `safe_filename`/`safe_join`，修复 knowledge/manuals/log_analysis/topology/commands 多处路径穿越（任意文件读写）
+- **Agent 防线**：`validate_sql` 剥离注释后逐语句校验 + 危险关键字 token 扫描；`validate_command` 按操作级别约束 + 动作词 + 危险特征；移除可内嵌 SQL 的客户端命令
+- **凭据加密**：SSH/DB 连接密码/私钥 Fernet 加密存储（新增依赖 `cryptography`）
+- **前端 XSS**：`escapeHtml` 补引号转义、新增 `escapeJsAttr`，全量替换 inline 事件处理器与未转义插入点
+- 移除明文 api_key 返回、统一 clusters/resource_pools schema
+
+### 🧠 RAG 与知识图谱正确性
+- `\b` 词边界在中文语境失配（"使用MySQL数据库"）已修复，实体召回率提升
+- 版本提取：多产品同版本各出实体、支持 Oracle 19c 字母后缀、通用版本前缀去重
+- 函数提取过滤 SQL 关键字（IN/OVER/CASE）；共现关系按位置邻近收敛
+- 模型不可用时 QA 自动回退关键词检索；分块参数统一到 config（2000/100）
+- `find_shortest_path` 双向遍历；`search_entities` LIKE 通配符转义
+
+> 完整审查结论见 `code_review_2026-08-07.md`。
+
 ## v3.0.1 (2026-08-05)
 
 ### 🗂️ 集群拓扑批量导入功能

@@ -16,21 +16,26 @@ function escapeHtml(text) {
     if (!text) return '';
     const div = document.createElement('div');
     div.textContent = text;
-    return div.innerHTML;
+    // 补充引号转义：文本内容与双引号属性上下文均安全
+    return div.innerHTML
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
-function escapeJs(text) {
+function escapeJsAttr(text) {
+    // 用于 inline 事件处理器（onclick 等）内的 JS 字符串字面量。
+    // 该上下文经过「HTML 属性实体解码 → JS 引擎解析」两道处理，
+    // 因此必须用反斜杠转义（HTML 解码不触碰反斜杠），且先转义反斜杠
+    // 再插入 \x.. 序列，避免产物被二次转义。转义后不含裸 ' " & 。
     if (!text) return '';
-    // 先进行 HTML 转义，再处理 JS 特殊字符
-    return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#x27;')
+    return String(text)
         .replace(/\\/g, '\\\\')
+        .replace(/&/g, '\\x26')
+        .replace(/'/g, '\\x27')
+        .replace(/"/g, '\\x22')
         .replace(/\n/g, '\\n')
-        .replace(/\r/g, '\\r');
+        .replace(/\r/g, '\\r')
+        .replace(/\t/g, '\\t');
 }
 
 function formatFileSize(bytes) {
@@ -63,9 +68,46 @@ function formatMarkdown(text) {
     html = html.replace(/^\s*[-*]\s(.*$)/gm, '<li>$1</li>');
     html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
 
-    // 换行：将多个连续空行压缩为单个换行
-    html = html.replace(/\n{3,}/g, '\n\n');
+    // 表格：连续以 | 开头结尾的行（含 |---| 分隔行）渲染为 HTML 表格
+    html = html.replace(/((?:^\|[^\n]*\|\s*\n)+)/gm, function(block) {
+        const lines = block.trim().split('\n').map(l => l.trim());
+        const sepIdx = lines.findIndex(l => /^\|[\s\-|:]+\|$/.test(l));
+        if (sepIdx <= 0) return block;  // 无分隔行，视为普通文本
+        const headerCells = lines[0].replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+        const bodyLines = lines.slice(sepIdx + 1).filter(l => /^\|.*\|$/.test(l));
+        let tableHtml = '<table class="md-table"><thead><tr>';
+        tableHtml += headerCells.map(c => `<th>${c}</th>`).join('');
+        tableHtml += '</tr></thead><tbody>';
+        for (const line of bodyLines) {
+            const cells = line.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+            tableHtml += `<tr>${cells.map(c => `<td>${c}</td>`).join('')}</tr>`;
+        }
+        tableHtml += '</tbody></table>';
+        return tableHtml;
+    });
+
+    // 保护代码块与表格内的换行，避免被换行处理破坏
+    const mdProtected = [];
+    html = html.replace(/<pre[\s\S]*?<\/pre>|<table[\s\S]*?<\/table>/g, function(m) {
+        mdProtected.push(m);
+        return '@@MD_BLOCK' + (mdProtected.length - 1) + '@@';
+    });
+
+    // 统一换行符
+    html = html.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    // 删除空行（一个或多个，含仅空白字符的行）：折叠为单个换行，段落间只留一个普通换行
+    html = html.replace(/\n(?:[ \t]*\n)+/g, '\n');
     html = html.replace(/\n/g, '<br>');
+
+    // 还原被保护的代码块/表格
+    html = html.replace(/@@MD_BLOCK(\d+)@@/g, function(_, i) {
+        return mdProtected[+i];
+    });
+
+    // 去掉紧邻块级元素（标题/列表/代码/表格）的 <br>，
+    // 避免标题前出现整行空行（标题自带 margin 负责间距）
+    html = html.replace(/<br>\s*(?=<h[1-3]|<ul|<ol|<pre|<table)/g, '');
+    html = html.replace(/(<\/h[1-3]>|<\/ul>|<\/ol>|<\/pre>|<\/table>)\s*<br>/g, '$1');
 
     return html;
 }

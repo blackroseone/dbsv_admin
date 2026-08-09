@@ -29,7 +29,7 @@ source venv/bin/activate        # Linux
 # venv\Scripts\activate         # Windows
 
 # 安装依赖（见下方依赖清单）
-pip install flask requests python-docx openpyxl PyPDF2 python-multipart sentence-transformers numpy sqlglot
+pip install flask requests python-docx openpyxl PyPDF2 python-multipart sentence-transformers numpy sqlglot cryptography pymysql oracledb psycopg2-binary paramiko
 ```
 
 ### 依赖清单
@@ -45,6 +45,12 @@ pip install flask requests python-docx openpyxl PyPDF2 python-multipart sentence
 | `sentence-transformers` | >=2.2.0 | 向量嵌入模型（RAG 语义检索） |
 | `numpy` | >=1.24.0 | 数值计算（向量相似度） |
 | `sqlglot` | >=20.0.0 | SQL 语法解析（本地 SQL 审核） |
+| `cryptography` | >=3.0.0 | 凭据加密（Agent SSH/DB 连接配置落库加密） |
+| `pymysql` | >=1.0.0 | Agent 查询 MySQL 系数据库（mysql/tdsql/oceanbase/goldendb） |
+| `oracledb` | >=1.0.0 | Agent 查询 Oracle 数据库（thin 模式，无需客户端） |
+| `psycopg2-binary` | >=2.9.0 | Agent 查询 GaussDB/PostgreSQL |
+| `paramiko` | >=2.0.0 | Agent 通过 SSH 执行数据库命令 |
+| `dmPython` | 可选 | Agent 查询达梦数据库（社区驱动，按需安装） |
 
 > **注意**：sentence-transformers 首次运行会自动下载多语言模型（约 500MB），需要网络访问 HuggingFace。如服务器无法访问外网，可提前在有网络的机器下载后拷贝到 `data/models/` 目录。
 

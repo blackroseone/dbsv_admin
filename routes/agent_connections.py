@@ -3,6 +3,7 @@ import json
 import uuid
 from flask import Blueprint, request, jsonify
 from db.database import get_db, add_operation_log
+from utils import encrypt_secret
 
 agent_conn_bp = Blueprint('agent_connections', __name__)
 
@@ -43,7 +44,10 @@ def create_ssh_connection():
     db_type = data['db_type']
     os_type = data.get('os_type', 'linux')
 
-    # TODO: AES加密密码/密钥
+    # 凭据加密后入库
+    password = encrypt_secret(password)
+    private_key = encrypt_secret(private_key)
+    passphrase = encrypt_secret(passphrase)
 
     conn = get_db()
     conn.execute(
@@ -141,7 +145,8 @@ def create_db_connection():
     sid = data.get('sid', '')
     service_name = data.get('service_name', '')
 
-    # TODO: AES加密密码
+    # 凭据加密后入库
+    password = encrypt_secret(password)
 
     conn = get_db()
     conn.execute(

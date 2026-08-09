@@ -48,11 +48,12 @@ db-tool/
 │
 ├── agent/                  # 智能运维Agent模块
 │   ├── __init__.py
-│   ├── harness.py           # 安全约束框架（SQL白名单 + 命令白名单）
+│   ├── harness.py           # 安全约束框架（SQL白名单 + 命令白名单 + 操作级别）
+│   ├── connectors.py        # 工具连接器（DB/SSH连接加载解密 + 查询执行 + 指标/Schema生成）
 │   ├── skills.py            # 领域知识与操作指南（6个内置技能）
 │   ├── state.py             # Agent状态管理（ReAct状态机）
-│   ├── tools.py             # MCP风格工具定义（5个标准化工具）
-│   └── engine.py            # Agent核心引擎（ReAct循环 + 知识库增强）
+│   ├── tools.py             # MCP风格工具定义（5个真实工具 + ToolContext）
+│   └── engine.py            # Agent核心引擎（ReAct循环 + 知识库/图谱增强 + 状态持久化）
 │
 ├── rag/                    # 向量检索模块
 │   ├── __init__.py
@@ -226,9 +227,9 @@ db-tool/
 | `_fetch_servers_for_cluster(conn, resource_pool_id)` | `sqlite3.Connection, str` | `list` | 获取指定资源池下的所有物理机及其实例 |
 | `_fetch_tenants_for_cluster(conn, resource_pool_id)` | `sqlite3.Connection, str` | `list` | 获取指定资源池下的所有租户 |
 | `_build_cluster_data(conn, cluster_row)` | `sqlite3.Connection, sqlite3.Row` | `dict` | 构建单个集群的完整数据 |
-| `add_cluster(cluster_id, name, db_type, environment, description)` | ... | 无 | 添加集群（自动关联 resource_pool_id） |
-| `update_cluster(cluster_id, **kwargs)` | `str, dict` | 无 | 更新集群信息 |
-| `delete_cluster(cluster_id)` | `str` | 无 | 删除集群 |
+| `add_resource_pool(pool_id, name, db_type, environment, description)` | `str, str, str, str, str` | 无 | 添加集群/资源池（GET /api/topology/clusters 的顶级实体） |
+| `update_resource_pool(pool_id, **kwargs)` | `str, dict` | 无 | 更新集群/资源池信息 |
+| `delete_resource_pool(pool_id)` | `str` | 无 | 删除集群/资源池（级联删除其下服务器、二级集群、租户、实例） |
 | `add_server(server_id, resource_pool_id, name, host, description, datacenter='', node_role='计算节点', hardware_type='非信创物理机', cpu='', memory='', cluster_id='', sn='')` | ... | 无 | 添加物理机 |
 | `delete_server(server_id)` | `str` | 无 | 删除物理机 |
 | `add_instance(instance_id, server_id, name, port, cpu, memory, description)` | ... | 无 | 添加实例 |
@@ -588,9 +589,9 @@ data: [DONE]
 
 | 方法 | 参数 | 返回值 | 说明 |
 |------|------|--------|------|
-| `validate_sql(sql, level)` | `str, OperationLevel` | `(bool, str)` | 验证SQL安全性（白名单+黑名单） |
-| `validate_command(command, db_type)` | `str, str` | `(bool, str)` | 验证命令安全性 |
-| `get_allowed_commands(db_type)` | `str` | `Dict` | 获取允许的命令列表 |
+| `validate_sql(sql, level)` | `str, OperationLevel` | `(bool, str)` | 验证SQL安全性（剥离注释后逐语句白名单+危险关键字扫描） |
+| `validate_command(command, db_type, level)` | `str, str, OperationLevel` | `(bool, str)` | 验证命令安全性（级别门槛+动作词+危险特征） |
+| `get_allowed_commands(db_type)` | `str` | `Dict` | 获取命令策略（命令名 → 级别/动作词） |
 | `get_allowed_sql_types(level)` | `OperationLevel` | `set` | 获取允许的SQL类型 |
 
 **安全级别：**
@@ -647,17 +648,31 @@ data: [DONE]
 
 **装饰器：** `register_tool(name, description, parameters)`
 
-**已注册工具（5个）：**
-1. `query_database` — 执行SQL查询（只读）
-2. `execute_command` — 通过SSH执行数据库命令
-3. `get_schema_info` — 获取数据库Schema信息
-4. `get_performance_metrics` — 获取性能指标
-5. `retrieve_knowledge` — 从知识库检索相关文档
+**已注册工具（5个，真实执行）：**
+1. `query_database` — 执行SQL查询（只读，需 DB 连接，双重安全校验）
+2. `execute_command` — 通过SSH执行白名单数据库命令（需 SSH 连接）
+3. `get_schema_info` — 获取数据库Schema信息（表清单/表结构，按 db_type 生成查询）
+4. `get_performance_metrics` — 获取性能指标（sessions/locks/waits/sql_stats/table_stats）
+5. `retrieve_knowledge` — 从知识库检索相关文档（向量相似度）
+
+**工具执行上下文：** `ToolContext(db_conn_id, ssh_conn_id, db_type, operation_level)`，由引擎 `_execute_action` 注入，`execute_tool(tool_name, parameters, ctx)`。
+
+**连接器 `agent/connectors.py`：**
+| 函数 | 说明 |
+|------|------|
+| `load_db_conn(db_conn_id)` | 加载 DB 连接配置并解密密码 |
+| `load_ssh_conn(ssh_conn_id)` | 加载 SSH 连接配置并解密凭据 |
+| `run_sql(conn_info, sql, max_rows, timeout)` | 按 db_type 分发到 pymysql/oracledb/psycopg2/dmPython 执行 |
+| `run_ssh_command(conn_info, command, timeout)` | paramiko 执行命令，返回 stdout/stderr/exit_code |
+| `build_schema_query(db_type, table_name)` | 生成只读 schema 查询（表名经 `_safe_identifier` 白名单校验） |
+| `build_metric_query(db_type, metric_type)` | 生成只读性能指标查询 |
+
+> 驱动依赖（deploy.md）：pymysql / oracledb / psycopg2-binary / paramiko；dmPython 可选。缺失时工具返回提示而非崩溃。
 
 | 函数 | 说明 |
 |------|------|
 | `get_tool_schemas()` | 获取所有工具的JSON Schema |
-| `execute_tool(tool_name, parameters)` | 执行指定工具 |
+| `execute_tool(tool_name, parameters, ctx=None)` | 执行指定工具（ctx 为 ToolContext） |
 | `get_tool_names()` | 获取所有工具名称 |
 
 ---
@@ -668,14 +683,15 @@ data: [DONE]
 
 | 方法 | 说明 |
 |------|------|
-| `run_stream(user_question)` | ReAct主循环（流式输出Generator） |
-| `_retrieve_knowledge_strict(query)` | 严格检索知识库（带阈值控制） |
-| `_build_system_prompt(knowledge_refs, skills)` | 构建system prompt |
-| `_think(question, system_prompt)` | LLM思考 |
-| `_decide_action(thought)` | 基于思考决定下一步动作 |
+| `run_stream(user_question)` | ReAct主循环（流式输出Generator，观察结果经对话历史回流实现链式推理） |
+| `_retrieve_knowledge_strict(query)` | 严格检索知识库（阈值 0.55/0.60，返回含 chunk_ids） |
+| `_retrieve_kg_context(query, chunk_ids)` | 基于检索 chunk 获取知识图谱上下文（enhance_qa_context） |
+| `_build_system_prompt(knowledge_refs, skills, kg_context)` | 构建system prompt（注入知识库+知识图谱+Skills） |
+| `_think(system_prompt)` | LLM思考（基于完整对话历史） |
+| `_decide_action(thought)` | 提取工具调用 JSON（容错代码围栏/嵌套括号/字符串内大括号） |
 | `_validate_action(action)` | 验证动作安全性 |
 | `_verify_knowledge_support(action, knowledge_refs)` | 验证操作是否有知识库支撑 |
-| `_execute_action(action)` | 执行工具 |
+| `_execute_action(action)` | 执行工具（注入 ToolContext） |
 | `_format_result(result)` | 格式化执行结果 |
 | `_is_complete(observation)` | 判断任务是否完成 |
 | `_conclude(knowledge_refs)` | 生成最终结论 |

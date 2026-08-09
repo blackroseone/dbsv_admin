@@ -47,7 +47,6 @@ def get_llm_config():
         result = {
             'api_url': default_model.get('api_url', ''),
             'model_name': default_model.get('model_name', ''),
-            'api_key': api_key,
         }
         if api_key and len(api_key) > 8:
             result['api_key_masked'] = api_key[:4] + '****' + api_key[-4:]
@@ -65,7 +64,6 @@ def get_llm_config():
     result = {
         'api_url': api_url,
         'model_name': model_name,
-        'api_key': api_key,
     }
     if api_key and len(api_key) > 8:
         result['api_key_masked'] = api_key[:4] + '****' + api_key[-4:]
@@ -265,8 +263,7 @@ def test_connection():
             'details': {
                 'api_url': api_url,
                 'model_name': model_name,
-                'api_key_length': len(api_key) if api_key else 0,
-                'api_key_prefix': api_key[:8] if api_key else ''
+                'api_key_length': len(api_key) if api_key else 0
             }
         }), 500
 

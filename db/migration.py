@@ -8,7 +8,7 @@ from datetime import datetime
 from .database import (
     get_db, set_config, get_db_types, add_db_type,
     add_knowledge_file, get_favorites,
-    toggle_favorite, add_cluster, DB_PATH
+    toggle_favorite, add_resource_pool, DB_PATH
 )
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -77,7 +77,7 @@ def migrate_json_to_sqlite():
     if clusters:
         for cluster in clusters:
             cluster_id = cluster.get('id', '')
-            add_cluster(
+            add_resource_pool(
                 cluster_id,
                 cluster.get('name', ''),
                 cluster.get('db_type', ''),

@@ -1,9 +1,24 @@
 """Agent工具定义 - MCP风格
 每个工具包含：Info（声明/Schema）+ InvokableRun（实际执行）
 """
-from typing import Dict, Any, Callable, List
+from typing import Dict, Any, Callable, List, Optional
 from dataclasses import dataclass
 import json
+
+from agent.harness import Harness, OperationLevel
+from agent.connectors import (
+    load_db_conn, run_sql, load_ssh_conn, run_ssh_command,
+    build_schema_query, build_metric_query,
+)
+
+
+@dataclass
+class ToolContext:
+    """工具执行上下文：携带连接配置与操作级别"""
+    db_conn_id: Optional[str] = None
+    ssh_conn_id: Optional[str] = None
+    db_type: str = ''
+    operation_level: OperationLevel = OperationLevel.READONLY
 
 
 @dataclass
@@ -47,18 +62,23 @@ def register_tool(name: str, description: str, parameters: Dict):
         "required": ["sql"]
     }
 )
-def query_database(params: Dict) -> Dict:
-    """执行SQL查询"""
-    sql = params["sql"]
+def query_database(params: Dict, ctx: ToolContext) -> Dict:
+    """执行SQL查询（需数据库连接配置）"""
+    sql = params.get("sql", "")
     max_rows = params.get("max_rows", 100)
 
-    # 实际执行逻辑由Agent核心引擎注入
-    return {
-        "columns": [],
-        "rows": [],
-        "row_count": 0,
-        "note": "工具已注册，实际执行需要数据库连接"
-    }
+    if not ctx or not ctx.db_conn_id:
+        return {"error": "未配置数据库连接，无法执行查询"}
+
+    # 双重校验：即使绕过引擎，工具自身也拒绝非只读 SQL
+    is_safe, err = Harness.validate_sql(sql, ctx.operation_level)
+    if not is_safe:
+        return {"error": f"SQL被安全校验拦截: {err}"}
+
+    conn_info, load_err = load_db_conn(ctx.db_conn_id)
+    if load_err:
+        return {"error": load_err}
+    return run_sql(conn_info, sql, max_rows=max_rows)
 
 
 @register_tool(
@@ -73,18 +93,23 @@ def query_database(params: Dict) -> Dict:
         "required": ["command"]
     }
 )
-def execute_command(params: Dict) -> Dict:
-    """执行SSH命令"""
-    command = params["command"]
+def execute_command(params: Dict, ctx: ToolContext) -> Dict:
+    """执行SSH命令（需SSH连接配置）"""
+    command = params.get("command", "")
     timeout = params.get("timeout", 30)
 
-    # 实际执行逻辑由Agent核心引擎注入
-    return {
-        "stdout": "",
-        "stderr": "",
-        "exit_code": 0,
-        "note": "工具已注册，实际执行需要SSH连接"
-    }
+    if not ctx or not ctx.ssh_conn_id:
+        return {"error": "未配置SSH连接，无法执行命令"}
+
+    # 命令白名单 + 级别校验（双重防护）
+    is_safe, err = Harness.validate_command(command, ctx.db_type, ctx.operation_level)
+    if not is_safe:
+        return {"error": f"命令被安全校验拦截: {err}"}
+
+    conn_info, load_err = load_ssh_conn(ctx.ssh_conn_id)
+    if load_err:
+        return {"error": load_err}
+    return run_ssh_command(conn_info, command, timeout=timeout)
 
 
 @register_tool(
@@ -97,13 +122,29 @@ def execute_command(params: Dict) -> Dict:
         }
     }
 )
-def get_schema_info(params: Dict) -> Dict:
-    """获取Schema信息"""
+def get_schema_info(params: Dict, ctx: ToolContext) -> Dict:
+    """获取Schema信息（表清单或表结构，需数据库连接）"""
     table_name = params.get("table_name")
 
+    if not ctx or not ctx.db_conn_id:
+        return {"error": "未配置数据库连接，无法获取Schema"}
+
+    try:
+        sql = build_schema_query(ctx.db_type, table_name)
+    except ValueError as e:
+        return {"error": str(e)}
+
+    conn_info, load_err = load_db_conn(ctx.db_conn_id)
+    if load_err:
+        return {"error": load_err}
+    result = run_sql(conn_info, sql)
+    if 'error' in result:
+        return result
     return {
-        "tables": [],
-        "note": "工具已注册，实际执行需要数据库连接"
+        "tables": result.get('rows', []),
+        "columns": result.get('columns', []),
+        "row_count": result.get('row_count', 0),
+        "table_name": table_name or ''
     }
 
 
@@ -120,13 +161,29 @@ def get_schema_info(params: Dict) -> Dict:
         }
     }
 )
-def get_performance_metrics(params: Dict) -> Dict:
-    """获取性能指标"""
+def get_performance_metrics(params: Dict, ctx: ToolContext) -> Dict:
+    """获取性能指标（需数据库连接）"""
     metric_type = params.get("metric_type", "sessions")
 
+    if not ctx or not ctx.db_conn_id:
+        return {"error": "未配置数据库连接，无法获取性能指标"}
+
+    try:
+        sql = build_metric_query(ctx.db_type, metric_type)
+    except ValueError as e:
+        return {"error": str(e)}
+
+    conn_info, load_err = load_db_conn(ctx.db_conn_id)
+    if load_err:
+        return {"error": load_err}
+    result = run_sql(conn_info, sql)
+    if 'error' in result:
+        return result
     return {
-        "metrics": [],
-        "note": "工具已注册，实际执行需要数据库连接"
+        "metrics": result.get('rows', []),
+        "columns": result.get('columns', []),
+        "row_count": result.get('row_count', 0),
+        "metric_type": metric_type
     }
 
 
@@ -143,16 +200,16 @@ def get_performance_metrics(params: Dict) -> Dict:
         "required": ["query"]
     }
 )
-def retrieve_knowledge(params: Dict) -> Dict:
-    """检索知识库"""
-    query = params["query"]
-    db_type = params.get("db_type")
+def retrieve_knowledge(params: Dict, ctx: ToolContext) -> Dict:
+    """检索知识库（向量相似度）"""
+    query = params.get("query", "")
+    db_type = params.get("db_type") or (ctx.db_type if ctx else '')
     top_k = params.get("top_k", 5)
 
-    return {
-        "results": [],
-        "note": "工具已注册，实际执行需要RAG引擎"
-    }
+    from rag.embedder import Embedder
+    embedder = Embedder()
+    results = embedder.similarity_search(query, db_type=db_type or None, top_k=top_k)
+    return {"results": results, "count": len(results)}
 
 
 def get_tool_schemas() -> List[Dict]:
@@ -170,14 +227,20 @@ def get_tool_schemas() -> List[Dict]:
     return schemas
 
 
-def execute_tool(tool_name: str, parameters: Dict) -> Dict:
-    """执行工具"""
+def execute_tool(tool_name: str, parameters: Dict, ctx: Optional[ToolContext] = None) -> Dict:
+    """执行工具
+
+    Args:
+        tool_name: 工具名
+        parameters: 工具参数
+        ctx: 工具上下文（连接配置 + 操作级别），由引擎注入
+    """
     tool = TOOLS.get(tool_name)
     if not tool:
         return {"error": f"未知工具: {tool_name}"}
 
     try:
-        return tool.run(parameters)
+        return tool.run(parameters, ctx)
     except Exception as e:
         return {"error": f"工具执行失败: {str(e)}"}
 

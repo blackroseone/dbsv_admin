@@ -486,19 +486,34 @@ def init_db():
         conn.execute("ALTER TABLE servers ADD COLUMN sn TEXT DEFAULT ''")
         conn.commit()
 
-    # 数据库迁移：将 clusters 表重命名为 resource_pools 表
+    # 数据库迁移：旧版 clusters 表（顶级集群，含 db_type 列、无 resource_pool_id 列）
+    # 的数据迁移到 resource_pools。新版 executescript 已建空 resource_pools 与二级
+    # clusters 表，故仅当 resource_pools 为空且 clusters 为旧版结构时执行。
     try:
-        conn.execute("SELECT 1 FROM resource_pools LIMIT 1")
+        rp_count = conn.execute("SELECT COUNT(*) FROM resource_pools").fetchone()[0]
     except sqlite3.OperationalError:
-        # resource_pools 表不存在，需要创建并迁移数据
-        conn.execute('''
-            CREATE TABLE resource_pools AS
-            SELECT * FROM clusters
-        ''')
-        conn.execute('''
-            CREATE UNIQUE INDEX idx_resource_pools_id ON resource_pools(id)
-        ''')
-        conn.commit()
+        rp_count = 1  # resource_pools 不存在时跳过迁移（新版应在 executescript 中已创建）
+    if rp_count == 0:
+        cluster_cols = {r[1] for r in conn.execute("PRAGMA table_info(clusters)").fetchall()}
+        if 'db_type' in cluster_cols and 'resource_pool_id' not in cluster_cols:
+            conn.execute('''
+                INSERT INTO resource_pools (id, name, db_type, environment, description, created_at)
+                SELECT id, name, db_type, environment, description, created_at FROM clusters
+            ''')
+            # 旧表数据已迁空，删除并按二级集群新结构重建
+            conn.execute("DROP TABLE clusters")
+            conn.commit()
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS clusters (
+                    id TEXT PRIMARY KEY,
+                    resource_pool_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (resource_pool_id) REFERENCES resource_pools(id) ON DELETE CASCADE
+                )
+            ''')
+            conn.commit()
 
     # 数据库迁移：为 servers 表添加 resource_pool_id 字段
     try:
@@ -1262,37 +1277,6 @@ def delete_system_knowledge_files():
     """删除所有 _system 类型的知识库文件记录"""
     conn = get_db()
     conn.execute("DELETE FROM knowledge_files WHERE db_type='_system'")
-    conn.commit()
-
-
-def add_cluster(cluster_id, name, db_type, environment, description):
-    """添加物理集群"""
-    conn = get_db()
-    conn.execute(
-        "INSERT INTO clusters (id, name, db_type, environment, description) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (cluster_id, name, db_type, environment, description)
-    )
-    conn.commit()
-
-
-def update_cluster(cluster_id, **kwargs):
-    """更新物理集群"""
-    conn = get_db()
-    allowed = {'name', 'db_type', 'environment', 'description'}
-    updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
-    if not updates:
-        return
-    set_clause = ', '.join(f"{k}=?" for k in updates)
-    values = list(updates.values()) + [cluster_id]
-    conn.execute(f"UPDATE clusters SET {set_clause} WHERE id=?", values)
-    conn.commit()
-
-
-def delete_cluster(cluster_id):
-    """删除物理集群"""
-    conn = get_db()
-    conn.execute("DELETE FROM clusters WHERE id=?", (cluster_id,))
     conn.commit()
 
 

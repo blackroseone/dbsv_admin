@@ -85,6 +85,7 @@ function updateThemeUI(isDark) {
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', function() {
     initTheme();
+    initSidebar();
     initNavigation();
     initKeyboardShortcuts();
     loadDBTypes();
@@ -117,6 +118,23 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 });
+
+// ==================== 侧边栏折叠 ====================
+function toggleSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    const content = document.querySelector('.content');
+    if (!sidebar || !content) return;
+    const collapsed = sidebar.classList.toggle('collapsed');
+    content.classList.toggle('sidebar-collapsed', collapsed);
+    localStorage.setItem('sidebar_collapsed', collapsed ? '1' : '0');
+}
+
+function initSidebar() {
+    if (localStorage.getItem('sidebar_collapsed') === '1') {
+        document.getElementById('sidebar')?.classList.add('collapsed');
+        document.querySelector('.content')?.classList.add('sidebar-collapsed');
+    }
+}
 
 // 更新侧边栏统计信息
 async function updateSidebarStats() {
@@ -176,13 +194,15 @@ function switchModule(module) {
         navItem.classList.add('active');
     }
 
-    // 更新内容区显示
+    // 更新内容区显示（切换 .active 以触发入场动画，display 用内联保证覆盖初始 none）
     document.querySelectorAll('.module').forEach(m => {
         m.style.display = 'none';
+        m.classList.remove('active');
     });
     const moduleDiv = document.getElementById(`module-${module}`);
     if (moduleDiv) {
         moduleDiv.style.display = 'block';
+        moduleDiv.classList.add('active');
     }
 
     currentModule = module;
@@ -226,7 +246,8 @@ async function loadDBTypes() {
         const selects = [
             'knowledge-db-type', 'qa-db-type', 'sql-db-type',
             'sql-source-db', 'sql-target-db', 'explain-db-type',
-            'commands-db-type', 'cluster-db-type', 'edit-cluster-db-type'
+            'commands-db-type', 'cluster-db-type', 'edit-cluster-db-type',
+            'agent-ssh-db-type', 'agent-db-type'
         ];
 
         selects.forEach(selectId => {
@@ -422,7 +443,7 @@ function renderDBChart(byDbType) {
 
         return `
             <div class="chart-bar-item">
-                <div class="chart-label">${icon} ${name}</div>
+                <div class="chart-label">${escapeHtml(icon)} ${escapeHtml(name)}</div>
                 <div class="chart-bar-container">
                     <div class="chart-bar" style="width: ${percentage}%"></div>
                     <span class="chart-value">${count}</span>
@@ -451,7 +472,7 @@ function renderEmbeddingChart(embeddingsByDbType) {
 
         return `
             <div class="chart-bar-item">
-                <div class="chart-label">${icon} ${name}</div>
+                <div class="chart-label">${escapeHtml(icon)} ${escapeHtml(name)}</div>
                 <div class="chart-bar-container">
                     <div class="chart-bar chart-bar-embedding" style="width: ${percentage}%"></div>
                     <span class="chart-value">${count}</span>
@@ -470,8 +491,8 @@ async function loadRecentLogs() {
         if (data.logs && data.logs.length > 0) {
             logsDiv.innerHTML = data.logs.map(log => `
                 <div class="log-item">
-                    <span class="log-time">${log.timestamp}</span>
-                    <span class="log-module">[${log.module}]</span>
+                    <span class="log-time">${escapeHtml(log.timestamp)}</span>
+                    <span class="log-module">[${escapeHtml(log.module)}]</span>
                     <span class="log-action">${escapeHtml(log.action)}</span>
                 </div>
             `).join('');
@@ -495,7 +516,7 @@ async function loadSystemHealth() {
         if (health.checks) {
             for (const [key, check] of Object.entries(health.checks)) {
                 const checkIcon = check.status === 'ok' ? '✅' : check.status === 'warning' ? '⚠️' : '❌';
-                checksHtml += `<div class="health-check">${checkIcon} ${check.message}</div>`;
+                checksHtml += `<div class="health-check">${checkIcon} ${escapeHtml(check.message)}</div>`;
             }
         }
 

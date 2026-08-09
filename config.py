@@ -16,7 +16,7 @@ COMMANDS_DIR = os.path.join(DATA_DIR, 'commands')
 # ==================== 应用配置 ====================
 
 # 版本号
-APP_VERSION = '3.0.1'
+APP_VERSION = '3.0.2'
 
 # Secret Key（生产环境应从环境变量读取）
 SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'db-tool-dev-secret-key-change-in-production')
@@ -45,9 +45,9 @@ SYNC_INTERVAL_HOURS = int(os.environ.get('DB_TOOL_SYNC_INTERVAL_HOURS', '1'))
 # 嵌入模型名称
 EMBED_MODEL_NAME = os.environ.get('DB_TOOL_EMBED_MODEL', 'moka-ai/m3e-base')
 
-# 文本分块配置
-CHUNK_SIZE = 500
-CHUNK_OVERLAP = 50
+# 文本分块配置（rag/embedder.chunk_text 默认值从此处读取）
+CHUNK_SIZE = 2000
+CHUNK_OVERLAP = 100
 
 # ==================== LLM 配置 ====================
 

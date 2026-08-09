@@ -129,6 +129,8 @@ def search_entities(keyword, entity_type=None, limit=20):
     """
     conn = get_db()
     normalized = keyword.lower().strip()
+    # 转义 LIKE 通配符，避免 %/_ 被当作通配符（配合 ESCAPE '\' 使用）
+    escaped = keyword.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
     # 构建查询：优先精确匹配，然后前缀匹配，最后模糊匹配
     if entity_type:
@@ -141,10 +143,10 @@ def search_entities(keyword, entity_type=None, limit=20):
         ).fetchall()
 
         # 再前缀匹配
-        prefix_pattern = f"{keyword}%"
+        prefix_pattern = f"{escaped}%"
         prefix_rows = conn.execute(
             """SELECT * FROM kg_entities
-            WHERE entity_type=? AND (name LIKE ? OR normalized_name LIKE ?)
+            WHERE entity_type=? AND (name LIKE ? ESCAPE '\\' OR normalized_name LIKE ? ESCAPE '\\')
             AND name != ? AND normalized_name != ?
             ORDER BY confidence DESC, name
             LIMIT ?""",
@@ -152,12 +154,12 @@ def search_entities(keyword, entity_type=None, limit=20):
         ).fetchall()
 
         # 最后模糊匹配
-        fuzzy_pattern = f"%{keyword}%"
+        fuzzy_pattern = f"%{escaped}%"
         fuzzy_rows = conn.execute(
             """SELECT * FROM kg_entities
-            WHERE entity_type=? AND (name LIKE ? OR normalized_name LIKE ? OR description LIKE ?)
+            WHERE entity_type=? AND (name LIKE ? ESCAPE '\\' OR normalized_name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')
             AND name != ? AND normalized_name != ?
-            AND name NOT LIKE ? AND normalized_name NOT LIKE ?
+            AND name NOT LIKE ? ESCAPE '\\' AND normalized_name NOT LIKE ? ESCAPE '\\'
             ORDER BY confidence DESC, name
             LIMIT ?""",
             (entity_type, fuzzy_pattern, fuzzy_pattern, fuzzy_pattern,
@@ -173,10 +175,10 @@ def search_entities(keyword, entity_type=None, limit=20):
         ).fetchall()
 
         # 再前缀匹配
-        prefix_pattern = f"{keyword}%"
+        prefix_pattern = f"{escaped}%"
         prefix_rows = conn.execute(
             """SELECT * FROM kg_entities
-            WHERE (name LIKE ? OR normalized_name LIKE ?)
+            WHERE (name LIKE ? ESCAPE '\\' OR normalized_name LIKE ? ESCAPE '\\')
             AND name != ? AND normalized_name != ?
             ORDER BY confidence DESC, name
             LIMIT ?""",
@@ -184,12 +186,12 @@ def search_entities(keyword, entity_type=None, limit=20):
         ).fetchall()
 
         # 最后模糊匹配
-        fuzzy_pattern = f"%{keyword}%"
+        fuzzy_pattern = f"%{escaped}%"
         fuzzy_rows = conn.execute(
             """SELECT * FROM kg_entities
-            WHERE (name LIKE ? OR normalized_name LIKE ? OR description LIKE ?)
+            WHERE (name LIKE ? ESCAPE '\\' OR normalized_name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')
             AND name != ? AND normalized_name != ?
-            AND name NOT LIKE ? AND normalized_name NOT LIKE ?
+            AND name NOT LIKE ? ESCAPE '\\' AND normalized_name NOT LIKE ? ESCAPE '\\'
             ORDER BY confidence DESC, name
             LIMIT ?""",
             (fuzzy_pattern, fuzzy_pattern, fuzzy_pattern,
@@ -394,8 +396,10 @@ def link_chunk_entity(chunk_id, entity_id, mention_count=1):
             (chunk_id, entity_id, mention_count)
         )
         conn.commit()
-    except sqlite3.IntegrityError:
-        pass  # 外键约束失败时静默处理
+    except sqlite3.IntegrityError as e:
+        # 外键约束失败（chunk/entity 悬空），回滚未提交状态并记录，便于排查
+        conn.rollback()
+        print(f"[KG] 关联 chunk-实体失败 (chunk={chunk_id}, entity={entity_id}): {e}")
 
 
 def get_entities_by_chunk(chunk_id):

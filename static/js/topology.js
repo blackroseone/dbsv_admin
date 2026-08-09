@@ -61,7 +61,7 @@ async function loadClusters() {
 
                     return `
                         <div class="cluster-item ${currentClusterId === pool.id ? 'active' : ''}"
-                             onclick="selectCluster('${escapeHtml(pool.id)}')">
+                             onclick="selectCluster('${escapeJsAttr(pool.id)}')">
                             <div class="cluster-name">${dbType ? dbType.icon : ''} ${escapeHtml(pool.name)}</div>
                             <div class="cluster-info">${envMap[pool.environment] || ''} | ${pmCount}物理机 ${vmCount}虚拟机 | ${clusterCount}集群 | ${instanceCount}实例 | ${tenantCount}租户</div>
                         </div>
@@ -119,11 +119,11 @@ function _renderClusterHeader(cluster) {
     // 渲染集群头部
     return `
         <div class="topology-header">
-            <div class="topology-title" onclick="editResourcePoolName('${escapeHtml(cluster.id)}', '${escapeJs(cluster.name)}')" title="点击重命名">${escapeHtml(cluster.name)}</div>
+            <div class="topology-title" onclick="editResourcePoolName('${escapeJsAttr(cluster.id)}', '${escapeJsAttr(cluster.name)}')" title="点击重命名">${escapeHtml(cluster.name)}</div>
             <div class="topology-actions">
-                <button class="btn btn-sm btn-primary" onclick="showAddServerDialog('${escapeHtml(cluster.id)}')">➕ 添加节点</button>
-                <button class="btn btn-sm btn-secondary" onclick="showEditResourcePoolDialog('${escapeHtml(cluster.id)}')">✏️ 修改资源池</button>
-                <button class="btn btn-sm btn-danger" onclick="deleteResourcePool('${escapeHtml(cluster.id)}')">删除资源池</button>
+                <button class="btn btn-sm btn-primary" onclick="showAddServerDialog('${escapeJsAttr(cluster.id)}')">➕ 添加节点</button>
+                <button class="btn btn-sm btn-secondary" onclick="showEditResourcePoolDialog('${escapeJsAttr(cluster.id)}')">✏️ 修改资源池</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteResourcePool('${escapeJsAttr(cluster.id)}')">删除资源池</button>
             </div>
         </div>
     `;
@@ -188,7 +188,7 @@ function _renderServerCard(server) {
     const memory = server.memory || '';
 
     let serverHtml = `
-        <div class="topology-server" style="border-color: ${nodeConfig.borderColor}; border-width: 2px;" onclick="showServerDetail('${escapeHtml(server.id)}')">
+        <div class="topology-server" style="border-color: ${nodeConfig.borderColor}; border-width: 2px;" onclick="showServerDetail('${escapeJsAttr(server.id)}')">
             <div class="server-header" style="border-bottom-color: ${nodeConfig.borderColor};">
                 <div class="server-header-top">
                     <span class="server-icon" style="color: ${nodeConfig.color};">${hardwareTypeConfig[hardwareType] || '🔲'}</span>
@@ -201,9 +201,9 @@ function _renderServerCard(server) {
                 <div class="server-header-bottom">
                     <span class="server-host">${escapeHtml(server.host || '')}</span>
                     <div class="server-actions">
-                        <button class="btn-icon btn-add" onclick="event.stopPropagation(); showAddInstanceDialog('${escapeHtml(server.id)}')" title="添加实例">➕</button>
-                        <button class="btn-icon btn-edit" onclick="event.stopPropagation(); showEditServerDialog('${escapeHtml(server.id)}', '${escapeJs(server.name)}', '${escapeJs(server.host || '')}', '${escapeJs(server.datacenter || '')}', '${escapeJs(server.cluster_id || '')}', '${escapeJs(server.cluster_name || '')}', '${escapeJs(cpu)}', '${escapeJs(memory)}', '${escapeJs(server.description || '')}', '${escapeJs(server.node_role || '计算节点')}', '${escapeJs(server.hardware_type || '非信创物理机')}', '${escapeJs(server.sn || '')}')" title="编辑节点">✏️</button>
-                        <button class="btn-icon btn-delete" onclick="event.stopPropagation(); deleteServer('${escapeHtml(server.id)}')" title="删除节点">🗑️</button>
+                        <button class="btn-icon btn-add" onclick="event.stopPropagation(); showAddInstanceDialog('${escapeJsAttr(server.id)}')" title="添加实例">➕</button>
+                        <button class="btn-icon btn-edit" onclick="event.stopPropagation(); showEditServerDialog('${escapeJsAttr(server.id)}', '${escapeJsAttr(server.name)}', '${escapeJsAttr(server.host || '')}', '${escapeJsAttr(server.datacenter || '')}', '${escapeJsAttr(server.cluster_id || '')}', '${escapeJsAttr(server.cluster_name || '')}', '${escapeJsAttr(cpu)}', '${escapeJsAttr(memory)}', '${escapeJsAttr(server.description || '')}', '${escapeJsAttr(server.node_role || '计算节点')}', '${escapeJsAttr(server.hardware_type || '非信创物理机')}', '${escapeJsAttr(server.sn || '')}')" title="编辑节点">✏️</button>
+                        <button class="btn-icon btn-delete" onclick="event.stopPropagation(); deleteServer('${escapeJsAttr(server.id)}')" title="删除节点">🗑️</button>
                     </div>
                 </div>
             </div>
@@ -221,13 +221,13 @@ function _renderServerCard(server) {
         server.instances.forEach(instance => {
             const tenantName = instance.tenant_name || '';
             serverHtml += `
-                <div class="topology-instance" onclick="event.stopPropagation(); showInstanceDetail('${escapeHtml(instance.id)}')">
+                <div class="topology-instance" onclick="event.stopPropagation(); showInstanceDetail('${escapeJsAttr(instance.id)}')">
                     <div class="instance-header">
                         <span class="instance-name">${escapeHtml(instance.name)}</span>
                         <span class="instance-port">:${escapeHtml(instance.port)}</span>
                         <span class="instance-actions">
-                            <button class="btn-icon btn-edit" onclick="event.stopPropagation(); showEditInstanceDialog('${escapeHtml(instance.id)}', '${escapeJs(instance.name)}', '${escapeJs(instance.port)}', '${escapeJs(instance.cpu || '')}','${escapeJs(instance.memory || '')}', '${escapeJs(instance.description || '')}', '${escapeJs(instance.role || 'slave')}')" title="编辑">✏️</button>
-                            <button class="btn-icon btn-delete" onclick="event.stopPropagation(); deleteInstance('${escapeHtml(instance.id)}')" title="删除">🗑️</button>
+                            <button class="btn-icon btn-edit" onclick="event.stopPropagation(); showEditInstanceDialog('${escapeJsAttr(instance.id)}', '${escapeJsAttr(instance.name)}', '${escapeJsAttr(instance.port)}', '${escapeJsAttr(instance.cpu || '')}','${escapeJsAttr(instance.memory || '')}', '${escapeJsAttr(instance.description || '')}', '${escapeJsAttr(instance.role || 'slave')}')" title="编辑">✏️</button>
+                            <button class="btn-icon btn-delete" onclick="event.stopPropagation(); deleteInstance('${escapeJsAttr(instance.id)}')" title="删除">🗑️</button>
                         </span>
                     </div>
                     <div class="instance-meta">
@@ -345,7 +345,7 @@ function _renderTenantSection(cluster) {
     };
 
     let html = `<div class="topology-tenants">`;
-    html += `<div class="tenants-title">📋 租户（实例集群）<button class="btn btn-sm btn-primary" onclick="showAddTenantDialog('${escapeHtml(cluster.id)}')">➕ 添加租户</button></div>`;
+    html += `<div class="tenants-title">📋 租户（实例集群）<button class="btn btn-sm btn-primary" onclick="showAddTenantDialog('${escapeJsAttr(cluster.id)}')">➕ 添加租户</button></div>`;
 
     if (cluster.tenants && cluster.tenants.length > 0) {
         cluster.tenants.forEach(tenant => {
@@ -358,8 +358,8 @@ function _renderTenantSection(cluster) {
                         <span class="tenant-type">${typeMap[tenant.topology_type] || tenant.topology_type}</span>
                         <span class="tenant-spec">${specMap[tenant.spec] || tenant.spec || '小型-8C32G'}</span>
                         <span class="tenant-count">${tenantInstanceCount} 实例</span>
-                        <button class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); showEditTenantDialog('${escapeHtml(tenant.id)}', '${escapeJs(tenant.name)}', '${escapeJs(tenant.topology_type)}', '${escapeJs(tenant.spec || 'small-8c32g')}', '${escapeJs(tenant.description || '')}')">编辑</button>
-                        <button class="btn btn-xs btn-danger" onclick="event.stopPropagation(); deleteTenant('${escapeHtml(tenant.id)}')">删除</button>
+                        <button class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); showEditTenantDialog('${escapeJsAttr(tenant.id)}', '${escapeJsAttr(tenant.name)}', '${escapeJsAttr(tenant.topology_type)}', '${escapeJsAttr(tenant.spec || 'small-8c32g')}', '${escapeJsAttr(tenant.description || '')}')">编辑</button>
+                        <button class="btn btn-xs btn-danger" onclick="event.stopPropagation(); deleteTenant('${escapeJsAttr(tenant.id)}')">删除</button>
                     </div>
                     <div class="tenant-instances">
             `;

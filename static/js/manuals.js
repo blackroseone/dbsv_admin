@@ -19,7 +19,7 @@ async function loadManuals() {
         }
 
         listDiv.innerHTML = data.manuals.map(file => `
-            <div class="manual-item ${ManualsModule.currentManual === file.name ? 'active' : ''}" onclick="viewManual('${escapeHtml(file.name)}')">
+            <div class="manual-item ${ManualsModule.currentManual === file.name ? 'active' : ''}" onclick="viewManual('${escapeJsAttr(file.name)}')">
                 <div class="manual-name">${escapeHtml(file.name)}</div>
                 <div class="manual-size">${formatFileSize(file.size)}</div>
             </div>

@@ -4,14 +4,13 @@ import os
 import json
 from datetime import datetime
 from flask import Blueprint, request, jsonify, send_from_directory
-from werkzeug.utils import secure_filename
 from db.database import (
     get_db_types, get_knowledge_files, add_knowledge_file,
     delete_knowledge_file, get_knowledge_file_path, search_knowledge_content,
     get_all_knowledge_files, update_knowledge_content,
     get_favorites, toggle_favorite, add_operation_log
 )
-from utils import allowed_file, extract_content
+from utils import allowed_file, extract_content, safe_filename, safe_join
 
 knowledge_bp = Blueprint('knowledge', __name__)
 
@@ -71,27 +70,6 @@ def get_files(db_type):
         search_results = search_knowledge_content(db_type, keyword)
 
     return jsonify({'files': file_list, 'search_results': search_results})
-
-
-def safe_filename(filename):
-    """安全处理文件名，保留中文字符"""
-    import re
-    # 移除路径部分
-    if '/' in filename:
-        filename = filename.split('/')[-1]
-    if '\\' in filename:
-        filename = filename.split('\\')[-1]
-
-    # 只保留字母、数字、中文、下划线、连字符、点号
-    filename = re.sub(r'[^\w一-鿿\-\.]', '_', filename)
-
-    # 移除连续的下划线
-    filename = re.sub(r'_+', '_', filename)
-
-    # 移除首尾下划线
-    filename = filename.strip('_')
-
-    return filename if filename else 'unnamed_file'
 
 
 @knowledge_bp.route('/api/knowledge/upload/<db_type>', methods=['POST'])
@@ -173,7 +151,10 @@ def delete_file(db_type, filename):
         return jsonify({'error': '无效的数据库类型'}), 400
 
     import time
-    filepath = os.path.join(KNOWLEDGE_DIR, db_type, filename)
+    db_dir = os.path.join(KNOWLEDGE_DIR, db_type)
+    filepath = safe_join(db_dir, filename)
+    if filepath is None:
+        return jsonify({'error': '无效的文件名'}), 400
     if os.path.exists(filepath):
         for _ in range(3):
             try:
@@ -193,6 +174,8 @@ def download_file(db_type, filename):
         return jsonify({'error': '无效的数据库类型'}), 400
 
     db_dir = os.path.join(KNOWLEDGE_DIR, db_type)
+    if safe_join(db_dir, filename) is None:
+        return jsonify({'error': '无效的文件名'}), 400
     if not os.path.exists(os.path.join(db_dir, filename)):
         return jsonify({'error': '文件不存在'}), 404
     return send_from_directory(db_dir, filename, as_attachment=True)
@@ -282,7 +265,7 @@ def reindex_stream():
                     print(f"[重建索引] 解析失败: {filepath} - {e}")
 
             # 每处理一个文件都发送进度
-            yield f"data: {json.dumps({
+            progress = {
                 'total': total,
                 'processed': processed,
                 'vector_count': vector_count,
@@ -290,22 +273,24 @@ def reindex_stream():
                 'db_type': db_type,
                 'file_processed': file_processed,
                 'vector_generated': vector_generated,
-                'status': f'正在处理: {filename}'
-            })}\n\n"
+                'status': '正在处理: ' + filename
+            }
+            yield f"data: {json.dumps(progress, ensure_ascii=False)}\n\n"
 
         # 发送完成消息
         msg = f'重建索引完成，处理 {processed} 个文件'
         if vector_count:
             msg += f'，向量索引 {vector_count} 个文件'
 
-        yield f"data: {json.dumps({
+        done = {
             'total': total,
             'processed': processed,
             'vector_count': vector_count,
             'status': '完成',
             'message': msg,
             'done': True
-        })}\n\n"
+        }
+        yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
     # 设置较长的超时时间（10分钟）
@@ -545,7 +530,9 @@ def preview_file(db_type, filename):
         return jsonify({'error': '无效的数据库类型'}), 400
 
     db_dir = os.path.join(KNOWLEDGE_DIR, db_type)
-    filepath = os.path.join(db_dir, filename)
+    filepath = safe_join(db_dir, filename)
+    if filepath is None:
+        return jsonify({'error': '无效的文件名'}), 400
 
     if not os.path.exists(filepath):
         return jsonify({'error': '文件不存在'}), 404

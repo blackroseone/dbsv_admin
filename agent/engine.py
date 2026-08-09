@@ -11,15 +11,15 @@ from rag.embedder import Embedder
 from agent.harness import Harness, OperationLevel
 from agent.skills import SkillManager
 from agent.state import AgentState, AgentPhase, AgentStatus
-from agent.tools import get_tool_schemas, execute_tool
+from agent.tools import get_tool_schemas, execute_tool, ToolContext
 
 
 class SmartOpsAgent:
     """智能运维Agent（第三代 - 自主决策模式）"""
 
-    # 知识库检索阈值
-    MIN_SIMILARITY_THRESHOLD = 0.75
-    MIN_KNOWLEDGE_COVERAGE = 0.8
+    # 知识库检索阈值（与 routes/qa.py 的 0.55/0.60 对齐，m3e 嵌入实际可达）
+    MIN_SIMILARITY_THRESHOLD = 0.55
+    MIN_KNOWLEDGE_COVERAGE = 0.60
 
     def __init__(self, session_id: str, ssh_conn_id: Optional[str] = None,
                  db_conn_id: Optional[str] = None, model_id: Optional[str] = None):
@@ -36,9 +36,18 @@ class SmartOpsAgent:
         self.operation_level = OperationLevel.READONLY
 
     def run_stream(self, user_question: str) -> Generator[Dict, None, None]:
-        """ReAct主循环（流式输出）"""
+        """ReAct主循环（流式输出），带状态持久化与异常兜底"""
         self.state.set_status(AgentStatus.RUNNING)
+        self._persist_session(AgentStatus.RUNNING)
+        try:
+            yield from self._react_loop(user_question)
+        except Exception as e:
+            self.state.set_error(str(e))
+            self._persist_session(AgentStatus.ERROR)
+            raise
 
+    def _react_loop(self, user_question: str) -> Generator[Dict, None, None]:
+        """ReAct 主循环体（生成器）：检索 → 决策 → 执行 → 观察 → 总结"""
         # 1. 检索知识库（自动）
         yield {"type": "retrieving_start", "message": "正在检索知识库..."}
         knowledge_result = self._retrieve_knowledge_strict(user_question)
@@ -57,30 +66,37 @@ class SmartOpsAgent:
             }
 
         knowledge_refs = knowledge_result['results']
+        chunk_ids = knowledge_result.get('chunk_ids', [])
 
         # 2. 匹配Skills
         matched_skills = self.skill_manager.match_skills_by_intent(
             user_question, self._get_db_type()
         )
 
-        # 3. 构建system prompt（注入知识库 + Skills）
-        system_prompt = self._build_system_prompt(knowledge_refs, matched_skills)
+        # 3. 构建system prompt（注入知识库 + 知识图谱 + Skills）
+        kg_context = self._retrieve_kg_context(user_question, chunk_ids) if chunk_ids else None
+        system_prompt = self._build_system_prompt(knowledge_refs, matched_skills, kg_context)
 
         # 4. ReAct循环
+        # 用户问题作为对话起点；每步的思考与观察结果通过 add_message 回流，
+        # 使模型能基于上一轮工具结果继续推理（链式 ReAct）。
+        self.state.add_message('user', user_question)
+
         while self.state.current_step < self.state.max_steps:
             # Thinking
             yield {"type": "thinking_start", "step": self.state.current_step}
-            thought = self._think(user_question, system_prompt)
+            thought = self._think(system_prompt)
             yield {"type": "thinking_chunk", "content": thought}
             yield {"type": "thinking_end"}
 
-            self.state.add_step(AgentPhase.THINKING, thought=thought,
-                              knowledge_refs=knowledge_refs)
+            step = self.state.add_step(AgentPhase.THINKING, thought=thought,
+                                       knowledge_refs=knowledge_refs)
+            self._persist_step(step)
+            self.state.add_message('assistant', thought)
 
-            # Decision: 是否需要执行工具？
+            # Decision: 是否需要执行工具？（不再调用工具时自然结束）
             action = self._decide_action(thought)
             if not action:
-                # 不需要工具，直接总结
                 break
 
             # Planning
@@ -106,15 +122,15 @@ class SmartOpsAgent:
                 observation = self._format_result(result)
                 yield {"type": "executing_end", "result": result}
 
-            self.state.add_step(AgentPhase.EXECUTING, action=action,
-                              observation=observation)
+            step = self.state.add_step(AgentPhase.EXECUTING, action=action,
+                                       observation=observation)
+            self._persist_step(step)
 
             # Observation
             yield {"type": "observing", "observation": observation}
 
-            # Check completion
-            if self._is_complete(observation):
-                break
+            # 观察结果回流对话历史
+            self.state.add_message('user', f"观察结果:\n{observation}")
 
             self.state.next_step()
 
@@ -124,8 +140,10 @@ class SmartOpsAgent:
         yield {"type": "concluding_chunk", "content": conclusion}
         yield {"type": "concluding_end"}
 
-        self.state.add_step(AgentPhase.CONCLUDING, thought=conclusion)
+        step = self.state.add_step(AgentPhase.CONCLUDING, thought=conclusion)
+        self._persist_step(step)
         self.state.set_status(AgentStatus.COMPLETED)
+        self._persist_session(AgentStatus.COMPLETED)
 
         yield {"type": "done"}
 
@@ -140,11 +158,14 @@ class SmartOpsAgent:
         filtered_results = [r for r in results if r.get('similarity', 0) >= self.MIN_SIMILARITY_THRESHOLD]
 
         # 3. 检查知识覆盖率
+        chunk_ids = [r.get('chunk_id') for r in filtered_results if r.get('chunk_id')]
+
         if not filtered_results:
             return {
                 'status': 'insufficient',
                 'message': f'知识库中未找到相似度≥{self.MIN_SIMILARITY_THRESHOLD}的相关文档',
-                'results': []
+                'results': [],
+                'chunk_ids': []
             }
 
         max_similarity = max(r.get('similarity', 0) for r in filtered_results)
@@ -152,13 +173,24 @@ class SmartOpsAgent:
             return {
                 'status': 'insufficient',
                 'message': f'知识库相似度过低（最高: {max_similarity:.2f}），无法确认操作正确性',
-                'results': self._format_knowledge_refs(filtered_results)
+                'results': self._format_knowledge_refs(filtered_results),
+                'chunk_ids': chunk_ids
             }
 
         return {
             'status': 'sufficient',
-            'results': self._format_knowledge_refs(filtered_results)
+            'results': self._format_knowledge_refs(filtered_results),
+            'chunk_ids': chunk_ids
         }
+
+    def _retrieve_kg_context(self, query: str, chunk_ids: List[int]) -> Optional[Dict]:
+        """基于检索到的 chunk 获取知识图谱上下文（实体卡片/关系链）"""
+        try:
+            from kg.graph import enhance_qa_context
+            return enhance_qa_context(chunk_ids, query)
+        except Exception as e:
+            print(f"[Agent] 知识图谱上下文检索失败: {e}")
+            return None
 
     def _format_knowledge_refs(self, results: List[Dict]) -> List[Dict]:
         """格式化知识库引用"""
@@ -172,8 +204,9 @@ class SmartOpsAgent:
         return refs
 
     def _build_system_prompt(self, knowledge_refs: List[Dict],
-                            skills: List[Dict]) -> str:
-        """构建system prompt（注入知识库 + Skills）"""
+                            skills: List[Dict],
+                            kg_context: Optional[Dict] = None) -> str:
+        """构建system prompt（注入知识库 + 知识图谱 + Skills）"""
         prompt = """你是一个智能数据库运维Agent。你的任务是根据用户的指令，自主分析、自主决策、自主执行数据库运维任务。
 
 ## 核心原则
@@ -222,32 +255,95 @@ class SmartOpsAgent:
                 if skill.get('prompt_template'):
                     prompt += f"  操作指南: {skill['prompt_template'][:200]}...\n"
 
+        # 注入知识图谱上下文
+        if kg_context:
+            cards = kg_context.get('entity_cards') or []
+            chains = kg_context.get('relation_chains') or []
+            if cards or chains:
+                prompt += "\n## 知识图谱上下文\n"
+                if cards:
+                    prompt += "相关实体：\n"
+                    for card in cards[:10]:
+                        prompt += f"- {card['name']} ({card['type']})"
+                        if card.get('description'):
+                            prompt += f": {card['description'][:100]}"
+                        prompt += "\n"
+                        if card.get('relations'):
+                            rels = ", ".join(
+                                f"{r['relation_type']}→{r['target_name']}"
+                                for r in card['relations'][:5] if r.get('target_name')
+                            )
+                            if rels:
+                                prompt += f"  关系: {rels}\n"
+                if chains:
+                    prompt += "\n实体间路径：\n"
+                    for chain in chains[:5]:
+                        names = [n.get('name', '') for n in chain.get('path', [])
+                                 if isinstance(n, dict) and n.get('name')]
+                        if names:
+                            prompt += " -> ".join(names) + "\n"
+
         return prompt
 
-    def _think(self, question: str, system_prompt: str) -> str:
-        """LLM思考"""
+    def _think(self, system_prompt: str) -> str:
+        """LLM思考（基于完整对话历史，含先前的工具观察结果）"""
         messages = [
             {"role": "system", "content": system_prompt},
             *self.state.conversation_history,
-            {"role": "user", "content": question}
         ]
 
         response, _ = call_llm(messages, model_id=self.model_id)
         return response
 
     def _decide_action(self, thought: str) -> Optional[Dict]:
-        """基于思考决定下一步动作"""
-        # 从thought中提取JSON格式的工具调用
-        try:
-            # 匹配JSON格式的工具调用
-            json_pattern = r'\{\s*"tool"\s*:\s*"[^"]+"\s*,\s*"parameters"\s*:\s*\{[^}]*\}\s*\}'
-            json_match = re.search(json_pattern, thought, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
-        except:
-            pass
+        """基于思考提取工具调用 JSON
 
-        # 如果没有找到工具调用，返回None（表示直接回答）
+        容错 markdown 代码围栏与嵌套括号/字符串内的大括号，
+        逐个尝试平衡的大括号对象，找到带 tool 字段的调用。
+        """
+        if not thought:
+            return None
+        # 剥离 ```json ... ``` 代码围栏（保留内部内容）
+        fenced = re.search(r'```(?:json)?\s*(.*?)```', thought, re.DOTALL)
+        if fenced:
+            thought = fenced.group(1)
+
+        start = thought.find('{')
+        while start != -1:
+            depth = 0
+            in_string = False
+            escape = False
+            end = -1
+            for i in range(start, len(thought)):
+                ch = thought[i]
+                if in_string:
+                    if escape:
+                        escape = False
+                    elif ch == '\\':
+                        escape = True
+                    elif ch == '"':
+                        in_string = False
+                    continue
+                if ch == '"':
+                    in_string = True
+                elif ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end = i
+                        break
+            if end == -1:
+                return None
+            candidate = thought[start:end + 1]
+            try:
+                obj = json.loads(candidate)
+                if isinstance(obj, dict) and obj.get('tool'):
+                    return obj
+            except (json.JSONDecodeError, ValueError):
+                pass
+            # 前一个对象非工具调用，继续找下一个 {（如模型先输出了一段分析 JSON）
+            start = thought.find('{', end)
         return None
 
     def _validate_action(self, action: Dict) -> Tuple[bool, str]:
@@ -261,7 +357,7 @@ class SmartOpsAgent:
         elif tool == "execute_command":
             command = params.get("command", "")
             db_type = self._get_db_type()
-            return self.harness.validate_command(command, db_type)
+            return self.harness.validate_command(command, db_type, self.operation_level)
 
         return True, None
 
@@ -290,13 +386,48 @@ class SmartOpsAgent:
 
         return False
 
+    def _persist_step(self, step) -> None:
+        """持久化单个执行步骤到 agent_steps"""
+        try:
+            conn = get_db()
+            conn.execute(
+                """INSERT INTO agent_steps
+                   (session_id, step_number, phase, thought, action, observation, knowledge_refs)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (self.session_id, step.step_number, step.phase.value,
+                 step.thought,
+                 json.dumps(step.action, ensure_ascii=False) if step.action else None,
+                 step.observation,
+                 json.dumps(step.knowledge_refs, ensure_ascii=False) if step.knowledge_refs else None)
+            )
+            conn.commit()
+        except Exception as e:
+            print(f"[Agent] 步骤持久化失败: {e}")
+
+    def _persist_session(self, status: AgentStatus) -> None:
+        """持久化会话状态到 agent_sessions"""
+        try:
+            conn = get_db()
+            conn.execute(
+                "UPDATE agent_sessions SET status=?, current_step=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (status.value, self.state.current_step, self.session_id)
+            )
+            conn.commit()
+        except Exception as e:
+            print(f"[Agent] 会话状态持久化失败: {e}")
+
     def _execute_action(self, action: Dict) -> Dict:
-        """执行工具"""
+        """执行工具（注入连接上下文）"""
         tool = action["tool"]
         params = action.get("parameters", {})
-
+        ctx = ToolContext(
+            db_conn_id=self.db_conn_id,
+            ssh_conn_id=self.ssh_conn_id,
+            db_type=self._get_db_type(),
+            operation_level=self.operation_level
+        )
         # 使用工具注册表执行
-        return execute_tool(tool, params)
+        return execute_tool(tool, params, ctx)
 
     def _format_result(self, result: Dict) -> str:
         """格式化执行结果为文本"""
@@ -308,11 +439,24 @@ class SmartOpsAgent:
             columns = result.get("columns", [])
             return f"📊 查询结果: {len(rows)} 行\n" + self._format_table(columns, rows)
 
-        if "stdout" in result:
-            return f"💻 命令输出:\n{result['stdout']}"
+        if "metrics" in result and isinstance(result["metrics"], list):
+            metric_type = result.get("metric_type", "性能指标")
+            return f"📈 {metric_type}:\n" + self._format_table(result.get("columns", []), result["metrics"])
 
-        if "metrics" in result:
-            return f"📈 性能指标:\n{json.dumps(result['metrics'], indent=2, ensure_ascii=False)}"
+        if "tables" in result and isinstance(result["tables"], list):
+            return f"📋 Schema信息:\n" + self._format_table(result.get("columns", []), result["tables"])
+
+        if "stdout" in result:
+            text = f"💻 命令输出:\n{result['stdout']}"
+            if result.get("stderr"):
+                text += f"\n[stderr] {result['stderr']}"
+            return text
+
+        if "results" in result and isinstance(result["results"], list):
+            return f"📚 检索到 {len(result['results'])} 条知识：\n" + "\n".join(
+                f"- {r.get('filename', '未知')} (相似度: {r.get('similarity', 0):.3f})"
+                for r in result["results"][:10]
+            )
 
         return str(result)
 
@@ -327,11 +471,6 @@ class SmartOpsAgent:
         for row in rows[:50]:  # 限制行数
             lines.append("| " + " | ".join(str(c) for c in row) + " |")
         return "\n".join(lines)
-
-    def _is_complete(self, observation: str) -> bool:
-        """判断任务是否完成"""
-        conclusion_keywords = ["结论", "总结", "建议", "完成", "完毕"]
-        return any(kw in observation for kw in conclusion_keywords)
 
     def _conclude(self, knowledge_refs: List[Dict]) -> str:
         """生成最终结论"""

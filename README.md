@@ -44,13 +44,13 @@ SQL 工具模块提供全面的 SQL 操作支持，包括 SQL 语法检查、格
 
 ### 智能运维 Agent（Intelligent Agent）
 
-智能运维 Agent 是平台的 AI 核心引擎，能够自主理解和执行复杂的数据库运维任务。Agent 通过规划、执行、验证的循环流程，结合知识库检索和多种工具调用，实现端到端的自动化运维。用户可以通过自然语言描述需求，Agent 会自动分解任务并生成可执行的解决方案。
+智能运维 Agent 是平台的 AI 核心引擎，能够自主理解和执行复杂的数据库运维任务。Agent 采用 ReAct 循环（思考→行动→观察），结合**知识库（RAG）+ 知识图谱双增强**与多种真实工具调用（SQL 查询、SSH 命令、Schema 信息、性能指标、知识检索），实现端到端的自动化运维。用户通过自然语言描述需求，Agent 会自动分解任务、调用工具获取数据、基于结果持续推理并生成结论。所有操作经过安全约束框架校验（只读优先），工具连接通过 SSH/数据库连接配置管理。
 
 ## 技术架构
 
 ### 后端技术栈
 
-后端采用 Python Flask 框架构建，提供 RESTful API 服务。核心依赖包括：SQLAlchemy 作为 ORM 层处理数据库操作；SQLAlchemy-Utils 提供类型和函数支持；Flask-CORS 处理跨域请求；python-LLMSample-sdk 或类似 SDK 用于大语言模型调用。数据持久化使用轻量级 SQLite 数据库，通过迁移脚本管理数据库结构变更。
+后端采用 Python Flask 框架构建，提供 RESTful API 服务。数据持久化使用轻量级 **SQLite（原生 sqlite3，非 ORM）**，WAL 模式 + 线程本地连接。核心依赖包括：`requests` 调用大语言模型 API、`sentence-transformers` 做向量嵌入、`sqlglot` 本地 SQL 解析、`cryptography` 凭据加密，以及 Agent 真实执行所需的 `pymysql`/`oracledb`/`psycopg2-binary`/`paramiko`（见 `deploy.md`）。
 
 ### 前端技术栈
 
@@ -62,7 +62,7 @@ SQL 工具模块提供全面的 SQL 操作支持，包括 SQL 语法检查、格
 
 ### AI Agent 引擎
 
-智能 Agent 引擎采用 ReAct（Reasoning and Acting）模式实现。Agent 在接收到用户问题后，首先从知识库检索相关背景知识，然后在思维链中分析问题并规划执行步骤，最后通过调用工具（如数据库查询、命令执行、知识检索等）完成具体任务。系统内置多重安全验证机制，确保操作不超出预设权限范围。
+智能 Agent 引擎采用 ReAct（Reasoning and Acting）模式实现。Agent 在接收到用户问题后，首先从知识库检索相关背景知识并从知识图谱注入实体/关系上下文，然后在思维链中分析问题并规划执行步骤，通过调用真实工具（SQL 查询、SSH 命令、Schema、性能指标、知识检索）获取数据；每步的观察结果回流对话历史，使 Agent 能基于工具输出持续推理。系统内置**安全约束框架**（SQL/命令白名单、按操作级别校验、凭据加密），确保操作不超出预设只读权限范围。
 
 ## 目录结构
 
