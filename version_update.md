@@ -9,6 +9,36 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v3.0.3 (2026-08-09)
+
+### 🌐 企业微信接入
+- 新增 `wecom_qa_integration.md`：知识问答接口接入文档（非流式 `POST /api/qa/ask`，默认开启知识库增强 + 集群拓扑增强），企微后台可据此开发问答调用代码
+- 问答接口每次为独立无状态请求，响应含 `answer` + `metadata`（置信度/知识来源/图谱实体）
+
+### 📊 集群拓扑统计视图优化
+- 分布列表（资源池/集群/数据中心/硬件/节点角色）默认展示约 6 项，超出部分容器内滚动
+- 顶部总数卡片顺序调整为：资源池 → 集群 → 租户 → 服务器 → 实例
+
+### 🐛 修复
+- 知识库模块首次进入时文件视图空白：文件视图容器补充初始 `active` 类，与"文件视图"按钮状态一致
+- `routes/knowledge.py` 流式重建索引的多行嵌套 f-string 改为 Python 3.9 兼容写法（兼容本地 3.9 开发环境）
+
+### ⚙️ 功能配置
+- 新增"智能运维"模块开关：`feature_config` 增加 agent 记录，可在系统配置-功能配置页控制该模块显隐
+
+### 📦 离线化
+- vis-network 本地化到 `static/vendor/`（离线环境不再依赖 unpkg CDN），知识图谱可视化离线可用
+
+### 🧹 代码整理
+- `sql_checker.py` 移至 `utils/sql_checker.py`（本地 SQL 语法检查模块，sqlglot 解析）
+- `create_import_template.py` 移至 `utils/`；`cluster_topology_import_template_v2.xlsx` 移至 `templates/`（下载接口文件缺失时自动重新生成）
+- 删除根目录无引用的废弃 xlsx（dm/ob/oracle/其它）
+
+### 🚀 离线部署配套
+- 新增 `deploy/`：自动化部署脚本（`deploy.sh`）、systemd 单元（`dbsv-admin.service`）、离线依赖打包/校验脚本
+- 新增 `requirements/`：Linux 离线依赖清单 + wheelhouse 离线 wheel 包
+- CentOS 7 全离线部署方案（Python 3.12 + torch 2.5.1+cpu + m3e-base 模型本地缓存），详见 `deploy/DEPLOY_CENTOS7.md`
+
 ## v3.0.2 (2026-08-08)
 
 ### 🤖 智能运维 Agent 全面接通（阶段1-4）

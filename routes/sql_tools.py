@@ -7,7 +7,7 @@ from utils import call_llm, stream_llm_response
 
 # 导入本地 SQL 语法检查模块
 try:
-    from sql_checker import check_sql_syntax, get_sql_info, format_sql_local, is_dialect_supported
+    from utils.sql_checker import check_sql_syntax, get_sql_info, format_sql_local, is_dialect_supported
     SQL_CHECKER_AVAILABLE = True
 except ImportError:
     SQL_CHECKER_AVAILABLE = False

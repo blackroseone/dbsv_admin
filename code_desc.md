@@ -1,7 +1,7 @@
 # DBSV Admin 代码结构文档
 
-> 生成时间: 2026-08-05
-> 版本: v3.0.1
+> 生成时间: 2026-08-09
+> 版本: v3.0.3
 > 用途: 快速了解项目代码结构和函数功能
 
 > 📌 配套文档：
@@ -17,10 +17,21 @@
 ```
 dbsv_admin/
 ├── app.py                  # 应用工厂 + 启动入口
-├── utils.py                # 工具函数（文件解析、LLM 调用）
 ├── deploy.md              # 部署指南（含依赖清单）
-├── deploy.txt              # 部署指南
+├── wecom_qa_integration.md # 企业微信接入知识问答接口文档
 ├── PROJECT.md              # 项目说明文档
+│
+├── deploy/                 # 离线部署配套
+│   ├── deploy.sh           # 服务器自动化部署脚本
+│   ├── dbsv-admin.service  # systemd 单元模板
+│   ├── prepare_requirements.py  # 离线依赖打包脚本
+│   ├── check_wheelhouse.py # wheelhouse 完整性校验
+│   └── DEPLOY_CENTOS7.md   # CentOS 7 离线部署文档
+│
+├── requirements/           # Linux 离线依赖（wheelhouse）
+│   ├── requirements-linux.txt  # 锁定版依赖清单
+│   ├── wheelhouse/             # 全部离线 wheel 包
+│   └── README.md               # 使用说明
 │
 ├── db/                     # 数据库层
 │   ├── __init__.py
@@ -29,7 +40,9 @@ dbsv_admin/
 │
 ├── utils/                  # 工具函数包
 │   ├── __init__.py         # 通用工具函数（文件解析、LLM 调用）
-│   └── topology_import.py  # 集群拓扑批量导入模块（Excel 解析、数据导入）
+│   ├── sql_checker.py      # 本地 SQL 语法检查模块（sqlglot 解析/格式化）
+│   ├── topology_import.py  # 集群拓扑批量导入模块（Excel 解析、数据导入）
+│   └── create_import_template.py  # 集群拓扑导入模板生成脚本
 │
 ├── routes/                 # API 路由（Blueprint）
 │   ├── __init__.py         # Blueprint 统一导出
@@ -61,6 +74,7 @@ dbsv_admin/
 │
 ├── static/
 │   ├── css/style.css        # 样式（含暗色主题 CSS 变量系统）
+│   ├── vendor/              # 前端第三方库（vis-network 本地化，离线可用）
 │   └── js/                  # 前端模块化 JS
 │       ├── app.js           # 入口文件：主题、导航、初始化、仪表盘
 │       ├── utils.js         # 通用工具函数
@@ -76,7 +90,8 @@ dbsv_admin/
 │       └── config.js        # 系统配置模块
 │
 ├── templates/
-│   └── index.html           # 单页应用 HTML
+│   ├── index.html           # 单页应用 HTML
+│   └── cluster_topology_import_template_v2.xlsx  # 集群拓扑批量导入模板
 │
 └── data/                   # 运行时数据（自动创建）
     ├── db_tool.db           # SQLite 数据库
@@ -124,7 +139,7 @@ dbsv_admin/
 
 ---
 
-### utils.py — 工具函数
+### utils/ — 工具函数包
 
 **常量：**
 | 常量 | 值 | 说明 |

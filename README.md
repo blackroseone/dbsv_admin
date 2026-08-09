@@ -70,8 +70,7 @@ SQL 工具模块提供全面的 SQL 操作支持，包括 SQL 语法检查、格
 dbsv_admin/
 ├── app.py                  # 应用工厂函数和启动入口
 ├── config.py               # 配置文件
-├── sql_checker.py          # SQL 语法检查器
-├── utils.py                # 工具函数集合
+├── utils/                   # 工具函数包（文件解析、LLM 调用、SQL 本地检查等）
 ├── deploy.md               # 部署指南
 ├── version_update.md       # 版本更新记录
 ├── code_desc.md            # 代码结构文档
