@@ -22,10 +22,10 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 @topology_bp.route('/api/topology/import/template', methods=['GET'])
 def download_import_template():
     """下载集群拓扑导入模板"""
-    template_path = os.path.join(BASE_DIR, 'cluster_topology_import_template_v2.xlsx')
+    template_path = os.path.join(BASE_DIR, 'templates', 'cluster_topology_import_template_v2.xlsx')
     if not os.path.exists(template_path):
         # 如果模板不存在，动态生成
-        from create_import_template import create_import_template
+        from utils.create_import_template import create_import_template
         create_import_template(template_path)
     return send_file(template_path, as_attachment=True, download_name='cluster_topology_import_template_v2.xlsx')
 

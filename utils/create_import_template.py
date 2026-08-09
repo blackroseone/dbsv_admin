@@ -231,5 +231,7 @@ def _write_guide(ws, header_fill, header_font, thin_border):
 
 
 if __name__ == "__main__":
-    output = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cluster_topology_import_template_v2.xlsx")
+    # 脚本位于 utils/ 下，模板输出到项目 templates/ 目录
+    project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    output = os.path.join(project_dir, "templates", "cluster_topology_import_template_v2.xlsx")
     create_import_template(output)
