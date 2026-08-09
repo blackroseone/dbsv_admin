@@ -6,8 +6,8 @@
     <title>DBSV admin</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛠️</text></svg>">
     <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
-    <!-- vis.js 用于拓扑图 -->
-    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <!-- vis.js 用于拓扑图（本地化，避免离线服务器无法访问 CDN） -->
+    <script src="/static/vendor/vis-network.min.js?v={{ version }}"></script>
 </head>
 <body>
     <div class="container">
@@ -285,7 +285,7 @@
                 </div>
 
                 <!-- 文件列表视图 -->
-                <div id="knowledge-files-view" class="knowledge-view">
+                <div id="knowledge-files-view" class="knowledge-view active">
                     <div class="file-list-container">
                         <table class="file-table">
                             <thead>
@@ -951,6 +951,13 @@
                             </div>
                         </div>
                         <div class="stats-card">
+                            <div class="stats-card-icon">👥</div>
+                            <div class="stats-card-info">
+                                <div class="stats-card-value" id="stats-tenant-count">0</div>
+                                <div class="stats-card-label">租户总数</div>
+                            </div>
+                        </div>
+                        <div class="stats-card">
                             <div class="stats-card-icon">🖥️</div>
                             <div class="stats-card-info">
                                 <div class="stats-card-value" id="stats-server-count">0</div>
@@ -962,13 +969,6 @@
                             <div class="stats-card-info">
                                 <div class="stats-card-value" id="stats-instance-count">0</div>
                                 <div class="stats-card-label">实例总数</div>
-                            </div>
-                        </div>
-                        <div class="stats-card">
-                            <div class="stats-card-icon">👥</div>
-                            <div class="stats-card-info">
-                                <div class="stats-card-value" id="stats-tenant-count">0</div>
-                                <div class="stats-card-label">租户总数</div>
                             </div>
                         </div>
                     </div>

@@ -13,9 +13,6 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Temporary scripts
-temp_scripts/
-
 # Logs
 *.log
 
@@ -26,3 +23,6 @@ temp_scripts/
 # OS
 .DS_Store
 Thumbs.db
+
+#requirement
+requirement/

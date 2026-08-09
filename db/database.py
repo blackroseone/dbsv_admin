@@ -659,7 +659,8 @@ DEFAULT_FEATURES = [
     {'module_id': 'manuals', 'module_name': '运维手册', 'module_icon': '📖', 'sort_order': 5},
     {'module_id': 'commands', 'module_name': '命令速查', 'module_icon': '⌨️', 'sort_order': 6},
     {'module_id': 'topology', 'module_name': '集群拓扑', 'module_icon': '🗺️', 'sort_order': 7},
-    {'module_id': 'dashboard', 'module_name': '仪表盘', 'module_icon': '📊', 'sort_order': 8}
+    {'module_id': 'dashboard', 'module_name': '仪表盘', 'module_icon': '📊', 'sort_order': 8},
+    {'module_id': 'agent', 'module_name': '智能运维', 'module_icon': '🤖', 'sort_order': 9}
 ]
 
 

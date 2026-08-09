@@ -3677,6 +3677,13 @@ body {
     gap: 12px;
 }
 
+/* 统计视图分布列表：默认展示约6项，超出部分容器内滚动 */
+.stats-chart-content .stats-bar-chart {
+    max-height: 414px;
+    overflow-y: auto;
+    padding-right: 6px;
+}
+
 .stats-bar-item {
     display: flex;
     flex-direction: column;

@@ -31,8 +31,8 @@ SESSION_CONFIG = {
 
 # CORS 配置
 CORS_ORIGINS = [
-    'http://localhost:5000',
-    'http://127.0.0.1:5000',
+    'http://localhost:9163',
+    'http://127.0.0.1:9163',
 ]
 
 # ==================== 定时任务配置 ====================

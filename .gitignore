@@ -25,4 +25,5 @@ __pycache__/
 Thumbs.db
 
 #requirement
-requirement/
+requirements/
+deploy/
