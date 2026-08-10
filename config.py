@@ -16,7 +16,7 @@ COMMANDS_DIR = os.path.join(DATA_DIR, 'commands')
 # ==================== 应用配置 ====================
 
 # 版本号
-APP_VERSION = '3.0.3'
+APP_VERSION = '3.0.4'
 
 # Secret Key（生产环境应从环境变量读取）
 SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dbsv-admin-dev-secret-key-change-in-production')
@@ -46,8 +46,11 @@ SYNC_INTERVAL_HOURS = int(os.environ.get('DB_TOOL_SYNC_INTERVAL_HOURS', '1'))
 EMBED_MODEL_NAME = os.environ.get('DB_TOOL_EMBED_MODEL', 'moka-ai/m3e-base')
 
 # 文本分块配置（rag/embedder.chunk_text 默认值从此处读取）
-CHUNK_SIZE = 2000
-CHUNK_OVERLAP = 100
+# 注意：m3e-base 为 BERT，max_position_embeddings=512 token。2000 字符会被截断到前
+# ~512 token，块尾部对检索不可见；500 字符（overlap 10%）可整块编码，检索精度更高。
+# 改动此值后需全量重建索引并重调检索阈值（详见 version_update / rag_tuning.md）。
+CHUNK_SIZE = 500
+CHUNK_OVERLAP = 50
 
 # ==================== LLM 配置 ====================
 

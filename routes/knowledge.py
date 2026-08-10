@@ -184,16 +184,8 @@ def download_file(db_type, filename):
 @knowledge_bp.route('/api/knowledge/reindex', methods=['POST'])
 def reindex():
     """全量重建知识库索引（重新解析文件内容 + 重建向量索引）"""
-    files = get_all_knowledge_files()
-    count = 0
-    for f in files:
-        filepath = f['file_path']
-        if os.path.exists(filepath):
-            content = extract_content(filepath)
-            update_knowledge_content(f['id'], content)
-            count += 1
-
-    # 重建向量索引
+    # rebuild_all 内部已执行 extract_content + update_knowledge_content + 向量 + 图谱，
+    # 此处不再重复提取，避免双重解析。
     vector_count = 0
     try:
         from rag import Embedder
@@ -202,7 +194,8 @@ def reindex():
     except Exception:
         pass  # 向量索引重建失败不影响文本索引
 
-    msg = f'重建索引完成，处理 {count} 个文件'
+    total = len(get_all_knowledge_files())
+    msg = f'重建索引完成，处理 {total} 个文件'
     if vector_count:
         msg += f'，向量索引 {vector_count} 个文件'
     return jsonify({'message': msg})
@@ -293,7 +286,7 @@ def reindex_stream():
         yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
-    # 设置较长的超时时间（10分钟）
+    # 设置较长的超时时间（前端 EventSource 30 分钟保护，分块 500 后重建更慢）
     response = Response(generate(), mimetype='text/event-stream')
     response.headers['Cache-Control'] = 'no-cache'
     response.headers['X-Accel-Buffering'] = 'no'

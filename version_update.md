@@ -9,6 +9,27 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v3.0.4 (2026-08-11)
+
+### 🔍 RAG 分块调整：2000 → 500
+- **根因**：嵌入模型 m3e-base 是 BERT（`max_position_embeddings=512`），2000 字符编码时被截断到前 ~512 token，块尾部对检索不可见，导致检索命中率下降、知识图谱实体-chunk 关联粒度粗糙。
+- `config.py`：`CHUNK_SIZE=500`、`CHUNK_OVERLAP=50`（overlap 10%）。改动后已全量重建索引（向量 + 知识图谱）。
+- 检索阈值随新块长重调（见下，旧值 0.55/0.60 保留备回滚）。
+
+### ⚡ 索引重建性能优化
+- `kg/rules.py`：词典提取器（产品/OS/参数/架构/概念/性能指标/硬件）正则**模块级预编译缓存**（`lru_cache`），消除每次按 chunk 提取时的 ~500 次重复编译——块 500 后按 chunk 调用次数约 ×4 的编译放大被抹平。
+- `db/kg_database.py`：`save_entities_batch`/`save_relationships_batch` 改为单事务真批量（此前是逐条调 `save_entity`/`save_relationship`、各自 commit 的"假批量"死代码）；`rag/embedder.py` 的 `_extract_knowledge_graph` 改用批量保存。
+- `routes/knowledge.py`：`/api/knowledge/reindex` 去掉双重 extract（路由一遍 + `rebuild_all` 内又一遍）。
+- `static/js/knowledge.js`：重建超时 5 分钟 → 30 分钟（块 500 后重建更慢）。
+
+### 🎯 检索阈值重调（分块 500 实测）
+- 旧值（分块 2000 时代）：`MIN_SIMILARITY_THRESHOLD=0.55`、`MIN_KNOWLEDGE_COVERAGE=0.60`、置信度 0.85/0.55（`routes/qa.py` + `agent/engine.py`）
+- 新值（分块 500 实测，30 个真实问答采样 top-1 分布 min 0.766 / P20 0.802 / 中位 0.839）：`MIN_SIMILARITY_THRESHOLD=0.75`、`MIN_KNOWLEDGE_COVERAGE=0.80`、置信度高线 0.85 不变
+
+### 🔧 工具
+- `temp_scripts/rebuild_index_full.py`：全量重建（含图谱提取 + 计时），支持按 db_type
+- `temp_scripts/qa_similarity_sampling.py`：真实问答相似度分布采样（阈值重调依据）
+
 ## v3.0.3 (2026-08-09)
 
 ### 🌐 企业微信接入

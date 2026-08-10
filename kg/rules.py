@@ -4,6 +4,7 @@
 基于正则表达式和词典匹配提取结构化实体
 """
 import re
+from functools import lru_cache
 from typing import List, Dict, Tuple
 
 # ==================== 数据库产品词典 ====================
@@ -157,6 +158,30 @@ def _word(alias):
     return r'(?<![A-Za-z0-9_])' + re.escape(alias) + r'(?![A-Za-z0-9_])'
 
 
+@lru_cache(maxsize=None)
+def _alias_pattern(alias):
+    """按别名缓存预编译的词边界正则。
+
+    词典提取器按 chunk 调用（块 500 后调用次数约 ×4），若每次现编
+    会放大编译成本；别名集合有限，缓存不会无界增长。
+    """
+    return re.compile(_word(alias), re.IGNORECASE)
+
+
+@lru_cache(maxsize=None)
+def _param_prefix_pattern(prefix):
+    """按参数前缀缓存预编译正则（prefix_xxx 或 prefix.xxx 格式）。"""
+    return re.compile(
+        r'(?<![A-Za-z0-9_])(' + re.escape(prefix) + r'[a-zA-Z0-9_]+)(?![A-Za-z0-9_])',
+        re.IGNORECASE
+    )
+
+
+# 通用参数模式（大写下划线格式）
+GENERIC_PARAM_PATTERN = re.compile(
+    r'(?<![A-Za-z0-9_])([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)(?![A-Za-z0-9_])')
+
+
 # 版本号模式（版本组支持 Oracle 19c 等字母后缀）
 VERSION_PATTERN = re.compile(
     r'(?<![A-Za-z0-9_])(?:MySQL|Oracle|PostgreSQL|SQL Server|DB2|OceanBase|GaussDB|'
@@ -277,7 +302,7 @@ def extract_database_products(text: str) -> List[Dict]:
         aliases = DATABASE_PRODUCTS[std_name]
         for product_name in aliases:
             # 使用 ASCII 词边界匹配（中文语境安全）
-            pattern = re.compile(_word(product_name), re.IGNORECASE)
+            pattern = _alias_pattern(product_name)
             matches = list(pattern.finditer(text))
             if matches:
                 found.add(std_name)
@@ -408,7 +433,7 @@ def extract_operating_systems(text: str) -> List[Dict]:
 
         aliases = OPERATING_SYSTEMS[std_name]
         for os_name in aliases:
-            pattern = re.compile(_word(os_name), re.IGNORECASE)
+            pattern = _alias_pattern(os_name)
             matches = list(pattern.finditer(text))
             if matches:
                 found.add(std_name)
@@ -444,10 +469,7 @@ def extract_parameters(text: str, db_type: str = None) -> List[Dict]:
     # 基于前缀匹配
     for prefix in prefixes:
         # 匹配 prefix_xxx 或 prefix.xxx 格式
-        pattern = re.compile(
-            r'(?<![A-Za-z0-9_])(' + re.escape(prefix) + r'[a-zA-Z0-9_]+)(?![A-Za-z0-9_])',
-            re.IGNORECASE
-        )
+        pattern = _param_prefix_pattern(prefix)
         for match in pattern.finditer(text):
             param = match.group(1)
             param_lower = param.lower()
@@ -475,7 +497,7 @@ def extract_parameters(text: str, db_type: str = None) -> List[Dict]:
                 })
 
     # 通用参数模式（大写下划线格式）
-    for match in re.finditer(r'(?<![A-Za-z0-9_])([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)(?![A-Za-z0-9_])', text):
+    for match in GENERIC_PARAM_PATTERN.finditer(text):
         param = match.group(1)
         param_lower = param.lower()
         if param_lower not in found and len(param) > 5:
@@ -592,7 +614,7 @@ def extract_architectures(text: str) -> List[Dict]:
 
     for std_name, aliases in ARCHITECTURES.items():
         for arch_name in aliases:
-            pattern = re.compile(_word(arch_name), re.IGNORECASE)
+            pattern = _alias_pattern(arch_name)
             matches = list(pattern.finditer(text))
             if matches:
                 if std_name not in found:
@@ -618,7 +640,7 @@ def extract_concepts(text: str) -> List[Dict]:
 
     for std_name, aliases in CONCEPTS.items():
         for concept_name in aliases:
-            pattern = re.compile(_word(concept_name), re.IGNORECASE)
+            pattern = _alias_pattern(concept_name)
             matches = list(pattern.finditer(text))
             if matches:
                 if std_name not in found:
@@ -644,7 +666,7 @@ def extract_performance_metrics(text: str) -> List[Dict]:
 
     for std_name, aliases in PERFORMANCE_METRICS.items():
         for metric_name in aliases:
-            pattern = re.compile(_word(metric_name), re.IGNORECASE)
+            pattern = _alias_pattern(metric_name)
             matches = list(pattern.finditer(text))
             if matches:
                 if std_name not in found:
@@ -670,7 +692,7 @@ def extract_hardware(text: str) -> List[Dict]:
 
     for std_name, aliases in HARDWARE.items():
         for hw_name in aliases:
-            pattern = re.compile(_word(hw_name), re.IGNORECASE)
+            pattern = _alias_pattern(hw_name)
             matches = list(pattern.finditer(text))
             if matches:
                 if std_name not in found:

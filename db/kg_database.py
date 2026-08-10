@@ -9,60 +9,71 @@ from db.database import get_db, transaction
 
 # ==================== 实体 CRUD ====================
 
-def save_entity(entity_type, name, normalized_name=None, aliases=None, description=None,
-                properties=None, source_file_id=None, source_chunk_id=None,
-                confidence=1.0, extract_method='rule'):
-    """保存或更新实体，返回实体 ID"""
+def _upsert_entity_tx(tx, entity_type, name, normalized_name=None, aliases=None, description=None,
+                      properties=None, source_file_id=None, source_chunk_id=None,
+                      confidence=1.0, extract_method='rule'):
+    """在给定事务连接内保存或更新实体，返回实体 ID（单条/批量复用）"""
     if normalized_name is None:
         normalized_name = name.lower().strip()
     aliases_str = json.dumps(aliases or [], ensure_ascii=False)
     props_str = json.dumps(properties or {}, ensure_ascii=False)
 
-    with transaction() as tx:
-        # 检查是否已存在
-        existing = tx.fetchone(
-            "SELECT id FROM kg_entities WHERE normalized_name=? AND entity_type=?",
-            (normalized_name, entity_type)
+    # 检查是否已存在
+    existing = tx.fetchone(
+        "SELECT id FROM kg_entities WHERE normalized_name=? AND entity_type=?",
+        (normalized_name, entity_type)
+    )
+    if existing:
+        entity_id = existing['id']
+        # 更新实体（合并别名和属性）
+        old = tx.fetchone(
+            "SELECT aliases, properties FROM kg_entities WHERE id=?",
+            (entity_id,)
         )
-        if existing:
-            entity_id = existing['id']
-            # 更新实体（合并别名和属性）
-            old = tx.fetchone(
-                "SELECT aliases, properties FROM kg_entities WHERE id=?",
-                (entity_id,)
-            )
-            old_aliases = json.loads(old['aliases']) if old['aliases'] else []
-            old_props = json.loads(old['properties']) if old['properties'] else {}
+        old_aliases = json.loads(old['aliases']) if old['aliases'] else []
+        old_props = json.loads(old['properties']) if old['properties'] else {}
 
-            # 合并别名
-            new_aliases = list(set(old_aliases + (aliases or [])))
-            # 合并属性
-            new_props = {**old_props, **(properties or {})}
+        # 合并别名
+        new_aliases = list(set(old_aliases + (aliases or [])))
+        # 合并属性
+        new_props = {**old_props, **(properties or {})}
 
-            tx.execute(
-                """UPDATE kg_entities SET
-                    name=?, aliases=?, description=COALESCE(?, description),
-                    properties=?, confidence=MAX(confidence, ?),
-                    source_file_id=COALESCE(source_file_id, ?),
-                    source_chunk_id=COALESCE(source_chunk_id, ?),
-                    updated_at=CURRENT_TIMESTAMP
-                WHERE id=?""",
-                (name, json.dumps(new_aliases, ensure_ascii=False), description,
-                 json.dumps(new_props, ensure_ascii=False), confidence,
-                 source_file_id, source_chunk_id, entity_id)
-            )
-        else:
-            cursor = tx.execute(
-                """INSERT INTO kg_entities
-                    (entity_type, name, normalized_name, aliases, description,
-                     properties, source_file_id, source_chunk_id, confidence, extract_method)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (entity_type, name, normalized_name, aliases_str, description,
-                 props_str, source_file_id, source_chunk_id, confidence, extract_method)
-            )
-            entity_id = cursor.lastrowid
+        tx.execute(
+            """UPDATE kg_entities SET
+                name=?, aliases=?, description=COALESCE(?, description),
+                properties=?, confidence=MAX(confidence, ?),
+                source_file_id=COALESCE(source_file_id, ?),
+                source_chunk_id=COALESCE(source_chunk_id, ?),
+                updated_at=CURRENT_TIMESTAMP
+            WHERE id=?""",
+            (name, json.dumps(new_aliases, ensure_ascii=False), description,
+             json.dumps(new_props, ensure_ascii=False), confidence,
+             source_file_id, source_chunk_id, entity_id)
+        )
+    else:
+        cursor = tx.execute(
+            """INSERT INTO kg_entities
+                (entity_type, name, normalized_name, aliases, description,
+                 properties, source_file_id, source_chunk_id, confidence, extract_method)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (entity_type, name, normalized_name, aliases_str, description,
+             props_str, source_file_id, source_chunk_id, confidence, extract_method)
+        )
+        entity_id = cursor.lastrowid
 
     return entity_id
+
+
+def save_entity(entity_type, name, normalized_name=None, aliases=None, description=None,
+                properties=None, source_file_id=None, source_chunk_id=None,
+                confidence=1.0, extract_method='rule'):
+    """保存或更新实体，返回实体 ID"""
+    with transaction() as tx:
+        return _upsert_entity_tx(
+            tx, entity_type, name, normalized_name=normalized_name, aliases=aliases,
+            description=description, properties=properties, source_file_id=source_file_id,
+            source_chunk_id=source_chunk_id, confidence=confidence, extract_method=extract_method
+        )
 
 
 def get_entity_by_id(entity_id):
@@ -281,42 +292,53 @@ def get_entity_stats():
 
 # ==================== 关系 CRUD ====================
 
+def _upsert_relationship_tx(tx, from_entity_id, to_entity_id, relation_type, confidence=1.0,
+                            properties=None, source_chunk_id=None, source_file_id=None,
+                            extract_method='rule'):
+    """在给定事务连接内保存或更新关系，返回关系 ID（单条/批量复用）"""
+    props_str = json.dumps(properties or {}, ensure_ascii=False)
+
+    # 检查是否已存在
+    existing = tx.fetchone(
+        """SELECT id FROM kg_relationships
+        WHERE from_entity_id=? AND to_entity_id=? AND relation_type=?""",
+        (from_entity_id, to_entity_id, relation_type)
+    )
+    if existing:
+        rel_id = existing['id']
+        tx.execute(
+            """UPDATE kg_relationships SET
+                confidence=MAX(confidence, ?),
+                properties=?,
+                source_chunk_id=COALESCE(source_chunk_id, ?),
+                source_file_id=COALESCE(source_file_id, ?)
+            WHERE id=?""",
+            (confidence, props_str, source_chunk_id, source_file_id, rel_id)
+        )
+    else:
+        cursor = tx.execute(
+            """INSERT INTO kg_relationships
+                (from_entity_id, to_entity_id, relation_type, confidence,
+                 properties, source_chunk_id, source_file_id, extract_method)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (from_entity_id, to_entity_id, relation_type, confidence,
+             props_str, source_chunk_id, source_file_id, extract_method)
+        )
+        rel_id = cursor.lastrowid
+
+    return rel_id
+
+
 def save_relationship(from_entity_id, to_entity_id, relation_type, confidence=1.0,
                       properties=None, source_chunk_id=None, source_file_id=None,
                       extract_method='rule'):
     """保存或更新关系，返回关系 ID"""
-    props_str = json.dumps(properties or {}, ensure_ascii=False)
-
     with transaction() as tx:
-        # 检查是否已存在
-        existing = tx.fetchone(
-            """SELECT id FROM kg_relationships
-            WHERE from_entity_id=? AND to_entity_id=? AND relation_type=?""",
-            (from_entity_id, to_entity_id, relation_type)
+        return _upsert_relationship_tx(
+            tx, from_entity_id, to_entity_id, relation_type, confidence=confidence,
+            properties=properties, source_chunk_id=source_chunk_id,
+            source_file_id=source_file_id, extract_method=extract_method
         )
-        if existing:
-            rel_id = existing['id']
-            tx.execute(
-                """UPDATE kg_relationships SET
-                    confidence=MAX(confidence, ?),
-                    properties=?,
-                    source_chunk_id=COALESCE(source_chunk_id, ?),
-                    source_file_id=COALESCE(source_file_id, ?)
-                WHERE id=?""",
-                (confidence, props_str, source_chunk_id, source_file_id, rel_id)
-            )
-        else:
-            cursor = tx.execute(
-                """INSERT INTO kg_relationships
-                    (from_entity_id, to_entity_id, relation_type, confidence,
-                     properties, source_chunk_id, source_file_id, extract_method)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (from_entity_id, to_entity_id, relation_type, confidence,
-                 props_str, source_chunk_id, source_file_id, extract_method)
-            )
-            rel_id = cursor.lastrowid
-
-    return rel_id
 
 
 def get_relationships_by_entity(entity_id, direction='both'):
@@ -450,33 +472,42 @@ def unlink_chunk_entity(chunk_id, entity_id):
 # ==================== 批量操作 ====================
 
 def save_entities_batch(entities):
-    """批量保存实体
+    """批量保存实体（单事务一次提交）
+
     entities: [{entity_type, name, normalized_name, aliases, description,
                 properties, source_file_id, source_chunk_id, confidence, extract_method}, ...]
-    返回 [(entity_id, name), ...]
+    返回 {(entity_type, normalized_name): entity_id, ...}
     """
-    results = []
-    for entity in entities:
-        try:
-            eid = save_entity(**entity)
-            results.append((eid, entity['name']))
-        except Exception as e:
-            print(f"[KG] 保存实体失败: {entity.get('name', 'unknown')} - {e}")
-    return results
+    result_map = {}
+    if not entities:
+        return result_map
+    with transaction() as tx:
+        for entity in entities:
+            try:
+                eid = _upsert_entity_tx(tx, **entity)
+                key = (entity['entity_type'],
+                       entity.get('normalized_name', entity['name'].lower().strip()))
+                result_map[key] = eid
+            except Exception as e:
+                print(f"[KG] 保存实体失败: {entity.get('name', 'unknown')} - {e}")
+    return result_map
 
 
 def save_relationships_batch(relationships):
-    """批量保存关系
+    """批量保存关系（单事务一次提交）
     relationships: [{from_entity_id, to_entity_id, relation_type, confidence,
                      properties, source_chunk_id, source_file_id, extract_method}, ...]
     """
     results = []
-    for rel in relationships:
-        try:
-            rid = save_relationship(**rel)
-            results.append(rid)
-        except Exception as e:
-            print(f"[KG] 保存关系失败: {rel} - {e}")
+    if not relationships:
+        return results
+    with transaction() as tx:
+        for rel in relationships:
+            try:
+                rid = _upsert_relationship_tx(tx, **rel)
+                results.append(rid)
+            except Exception as e:
+                print(f"[KG] 保存关系失败: {rel} - {e}")
     return results
 
 

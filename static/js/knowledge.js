@@ -327,14 +327,14 @@ function reindexKnowledge() {
     let reindexTimeout = null;
     let isCompleted = false;
 
-    // 设置超时保护（5分钟）
+    // 设置超时保护（30分钟，分块 500 后重建耗时更长）
     reindexTimeout = setTimeout(() => {
         if (!isCompleted) {
             eventSource.close();
             progressDiv.style.display = 'none';
             showToast('重建索引超时，请稍后重试', 'error');
         }
-    }, 300000);
+    }, 1800000);
 
     eventSource.onmessage = function(event) {
         if (event.data === '[DONE]') {

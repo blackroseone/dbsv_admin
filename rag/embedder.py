@@ -96,8 +96,8 @@ def chunk_text(text, chunk_size=None, overlap=None):
     """将文本按段落分块，每块约 chunk_size 字符，重叠 overlap 字符
 
     参数:
-        chunk_size: 每块目标大小（默认取 config.CHUNK_SIZE，当前2000）
-        overlap: 相邻块重叠字符数（默认取 config.CHUNK_OVERLAP，当前100）
+        chunk_size: 每块目标大小（默认取 config.CHUNK_SIZE，当前500）
+        overlap: 相邻块重叠字符数（默认取 config.CHUNK_OVERLAP，当前50）
     """
     if chunk_size is None or overlap is None:
         from config import CHUNK_SIZE, CHUNK_OVERLAP
@@ -286,9 +286,8 @@ class Embedder:
         """从文件内容中提取知识图谱实体和关系"""
         from kg.rules import extract_all_entities, infer_relationships
         from db.kg_database import (
-            save_entity, save_relationship, link_chunk_entity,
-            save_entities_batch, save_relationships_batch, link_chunks_entities_batch,
-            clear_entities_by_file
+            save_entities_batch, save_relationships_batch,
+            link_chunks_entities_batch, clear_entities_by_file
         )
 
         # 清除该文件旧的知识图谱数据
@@ -297,25 +296,34 @@ class Embedder:
         # 1. 从完整文本提取实体（用于推断跨 chunk 关系）
         all_text_entities = extract_all_entities(content, db_type)
 
-        # 保存全局实体
-        global_entity_map = {}  # (type, normalized_name) -> entity_id
-        for entity in all_text_entities:
-            entity_id = save_entity(
-                entity_type=entity['entity_type'],
-                name=entity['name'],
-                normalized_name=entity.get('normalized_name', entity['name'].lower().strip()),
-                aliases=entity.get('aliases', []),
-                description=entity.get('description', ''),
-                properties=entity.get('properties', {}),
-                source_file_id=file_id,
-                confidence=entity.get('confidence', 1.0),
-                extract_method=entity.get('extract_method', 'rule')
-            )
-            key = (entity['entity_type'], entity.get('normalized_name', entity['name'].lower().strip()))
-            global_entity_map[key] = entity_id
+        # 2. 收集全部待保存实体（全量 + 各 chunk，按 key 去重）
+        #    实体按 (type, normalized_name) 去重，一次批量保存，避免逐条事务
+        def _payload(entity, source_chunk_id=None):
+            return {
+                'entity_type': entity['entity_type'],
+                'name': entity['name'],
+                'normalized_name': entity.get('normalized_name', entity['name'].lower().strip()),
+                'aliases': entity.get('aliases', []),
+                'description': entity.get('description', ''),
+                'properties': entity.get('properties', {}),
+                'source_file_id': file_id,
+                'source_chunk_id': source_chunk_id,
+                'confidence': entity.get('confidence', 1.0),
+                'extract_method': entity.get('extract_method', 'rule'),
+            }
 
-        # 2. 从每个 chunk 提取实体并建立关联
-        chunk_entity_links = []
+        def _key(entity):
+            return (entity['entity_type'],
+                    entity.get('normalized_name', entity['name'].lower().strip()))
+
+        entity_payloads = []
+        entity_payload_index = {}  # key -> index in entity_payloads
+        for entity in all_text_entities:
+            key = _key(entity)
+            if key not in entity_payload_index:
+                entity_payload_index[key] = len(entity_payloads)
+                entity_payloads.append(_payload(entity))
+
         # 一次性取回该文件所有 chunk 的 id，避免逐 chunk 查询
         from db.database import get_db
         conn = get_db()
@@ -325,6 +333,7 @@ class Embedder:
         ).fetchall():
             chunk_id_map[row['chunk_index']] = row['id']
 
+        chunk_entity_links = []  # [(chunk_db_id, key), ...]，保存后映射为实体 id
         for i, (chunk_idx, chunk_text, emb_bytes) in enumerate(embeddings):
             chunk_db_id = chunk_id_map.get(chunk_idx)
             if not chunk_db_id:
@@ -332,53 +341,46 @@ class Embedder:
 
             # 从 chunk 文本提取实体
             chunk_entities = extract_all_entities(chunk_text, db_type)
-
             for entity in chunk_entities:
-                key = (entity['entity_type'], entity.get('normalized_name', entity['name'].lower().strip()))
-                if key in global_entity_map:
-                    entity_id = global_entity_map[key]
-                else:
-                    # 新实体，保存到数据库
-                    entity_id = save_entity(
-                        entity_type=entity['entity_type'],
-                        name=entity['name'],
-                        normalized_name=entity.get('normalized_name', entity['name'].lower().strip()),
-                        aliases=entity.get('aliases', []),
-                        description=entity.get('description', ''),
-                        properties=entity.get('properties', {}),
-                        source_file_id=file_id,
-                        source_chunk_id=chunk_db_id,
-                        confidence=entity.get('confidence', 1.0),
-                        extract_method=entity.get('extract_method', 'rule')
-                    )
-                    global_entity_map[key] = entity_id
+                key = _key(entity)
+                if key not in entity_payload_index:
+                    entity_payload_index[key] = len(entity_payloads)
+                    entity_payloads.append(_payload(entity, chunk_db_id))
+                chunk_entity_links.append((chunk_db_id, key))
 
-                # 建立 chunk-实体关联
-                chunk_entity_links.append((chunk_db_id, entity_id, 1))
+        # 3. 批量保存实体，得到 key -> id 映射
+        entity_id_map = save_entities_batch(entity_payloads)
 
-        # 批量保存 chunk-实体关联
+        # 4. 批量保存 chunk-实体关联
         if chunk_entity_links:
-            link_chunks_entities_batch(chunk_entity_links)
+            links = [(cid, entity_id_map[key], 1)
+                     for cid, key in chunk_entity_links if key in entity_id_map]
+            if links:
+                link_chunks_entities_batch(links)
 
-        # 3. 推断关系
+        # 5. 推断关系并批量保存
         relationships = infer_relationships(all_text_entities, content)
-
-        # 保存关系
+        rel_payloads = []
         for rel in relationships:
-            from_key = (rel['from_entity'].get('entity_type'), rel['from_entity'].get('normalized_name', rel['from_entity']['name'].lower()))
-            to_key = (rel['to_entity'].get('entity_type'), rel['to_entity'].get('normalized_name', rel['to_entity']['name'].lower()))
+            from_key = (rel['from_entity'].get('entity_type'),
+                        rel['from_entity'].get('normalized_name',
+                                               rel['from_entity']['name'].lower()))
+            to_key = (rel['to_entity'].get('entity_type'),
+                      rel['to_entity'].get('normalized_name',
+                                           rel['to_entity']['name'].lower()))
+            if from_key in entity_id_map and to_key in entity_id_map:
+                rel_payloads.append({
+                    'from_entity_id': entity_id_map[from_key],
+                    'to_entity_id': entity_id_map[to_key],
+                    'relation_type': rel['relation_type'],
+                    'confidence': rel.get('confidence', 0.8),
+                    'source_file_id': file_id,
+                    'extract_method': rel.get('extract_method', 'rule'),
+                })
 
-            if from_key in global_entity_map and to_key in global_entity_map:
-                save_relationship(
-                    from_entity_id=global_entity_map[from_key],
-                    to_entity_id=global_entity_map[to_key],
-                    relation_type=rel['relation_type'],
-                    confidence=rel.get('confidence', 0.8),
-                    source_file_id=file_id,
-                    extract_method=rel.get('extract_method', 'rule')
-                )
+        save_relationships_batch(rel_payloads)
 
-        print(f"[RAG] 知识图谱提取完成 [{file_id}]: {len(global_entity_map)} 实体, {len(relationships)} 关系")
+        print(f"[RAG] 知识图谱提取完成 [{file_id}]: {len(entity_id_map)} 实体, {len(relationships)} 关系")
 
     def rebuild_single(self, file_id, db_type, filepath, extract_kg=True):
         """重建单个文件的向量索引"""

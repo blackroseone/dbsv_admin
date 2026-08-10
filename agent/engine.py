@@ -17,9 +17,9 @@ from agent.tools import get_tool_schemas, execute_tool, ToolContext
 class SmartOpsAgent:
     """智能运维Agent（第三代 - 自主决策模式）"""
 
-    # 知识库检索阈值（与 routes/qa.py 的 0.55/0.60 对齐，m3e 嵌入实际可达）
-    MIN_SIMILARITY_THRESHOLD = 0.55
-    MIN_KNOWLEDGE_COVERAGE = 0.60
+    # 知识库检索阈值（与 routes/qa.py 对齐，分块 500 后实测上调）
+    MIN_SIMILARITY_THRESHOLD = 0.75
+    MIN_KNOWLEDGE_COVERAGE = 0.80
 
     def __init__(self, session_id: str, ssh_conn_id: Optional[str] = None,
                  db_conn_id: Optional[str] = None, model_id: Optional[str] = None):

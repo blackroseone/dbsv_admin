@@ -226,8 +226,10 @@ def _build_qa_messages(db_type, question, use_rag, conversation_id=None, use_top
 
     # RAG检索：优先使用向量检索，回退到关键词检索
     # 严格的检索阈值控制，防止LLM幻觉
-    MIN_SIMILARITY_THRESHOLD = 0.55  # 最低相似度阈值（sentence-transformers 余弦相似度通常较低，0.55 是合理阈值）
-    MIN_KNOWLEDGE_COVERAGE = 0.60    # 知识覆盖率要求
+    # 注意：分块 500 后相似度分布抬升（真实问答 top-1 实测 0.766~0.869），
+    # 阈值相应上调。旧值 0.55/0.60 为分块 2000 时代的实测值（已失效）。
+    MIN_SIMILARITY_THRESHOLD = 0.75  # 最低相似度阈值（分块500实测 P20≈0.80）
+    MIN_KNOWLEDGE_COVERAGE = 0.80    # 知识覆盖率要求（分块500实测 top-1 中位 0.84）
 
     context = ""
     knowledge_confidence = "low"  # 知识库置信度: low/medium/high
