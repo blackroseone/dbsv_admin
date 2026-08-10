@@ -56,7 +56,7 @@ function renderModelsList() {
         <div class="model-card ${model.is_default ? 'default' : ''}">
             <div class="model-info">
                 <div class="model-name">${escapeHtml(model.display_name || model.model_name)}</div>
-                <div class="model-detail">${escapeHtml(model.model_name)} | ${escapeHtml(model.api_url)}</div>
+                <div class="model-detail">${escapeHtml(model.model_name)} | ${escapeHtml(model.api_url)} | 温度: ${model.temperature ?? 0.7}</div>
                 ${model.is_default ? '<span class="model-badge default">默认</span>' : ''}
             </div>
             <div class="model-actions">
@@ -77,6 +77,7 @@ function showAddModelDialog() {
     document.getElementById('api-url').value = '';
     document.getElementById('api-key').value = '';
     document.getElementById('model-name').value = '';
+    document.getElementById('model-temperature').value = 0.7;
     document.getElementById('model-form-container').style.display = 'block';
 }
 
@@ -97,6 +98,7 @@ function editModel(modelId) {
     document.getElementById('api-key').value = '';
     document.getElementById('api-key').placeholder = model.api_key_masked || '请输入新的API Key';
     document.getElementById('model-name').value = model.model_name || '';
+    document.getElementById('model-temperature').value = model.temperature ?? 0.7;
     document.getElementById('model-form-container').style.display = 'block';
 }
 
@@ -124,11 +126,19 @@ async function saveModelConfig() {
         return;
     }
 
+    const temperatureRaw = document.getElementById('model-temperature').value.trim();
+    const temperature = temperatureRaw === '' ? 0.7 : parseFloat(temperatureRaw);
+    if (isNaN(temperature) || temperature < 0 || temperature > 2) {
+        showToast('温度必须是 0-2 之间的数字', 'error');
+        return;
+    }
+
     const body = {
         id: modelId || undefined,
         display_name: displayName,
         api_url: apiUrl,
-        model_name: modelName
+        model_name: modelName,
+        temperature: temperature
     };
 
     // 如果提供了api_key，则包含在请求中
@@ -226,6 +236,43 @@ async function testModelConnection(modelId) {
         resultDiv.className = 'test-result error';
         resultDiv.textContent = '测试失败: ' + error.message;
     }
+}
+
+// ==================== 问答提示词配置 ====================
+
+async function loadQAPrompt() {
+    try {
+        const response = await fetch('/api/config/qa-prompt');
+        const data = await response.json();
+        document.getElementById('qa-prompt-input').value = data.prompt || '';
+    } catch (error) {
+        showToast('加载问答提示词失败', 'error');
+    }
+}
+
+async function saveQAPrompt() {
+    const prompt = document.getElementById('qa-prompt-input').value.trim();
+    try {
+        const response = await fetch('/api/config/qa-prompt', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt })
+        });
+        const data = await response.json();
+        if (response.ok) {
+            showToast(data.message || '保存成功', 'success');
+        } else {
+            showToast(data.error || '保存失败', 'error');
+        }
+    } catch (error) {
+        showToast('保存失败', 'error');
+    }
+}
+
+function resetQAPrompt() {
+    if (!confirm('确定要清空自定义提示词，恢复系统默认模板吗？')) return;
+    document.getElementById('qa-prompt-input').value = '';
+    showToast('已恢复默认（保存后生效）', 'success');
 }
 
 // 兼容旧接口
@@ -399,6 +446,8 @@ function switchConfigTab(tab) {
         loadDBTypesPage();
     } else if (tab === 'features') {
         loadFeatureConfig();
+    } else if (tab === 'qaprompt') {
+        loadQAPrompt();
     } else if (tab === 'project') {
         loadDoc('PROJECT.md', 'project-doc-content');
     } else if (tab === 'changelog') {

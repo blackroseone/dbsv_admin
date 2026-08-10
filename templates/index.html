@@ -1101,6 +1101,7 @@
                 <div class="config-tabs">
                     <button class="tab-btn active" onclick="switchConfigTab('llm')">🤖 大模型配置</button>
                     <button class="tab-btn" onclick="switchConfigTab('features')">🔧 功能配置</button>
+                    <button class="tab-btn" onclick="switchConfigTab('qaprompt')">📖 问答提示词</button>
                     <button class="tab-btn" onclick="switchConfigTab('dbtypes')">🗄️ 数据库类型</button>
                     <button class="tab-btn" onclick="switchConfigTab('import-export')">📦 配置导入导出</button>
                     <button class="tab-btn" onclick="switchConfigTab('logs')">📝 操作日志</button>
@@ -1145,6 +1146,11 @@
                                     <label for="model-name">模型名称</label>
                                     <input type="text" id="model-name" placeholder="例如: kimi-k2.6, gpt-4">
                                 </div>
+                                <div class="form-group">
+                                    <label for="model-temperature">温度 (temperature)</label>
+                                    <input type="number" id="model-temperature" min="0" max="2" step="0.1" value="0.7">
+                                    <small>采样温度：值越高回答越随机，越低越保守（0-2，默认 0.7）</small>
+                                </div>
                                 <div class="form-actions">
                                     <button type="button" class="btn btn-secondary" onclick="hideModelForm()">取消</button>
                                     <button type="button" class="btn btn-primary" onclick="saveModelConfig()">保存</button>
@@ -1163,6 +1169,23 @@
                         </div>
                         <div id="feature-config-list" class="feature-config-list">
                             <div class="empty-message">加载中...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 问答提示词配置 -->
+                <div class="config-tab-content" id="config-tab-qaprompt">
+                    <div class="config-container">
+                        <div class="module-header">
+                            <h3>知识问答系统提示词</h3>
+                            <p class="module-desc">自定义问答模块发送给大模型的系统提示词，留空则使用系统默认模板。可用占位符：<code>{db_name}</code>（数据库类型名）、<code>{confidence_warning}</code>（知识库置信度警告）</p>
+                        </div>
+                        <div class="form-group">
+                            <textarea id="qa-prompt-input" style="width:100%; min-height:320px; padding:12px;" placeholder="留空使用默认提示词"></textarea>
+                        </div>
+                        <div class="form-actions">
+                            <button class="btn btn-secondary" onclick="resetQAPrompt()">恢复默认</button>
+                            <button class="btn btn-primary" onclick="saveQAPrompt()">保存</button>
                         </div>
                     </div>
                 </div>

@@ -123,6 +123,17 @@ def save_llm_model():
     if not model_name:
         return jsonify({'error': '请输入模型名称'}), 400
 
+    # 温度参数（可选，0-2，默认 0.7）
+    temperature = data.get('temperature', 0.7)
+    if temperature is None or temperature == '':
+        temperature = 0.7
+    try:
+        temperature = float(temperature)
+    except (TypeError, ValueError):
+        return jsonify({'error': '温度参数必须是数字(0-2)'}), 400
+    if temperature < 0 or temperature > 2:
+        return jsonify({'error': '温度参数必须在0-2之间'}), 400
+
     models = _get_models_config()
 
     # 查找现有模型或创建新模型
@@ -140,6 +151,7 @@ def save_llm_model():
             'api_url': api_url,
             'api_key': api_key,
             'model_name': model_name,
+            'temperature': temperature,
         }
         action = '更新'
     else:
@@ -152,6 +164,7 @@ def save_llm_model():
             'api_url': api_url,
             'api_key': api_key,
             'model_name': model_name,
+            'temperature': temperature,
         })
         model_id = new_id
         action = '添加'
@@ -201,6 +214,22 @@ def set_default_model(model_id):
     set_config('default_model_id', model_id)
     add_operation_log('系统配置', '设置默认模型', model_id)
     return jsonify({'message': '设置成功'})
+
+
+@config_bp.route('/api/config/qa-prompt', methods=['GET'])
+def get_qa_prompt():
+    """获取问答系统提示词配置（未配置返回空字符串，问答模块自动回退默认模板）"""
+    return jsonify({'prompt': get_config('qa_system_prompt', '')})
+
+
+@config_bp.route('/api/config/qa-prompt', methods=['PUT'])
+def update_qa_prompt():
+    """更新问答系统提示词配置"""
+    data = request.get_json() or {}
+    prompt = data.get('prompt', '').strip()
+    set_config('qa_system_prompt', prompt)
+    add_operation_log('系统配置', '更新问答提示词', prompt[:50] or '(已清空)')
+    return jsonify({'message': '保存成功'})
 
 
 @config_bp.route('/api/config/test', methods=['POST'])

@@ -7,11 +7,26 @@ from flask import Blueprint, request, jsonify, Response
 from db.database import (
     get_db_types, search_knowledge_content, add_operation_log,
     create_conversation, get_conversations, get_conversation, delete_conversation,
-    add_message, get_messages, update_conversation_time
+    add_message, get_messages, update_conversation_time, get_config
 )
 from utils import call_llm, call_llm_stream, stream_llm_response
 
 qa_bp = Blueprint('qa', __name__)
+
+
+# 默认问答系统提示词模板（config 表 qa_system_prompt 为空时使用）
+# 占位符：{db_name} 数据库类型名、{confidence_warning} 知识库置信度警告
+DEFAULT_QA_SYSTEM_PROMPT = """你是一个{db_name}数据库专家。请根据用户的问题提供详细、准确的回答。
+回答要求：
+1. 使用中文回答
+2. 如果涉及SQL语句，请提供示例
+3. 解释清晰，适合初中级开发者理解
+4. 如果有参考知识库内容，请优先使用其中的信息
+5. 你也可以根据集群拓扑信息回答关于服务器归属、实例分布等问题
+6. 你也可以根据运维手册内容回答操作步骤和流程问题
+7. **重要**：如果知识库中没有足够信息，请明确说明，不要编造不确定的内容
+8. 如果知识图谱提供了实体关系信息，请优先使用结构化关系进行推理
+{confidence_warning}"""
 
 
 def detect_db_type_from_question(question):
@@ -233,7 +248,7 @@ def _build_qa_messages(db_type, question, use_rag, conversation_id=None, use_top
                 try:
                     from rag import Embedder
                     embedder = Embedder()
-                    vector_results = embedder.similarity_search(question, db_type=db_type, top_k=5)
+                    vector_results = embedder.similarity_search(question, db_type=db_type, top_k=6)
                     if vector_results:
                         # 过滤低相似度结果
                         filtered_results = [r for r in vector_results if r.get('similarity', 0) >= MIN_SIMILARITY_THRESHOLD]
@@ -262,7 +277,7 @@ def _build_qa_messages(db_type, question, use_rag, conversation_id=None, use_top
                     try:
                         from rag import Embedder
                         embedder = Embedder()
-                        vector_results = embedder.similarity_search(question, db_type='_system', top_k=5)
+                        vector_results = embedder.similarity_search(question, db_type='_system', top_k=6)
                         if vector_results:
                             # 过滤低相似度结果
                             filtered_results = [r for r in vector_results if r.get('similarity', 0) >= MIN_SIMILARITY_THRESHOLD]
@@ -362,13 +377,13 @@ def _build_qa_messages(db_type, question, use_rag, conversation_id=None, use_top
             # 知识库文件结果
             if search_results:
                 context += "\n【知识库文件】\n"
-                for i, result in enumerate(search_results[:3], 1):
+                for i, result in enumerate(search_results[:6], 1):
                     context += f"\n{i}. 文件：{result['filename']} (相似度: {result.get('similarity', 0):.3f})\n内容片段：{result['context']}\n"
 
             # 系统知识结果（拓扑 + 手册）
             if system_results:
                 context += "\n【系统信息（集群拓扑 / 运维手册）】\n"
-                for i, result in enumerate(system_results[:3], 1):
+                for i, result in enumerate(system_results[:6], 1):
                     context += f"\n{i}. 来源：{result['filename']} (相似度: {result.get('similarity', 0):.3f})\n内容片段：{result['context']}\n"
         else:
             # 知识库检索结果为空或相似度过低
@@ -391,17 +406,11 @@ def _build_qa_messages(db_type, question, use_rag, conversation_id=None, use_top
 回答部分基于知识库内容，部分基于模型推断。
 关键操作建议核实。"""
 
-    system_prompt = f"""你是一个{db_name}数据库专家。请根据用户的问题提供详细、准确的回答。
-回答要求：
-1. 使用中文回答
-2. 如果涉及SQL语句，请提供示例
-3. 解释清晰，适合初中级开发者理解
-4. 如果有参考知识库内容，请优先使用其中的信息
-5. 你也可以根据集群拓扑信息回答关于服务器归属、实例分布等问题
-6. 你也可以根据运维手册内容回答操作步骤和流程问题
-7. **重要**：如果知识库中没有足够信息，请明确说明，不要编造不确定的内容
-8. 如果知识图谱提供了实体关系信息，请优先使用结构化关系进行推理
-{confidence_warning}"""
+    # 支持自定义问答系统提示词（config 表 qa_system_prompt），未配置时使用默认模板
+    prompt_template = get_config('qa_system_prompt', '') or DEFAULT_QA_SYSTEM_PROMPT
+    system_prompt = (prompt_template
+                     .replace('{db_name}', db_name)
+                     .replace('{confidence_warning}', confidence_warning))
 
     user_message = question
     if context:

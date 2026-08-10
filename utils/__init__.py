@@ -286,7 +286,8 @@ def load_llm_config(model_id=None):
             'api_url': target_model.get('api_url', ''),
             'api_key': target_model.get('api_key', ''),
             'model_name': target_model.get('model_name', ''),
-            'model_id': target_model.get('id', '')
+            'model_id': target_model.get('id', ''),
+            'temperature': target_model.get('temperature')
         }
 
     # 兼容旧配置
@@ -319,11 +320,13 @@ def _build_api_headers(config):
 def _build_api_data(config, messages, stream=False):
     """构建 API 请求数据"""
     model = config.get('model_name', 'gpt-3.5-turbo')
-    # Moonshot kimi-k2.6 模型只支持 temperature=1
-    if 'kimi' in model.lower():
-        temperature = 1
-    else:
-        temperature = 0.7
+    # 优先使用模型配置的温度；未配置时回退：Moonshot kimi-k2.6 只支持 temperature=1，其它默认 0.7
+    temperature = config.get('temperature')
+    if temperature is None:
+        if 'kimi' in model.lower():
+            temperature = 1
+        else:
+            temperature = 0.7
     return {
         "model": model,
         "messages": messages,
