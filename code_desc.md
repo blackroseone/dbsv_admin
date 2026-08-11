@@ -5,7 +5,7 @@
 > 用途: 快速了解项目代码结构和函数功能
 
 > 📌 配套文档：
-> - `project.md` — 项目概述、技术栈、功能模块
+> - `README.md` — 项目概述、技术栈、功能模块
 > - `tables_desc.md` — 数据库表结构
 > - `version_update.md` — 版本更新记录
 > - `deploy.md` — 部署指南
@@ -19,7 +19,7 @@ dbsv_admin/
 ├── app.py                  # 应用工厂 + 启动入口
 ├── deploy.md              # 部署指南（含依赖清单）
 ├── wecom_qa_integration.md # 企业微信接入知识问答接口文档
-├── PROJECT.md              # 项目说明文档
+├── README.md              # 项目说明文档
 │
 ├── deploy/                 # 离线部署配套
 │   ├── deploy.sh           # 服务器自动化部署脚本
@@ -570,7 +570,7 @@ data: [DONE]
 | `/api/config/features/<module_id>` | PUT | `update_feature(module_id)` | 更新功能配置（启用/禁用模块） |
 | `/api/config/export` | GET | `export_config()` | 导出配置（类型、拓扑、收藏夹） |
 | `/api/config/import` | POST | `import_config()` | 导入配置 |
-| `/api/config/docs/<filename>` | GET | `get_doc_content(filename)` | 读取项目文档（PROJECT.md / version_update.md） |
+| `/api/config/docs/<filename>` | GET | `get_doc_content(filename)` | 读取项目文档（README.md / version_update.md） |
 
 ---
 

@@ -3,7 +3,7 @@
 ## 开发人：顾云波
 
 > 📌 配套文档：
-> - `project.md` — 项目概述、技术栈、功能模块
+> - `README.md` — 项目概述、技术栈、功能模块
 > - `version_update.md` — 版本更新记录
 > - `code_desc.md` — 代码结构文档（函数/API 详细说明）
 > - `tables_desc.md` — 数据库表结构
@@ -153,6 +153,41 @@
 
 ---
 
+## v3.0.0.1 (2026-07-30)
+
+### 🕸️ 知识图谱模块重构
+
+#### 知识图谱合并到知识库
+- **移除独立导航入口**：知识图谱不再作为独立模块存在，从导航栏移除
+- **视图切换功能**：知识库页面右上角添加"文件视图/图谱视图"切换按钮
+  - 参考集群拓扑模块的视图切换按钮样式
+  - 文件视图：展示文件列表（原有功能）
+  - 图谱视图：展示知识图谱可视化（vis.js 力导向图）
+- **快捷键调整**：移除 `Ctrl+9` 知识图谱快捷键
+
+#### 知识图谱自动提取增强
+- **上传流程集成**：`routes/knowledge.py` `upload_file()` 上传文件后自动提取知识图谱实体
+- **重建索引集成**：所有重建索引入口（流式重建、单文件重建、按类型重建）均自动提取知识图谱
+- **扫描流程集成**：`scan_files()` 扫描新文件时自动提取知识图谱
+- **数据库层优化**：`add_knowledge_file()` 返回 `file_id`，支持后续知识图谱关联
+
+#### 前端修改
+| 文件 | 修改内容 |
+|------|---------|
+| `templates/index.html` | 移除知识图谱独立模块 HTML，在知识库模块添加视图切换按钮和图谱容器 |
+| `static/css/style.css` | 添加 `.knowledge-header-row`、`.knowledge-view-switch`、`.knowledge-view` 样式 |
+| `static/js/knowledge.js` | 添加 `switchKnowledgeView()` 函数，支持文件视图/图谱视图切换 |
+| `static/js/app.js` | 移除 `kg` 模块切换逻辑和快捷键，知识库加载时根据当前视图初始化图谱 |
+
+#### 后端修改
+| 文件 | 修改内容 |
+|------|---------|
+| `routes/knowledge.py` | 上传/重建/扫描流程中集成知识图谱提取；`add_knowledge_file()` 返回 file_id |
+| `db/database.py` | `add_knowledge_file()` 返回插入的文件 ID |
+| `rag/embedder.py` | `rebuild_all()` 和 `rebuild_single()` 已包含知识图谱提取（原有功能） |
+
+---
+
 ## v3.0.0 (2026-07-29)
 
 ### 🕸️ 知识图谱模块（重大更新）
@@ -219,41 +254,6 @@
 | `templates/index.html` | 添加知识图谱导航和模块 HTML（**v3.0.1 已合并到知识库**） |
 | `static/js/app.js` | 添加 Ctrl+9 快捷键和 kg 模块切换（**v3.0.1 已移除，合并到知识库**） |
 | `static/css/style.css` | 添加知识图谱样式（~300 行，**v3.0.1 新增知识库视图切换样式**） |
-
----
-
-## v3.0.1 (2026-07-30)
-
-### 🕸️ 知识图谱模块重构
-
-#### 知识图谱合并到知识库
-- **移除独立导航入口**：知识图谱不再作为独立模块存在，从导航栏移除
-- **视图切换功能**：知识库页面右上角添加"文件视图/图谱视图"切换按钮
-  - 参考集群拓扑模块的视图切换按钮样式
-  - 文件视图：展示文件列表（原有功能）
-  - 图谱视图：展示知识图谱可视化（vis.js 力导向图）
-- **快捷键调整**：移除 `Ctrl+9` 知识图谱快捷键
-
-#### 知识图谱自动提取增强
-- **上传流程集成**：`routes/knowledge.py` `upload_file()` 上传文件后自动提取知识图谱实体
-- **重建索引集成**：所有重建索引入口（流式重建、单文件重建、按类型重建）均自动提取知识图谱
-- **扫描流程集成**：`scan_files()` 扫描新文件时自动提取知识图谱
-- **数据库层优化**：`add_knowledge_file()` 返回 `file_id`，支持后续知识图谱关联
-
-#### 前端修改
-| 文件 | 修改内容 |
-|------|---------|
-| `templates/index.html` | 移除知识图谱独立模块 HTML，在知识库模块添加视图切换按钮和图谱容器 |
-| `static/css/style.css` | 添加 `.knowledge-header-row`、`.knowledge-view-switch`、`.knowledge-view` 样式 |
-| `static/js/knowledge.js` | 添加 `switchKnowledgeView()` 函数，支持文件视图/图谱视图切换 |
-| `static/js/app.js` | 移除 `kg` 模块切换逻辑和快捷键，知识库加载时根据当前视图初始化图谱 |
-
-#### 后端修改
-| 文件 | 修改内容 |
-|------|---------|
-| `routes/knowledge.py` | 上传/重建/扫描流程中集成知识图谱提取；`add_knowledge_file()` 返回 file_id |
-| `db/database.py` | `add_knowledge_file()` 返回插入的文件 ID |
-| `rag/embedder.py` | `rebuild_all()` 和 `rebuild_single()` 已包含知识图谱提取（原有功能） |
 
 ---
 

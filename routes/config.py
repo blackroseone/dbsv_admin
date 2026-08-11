@@ -340,7 +340,7 @@ def import_config():
 @config_bp.route('/api/config/docs/<filename>', methods=['GET'])
 def get_doc_content(filename):
     """读取项目文档内容"""
-    allowed_files = ['PROJECT.md', 'version_update.md']
+    allowed_files = ['README.md', 'version_update.md']
     if filename not in allowed_files:
         return jsonify({'error': '文件不存在'}), 404
 

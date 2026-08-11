@@ -1,7 +1,7 @@
 # 数据库运维工具 - 部署指南
 
 > 📌 配套文档：
-> - `project.md` — 项目概述、技术栈、功能模块
+> - `README.md` — 项目概述、技术栈、功能模块
 > - `version_update.md` — 版本更新记录
 > - `code_desc.md` — 代码结构文档
 > - `tables_desc.md` — 数据库表结构

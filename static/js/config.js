@@ -472,7 +472,7 @@ function switchConfigTab(tab) {
     } else if (tab === 'qaprompt') {
         loadQAPrompt();
     } else if (tab === 'project') {
-        loadDoc('PROJECT.md', 'project-doc-content');
+        loadDoc('README.md', 'project-doc-content');
     } else if (tab === 'changelog') {
         loadDoc('version_update.md', 'changelog-content');
     }

@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 DBSV 数据库运维工具（DBSV Admin）：面向 DBA 的 Web 端数据库运维平台。Flask 后端 + 原生 HTML/CSS/JS 单页前端，SQLite 存储，集成知识库、RAG 问答、SQL 工具、集群拓扑、日志分析、智能运维 Agent 等 9 大模块。UI 与代码注释均为中文，开发人：顾云波。
 
 **配套文档（优先阅读，比本文件更详细）**：
-- `project.md` — 项目概述、模块功能
+- `README.md` — 项目概述、模块功能
 - `code_desc.md` — 函数/API 级代码说明
 - `tables_desc.md` — 数据库表结构
 - `deploy.md` — 部署指南与依赖清单
@@ -62,7 +62,7 @@ python -c "from app import create_app; app = create_app(); print('OK')"
 
 - 混合提取：`kg/rules.py`（正则+词典规则匹配，主力）、`kg/llm_extractor.py`（LLM 提取，可选）。
 - `kg/graph.py`：图谱查询引擎（邻居、路径、子图、QA 增强）。
-- 已并入知识库模块（`routes/kg.py` + `static/js/kg.js`），前端在知识库页做文件视图/图谱视图切换。实体 14 类、关系 5 类；数据规模见 project.md。
+- 已并入知识库模块（`routes/kg.py` + `static/js/kg.js`），前端在知识库页做文件视图/图谱视图切换。实体 14 类、关系 5 类；数据规模见 README.md。
 
 ### 智能运维 Agent（agent/）
 
