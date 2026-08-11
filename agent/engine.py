@@ -224,6 +224,7 @@ class SmartOpsAgent:
 - execute_command: 通过SSH执行数据库命令
 - get_schema_info: 获取数据库Schema信息
 - get_performance_metrics: 获取性能指标
+- get_monitor_metrics: 查询外部监控平台落库的监控指标（蓝鲸等，CPU/内存/磁盘等）
 
 ## 工作模式（ReAct）
 1. Thought: 分析用户需求，制定执行计划

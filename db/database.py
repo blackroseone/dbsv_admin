@@ -303,6 +303,23 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_agent_skills_db_type ON agent_skills(db_type);
         CREATE INDEX IF NOT EXISTS idx_agent_skills_category ON agent_skills(category);
 
+        -- ==================== 监控指标数据 ====================
+        -- 由外部监控平台中间脚本（monitor_blueking.py 等）拉取落库，
+        -- 供运维 Agent 查询（get_monitor_metrics）与展示/评分消费。
+        CREATE TABLE IF NOT EXISTS mon_metric_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL DEFAULT 'blueking',
+            object_type TEXT NOT NULL,
+            object_name TEXT NOT NULL,
+            metric TEXT NOT NULL,
+            value REAL,
+            unit TEXT DEFAULT '',
+            record_time TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_mon_object_time
+            ON mon_metric_data(object_type, object_name, metric, record_time);
+
         -- ==================== 操作日志 ====================
 
         CREATE TABLE IF NOT EXISTS operation_logs (
@@ -1443,6 +1460,89 @@ def get_embeddings_by_db_type(db_type):
         (db_type,)
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ==================== 监控指标数据 CRUD ====================
+
+def save_mon_metrics(metrics):
+    """批量保存监控指标
+
+    metrics: [{source, object_type, object_name, metric, value, unit, record_time}, ...]
+    """
+    if not metrics:
+        return 0
+    conn = get_db()
+    conn.executemany(
+        """INSERT INTO mon_metric_data
+            (source, object_type, object_name, metric, value, unit, record_time)
+        VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        [(m.get('source', 'blueking'), m.get('object_type', ''), m.get('object_name', ''),
+          m.get('metric', ''), m.get('value'), m.get('unit', ''), m.get('record_time', ''))
+         for m in metrics]
+    )
+    conn.commit()
+    return len(metrics)
+
+
+def get_mon_metrics(object_type=None, object_name=None, metric=None,
+                    start_time=None, end_time=None, limit=100):
+    """查询监控指标，返回 Agent 可消费的 {columns, rows} 结构"""
+    conn = get_db()
+    where = []
+    params = []
+    if object_type:
+        where.append('object_type=?')
+        params.append(object_type)
+    if object_name:
+        where.append('object_name=?')
+        params.append(object_name)
+    if metric:
+        where.append('metric=?')
+        params.append(metric)
+    if start_time:
+        where.append('record_time>=?')
+        params.append(start_time)
+    if end_time:
+        where.append('record_time<=?')
+        params.append(end_time)
+    sql = "SELECT source, object_type, object_name, metric, value, unit, record_time FROM mon_metric_data"
+    if where:
+        sql += ' WHERE ' + ' AND '.join(where)
+    sql += ' ORDER BY record_time DESC LIMIT ?'
+    params.append(int(limit))
+    rows = conn.execute(sql, params).fetchall()
+    return {
+        'columns': ['source', 'object_type', 'object_name', 'metric', 'value', 'unit', 'record_time'],
+        'metrics': [list(r) for r in rows],
+        'row_count': len(rows),
+    }
+
+
+def get_mon_metric_names(object_type=None, object_name=None):
+    """列出已有指标名（供 Agent 发现可查指标）"""
+    conn = get_db()
+    where = []
+    params = []
+    if object_type:
+        where.append('object_type=?')
+        params.append(object_type)
+    if object_name:
+        where.append('object_name=?')
+        params.append(object_name)
+    sql = "SELECT DISTINCT metric FROM mon_metric_data"
+    if where:
+        sql += ' WHERE ' + ' AND '.join(where)
+    rows = conn.execute(sql, params).fetchall()
+    return [r['metric'] for r in rows]
+
+
+def get_mon_objects():
+    """列出已采集的监控对象（去重）"""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT DISTINCT object_type, object_name FROM mon_metric_data ORDER BY object_type, object_name"
+    ).fetchall()
+    return [{'object_type': r['object_type'], 'object_name': r['object_name']} for r in rows]
 
 
 # ==================== 操作日志 CRUD ====================

@@ -9,6 +9,18 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v3.0.5 (2026-08-11)
+
+### 📡 外部监控数据接入（蓝鲸）
+- 新增 `mon_metric_data` 表（`db/database.py`）：外部监控平台指标落库（source/object_type/object_name/metric/value/unit/record_time），索引按 对象+指标+时间。
+- 新增 `tools/monitor_blueking.py`：蓝鲸监控数据中间脚本（配置驱动，支持 mysql/pg），从蓝鲸库拉指标 → 规范化 → 写入 `mon_metric_data`。**当前为框架**，蓝鲸表结构待提供后填 `BlueKingMetrics.QUERIES`；连接凭据走环境变量，不硬编码。
+- Agent 新增工具 `get_monitor_metrics`（`agent/tools.py`）：查询落库监控指标（CPU/内存/磁盘等），返回 `{columns, metrics}` 同构结构，引擎/前端零改动即可渲染；已加入 system prompt 工具声明。
+- 数据用途：供运维 Agent 诊断引用 + 后续展示/健康评分。
+
+### 🔧 工具
+- `tools/monitor_blueking.py`：`--pull` 拉取落库、`--dry-run` 试跑、`--list-metrics` 列出查询
+- `db/database.py` 新增 `save_mon_metrics` / `get_mon_metrics` / `get_mon_metric_names` / `get_mon_objects`
+
 ## v3.0.4 (2026-08-11)
 
 ### 🔍 RAG 分块调整：2000 → 500

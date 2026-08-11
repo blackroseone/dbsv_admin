@@ -188,6 +188,39 @@ def get_performance_metrics(params: Dict, ctx: ToolContext) -> Dict:
 
 
 @register_tool(
+    name="get_monitor_metrics",
+    description="查询外部监控平台落库的监控指标（蓝鲸等，读本地 mon_metric_data）。"
+                "参数 metric_type 为指标名（如 cpu_usage/mem_usage），object_name 为对象名，"
+                "均可不填以查全部；返回 {columns, metrics} 表格。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "metric_type": {"type": "string", "description": "指标名，留空查全部"},
+            "object_type": {"type": "string", "description": "对象类型（host/db_instance/cluster），可留空"},
+            "object_name": {"type": "string", "description": "对象名（主机名/实例名），可留空"},
+            "limit": {"type": "integer", "default": 50}
+        }
+    }
+)
+def get_monitor_metrics(params: Dict, ctx: ToolContext) -> Dict:
+    """查询落库的监控指标（本地 mon_metric_data，无需目标库连接）"""
+    from db.database import get_mon_metrics
+
+    result = get_mon_metrics(
+        object_type=params.get('object_type') or None,
+        object_name=params.get('object_name') or None,
+        metric=params.get('metric_type') or None,
+        limit=params.get('limit', 50),
+    )
+    return {
+        "metrics": result.get('metrics', []),
+        "columns": result.get('columns', []),
+        "row_count": result.get('row_count', 0),
+        "metric_type": params.get('metric_type') or 'all',
+    }
+
+
+@register_tool(
     name="retrieve_knowledge",
     description="从知识库检索相关文档",
     parameters={
