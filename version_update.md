@@ -9,6 +9,15 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v3.0.6 (2026-08-11)
+
+### 🧩 运维检查项纳入知识图谱 + Agent 能力
+- 新增知识图谱实体类型 **check_item**（检查项）：把反编译的专家运维检查知识（1426 项）导入图谱，实体属性含 category/db_type/functions/sql/commands/knowledge_text/thresholds。
+- **关系**：`applies_to`（检查项→数据库产品，1071 条）+ `diagnoses`（检查项→错误码，73 条），支持"查某错误码相关的检查项"。
+- **导入脚本** `tools/import_check_items.py`：读外部反编译目录（`--dir` 或环境变量 `CHECK_ITEMS_JSON_DIR`），批量建实体与关系，幂等可重跑；错误码追加进描述便于关键词检索。
+- **Agent 新工具 `retrieve_check`**：按关键词/db_type/类别检索检查项，返回 SQL/命令/建议，指导诊断。已注册进工具表 + system prompt。
+- 前端图谱视图：check_item 实体与 applies_to/diagnoses 关系颜色映射。
+
 ## v3.0.5 (2026-08-11)
 
 ### 📡 外部监控数据接入（蓝鲸）

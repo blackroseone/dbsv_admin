@@ -26,6 +26,7 @@ const ENTITY_COLORS = {
     'troubleshooting': '#ff5722',   // 橙红
     'operating_system': '#795548',  // 棕色
     'hardware': '#607d8b',          // 灰蓝
+    'check_item': '#16a085',        // 青绿（运维检查项）
     'default': '#95a5a6'           // 灰色
 };
 
@@ -42,6 +43,8 @@ const RELATION_COLORS = {
     'causes': '#c0392b',
     'solves': '#27ae60',
     'related_to': '#95a5a6',
+    'applies_to': '#16a085',
+    'diagnoses': '#c0392b',
     'default': '#bdc3c7'
 };
 

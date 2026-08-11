@@ -221,6 +221,59 @@ def get_monitor_metrics(params: Dict, ctx: ToolContext) -> Dict:
 
 
 @register_tool(
+    name="retrieve_check",
+    description="检索运维检查项（来自反编译的专家检查知识库）。按关键词/db_type/类别查检查项，"
+                "返回其 SQL、命令、诊断建议与适用版本，用于指导问题诊断。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "keyword": {"type": "string", "description": "检索关键词（问题/错误码/对象名），可留空"},
+            "db_type": {"type": "string", "description": "数据库类型（mysql/oracle/dm/gaussdb 等），可留空"},
+            "category": {"type": "string", "description": "检查项类别（check/ash/log），可留空"},
+            "limit": {"type": "integer", "default": 10}
+        }
+    }
+)
+def retrieve_check(params: Dict, ctx: ToolContext) -> Dict:
+    """检索运维检查项（知识图谱 check_item 实体）"""
+    from db.kg_database import search_entities, get_entities_by_type
+
+    keyword = (params.get('keyword') or '').strip()
+    db_type = (params.get('db_type') or '').strip()
+    category = (params.get('category') or '').strip()
+    limit = min(int(params.get('limit', 10)), 50)
+
+    if keyword:
+        items = search_entities(keyword, entity_type='check_item', limit=max(limit * 3, 30))
+    else:
+        # 无关键词时取全量再按 db_type/category 过滤（properties 在 JSON 列，无法 SQL 过滤）
+        items = get_entities_by_type('check_item', limit=10000)
+
+    results = []
+    for e in items:
+        props = e.get('properties', {})
+        if db_type and props.get('db_type', '') != db_type:
+            continue
+        if category and props.get('category', '') != category:
+            continue
+        results.append({
+            'name': e.get('name', ''),
+            'description': e.get('description', ''),
+            'category': props.get('category', ''),
+            'db_type': props.get('db_type', ''),
+            'functions': props.get('functions', []),
+            'sql': props.get('sql', []),
+            'commands': props.get('commands', []),
+            'knowledge_text': props.get('knowledge_text', []),
+            'thresholds': props.get('thresholds', []),
+        })
+        if len(results) >= limit:
+            break
+
+    return {'results': results, 'count': len(results)}
+
+
+@register_tool(
     name="retrieve_knowledge",
     description="从知识库检索相关文档",
     parameters={
