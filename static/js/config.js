@@ -241,10 +241,15 @@ async function testModelConnection(modelId) {
 // ==================== 问答提示词配置 ====================
 
 async function loadQAPrompt() {
+    const resultDiv = document.getElementById('qa-prompt-result');
     try {
         const response = await fetch('/api/config/qa-prompt');
         const data = await response.json();
         document.getElementById('qa-prompt-input').value = data.prompt || '';
+        if (resultDiv) {
+            resultDiv.style.display = 'none';
+            resultDiv.textContent = '';
+        }
     } catch (error) {
         showToast('加载问答提示词失败', 'error');
     }
@@ -252,6 +257,7 @@ async function loadQAPrompt() {
 
 async function saveQAPrompt() {
     const prompt = document.getElementById('qa-prompt-input').value.trim();
+    const resultDiv = document.getElementById('qa-prompt-result');
     try {
         const response = await fetch('/api/config/qa-prompt', {
             method: 'PUT',
@@ -259,12 +265,24 @@ async function saveQAPrompt() {
             body: JSON.stringify({ prompt })
         });
         const data = await response.json();
-        if (response.ok) {
-            showToast(data.message || '保存成功', 'success');
-        } else {
-            showToast(data.error || '保存失败', 'error');
+        if (resultDiv) {
+            resultDiv.style.display = 'block';
+            if (response.ok) {
+                resultDiv.className = 'test-result success';
+                resultDiv.textContent = '✅ 保存成功（' + new Date().toLocaleTimeString() + '），已写入 config 表 qa_system_prompt';
+                showToast(data.message || '保存成功', 'success');
+            } else {
+                resultDiv.className = 'test-result error';
+                resultDiv.textContent = '❌ ' + (data.error || '保存失败');
+                showToast(data.error || '保存失败', 'error');
+            }
         }
     } catch (error) {
+        if (resultDiv) {
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'test-result error';
+            resultDiv.textContent = '❌ 保存失败: ' + error.message;
+        }
         showToast('保存失败', 'error');
     }
 }
@@ -272,6 +290,11 @@ async function saveQAPrompt() {
 function resetQAPrompt() {
     if (!confirm('确定要清空自定义提示词，恢复系统默认模板吗？')) return;
     document.getElementById('qa-prompt-input').value = '';
+    const resultDiv = document.getElementById('qa-prompt-result');
+    if (resultDiv) {
+        resultDiv.style.display = 'none';
+        resultDiv.textContent = '';
+    }
     showToast('已恢复默认（保存后生效）', 'success');
 }
 

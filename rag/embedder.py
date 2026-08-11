@@ -58,6 +58,24 @@ def _check_model_cached(cache_dir):
     return False
 
 
+def _resolve_device():
+    """根据环境变量 DB_TOOL_EMBED_DEVICE 决定运行设备：auto/cuda/cpu，默认 auto
+    auto 表示：有可用 CUDA 则用 GPU，否则用 CPU（内网无 GPU 服务器安全回退）
+    """
+    requested = os.environ.get('DB_TOOL_EMBED_DEVICE', 'auto').strip().lower()
+    if requested == 'cuda':
+        return 'cuda'
+    if requested == 'cpu':
+        return 'cpu'
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return 'cuda'
+    except ImportError:
+        pass
+    return 'cpu'
+
+
 def _get_model():
     global _model, _model_load_failed
     if _model_load_failed:
@@ -83,8 +101,11 @@ def _get_model():
                     os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
                     # 设置较短的超时时间，避免长时间等待
                     os.environ['HF_HUB_DOWNLOAD_TIMEOUT'] = '30'  # 30秒超时
-                    _model = SentenceTransformer(MODEL_NAME, cache_folder=cache_dir, local_files_only=_check_model_cached(cache_dir))
-                    print(f"[RAG] 模型加载成功: {MODEL_NAME}")
+                    device = _resolve_device()
+                    _model = SentenceTransformer(MODEL_NAME, cache_folder=cache_dir,
+                                                 local_files_only=_check_model_cached(cache_dir),
+                                                 device=device)
+                    print(f"[RAG] 模型加载成功: {MODEL_NAME} (device={device})")
                 except Exception as e:
                     _model_load_failed = True
                     print(f"[RAG] 模型加载失败，将使用关键词检索: {e}")
