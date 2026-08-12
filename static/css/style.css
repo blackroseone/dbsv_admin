@@ -1305,6 +1305,30 @@ body {
     transition: color 0.3s ease;
 }
 
+.manual-item .manual-actions {
+    margin-top: 6px;
+}
+
+.manual-item .manual-skill-btn {
+    display: inline-block;
+    padding: 2px 8px;
+    font-size: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.manual-item .manual-skill-btn:hover {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+}
+
+.manual-item .manual-skill-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
 .manual-main {
     flex: 1;
     display: flex;
@@ -5381,6 +5405,70 @@ body {
 
 .agent-message.error {
     border-color: var(--bg-error);
+}
+
+/* DBA 反馈闭环 */
+.agent-feedback {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    border-top: 1px dashed var(--border-color);
+    font-size: 0.85rem;
+}
+
+.agent-feedback .feedback-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.agent-feedback .feedback-label {
+    color: var(--text-secondary);
+    margin-right: 4px;
+}
+
+.agent-feedback .feedback-btn {
+    padding: 4px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 0.82rem;
+}
+
+.agent-feedback .feedback-btn:hover:not(:disabled) {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+}
+
+.agent-feedback .feedback-btn.primary {
+    background: var(--primary-color);
+    border-color: var(--primary-color);
+    color: #fff;
+}
+
+.agent-feedback .feedback-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.agent-feedback .feedback-correction {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.agent-feedback .feedback-correction input {
+    flex: 1;
+    padding: 6px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-input, var(--bg-card));
+    color: var(--text-primary);
+    font-size: 0.82rem;
 }
 
 .message-header {

@@ -201,6 +201,33 @@ def _is_llm_kg_enabled():
 class Embedder:
     """向量嵌入管理器"""
 
+    def __init__(self):
+        # 检索向量矩阵缓存：key=(db_type, count, max_id)，重建后 id 变化自动失效
+        self._matrix_cache = {}
+
+    def clear_matrix_cache(self):
+        """清空检索矩阵缓存（重建索引后调用）"""
+        self._matrix_cache = {}
+
+    def _get_matrix(self, db_type):
+        """取检索矩阵（带缓存）：先用轻量统计判缓存，未命中才全量加载。
+
+        返回 get_embeddings_matrix 的结果或 None。
+        """
+        from db.database import get_embeddings_stats, get_embeddings_matrix
+        stats = get_embeddings_stats(db_type)
+        if not stats or stats['count'] == 0:
+            return None
+        key = (db_type, stats['count'], stats['max_id'])
+        cached = self._matrix_cache.get(key)
+        if cached is not None:
+            return cached
+        data = get_embeddings_matrix(db_type)
+        if data is None:
+            return None
+        self._matrix_cache = {key: data}  # 只保留一个，防内存膨胀
+        return data
+
     def embed_chunks(self, chunks):
         """批量计算文本块的嵌入向量，返回 [(chunk_index, chunk_text, embedding_bytes), ...]"""
         if not chunks:
@@ -231,39 +258,41 @@ class Embedder:
 
     def similarity_search(self, query, db_type=None, top_k=5):
         """
-        向量相似度搜索
+        向量相似度搜索（向量化矩阵乘法 + 缓存）
         返回最相关的 top_k 个文本块，包含文件名和相似度分数
         """
-        from db.database import get_embeddings_by_db_type, get_all_embeddings
-
         query_emb = self.embed_query(query)
         if query_emb is None:
             return []  # 模型不可用，返回空
 
-        if db_type:
-            rows = get_embeddings_by_db_type(db_type)
-        else:
-            rows = get_all_embeddings()
-
-        if not rows:
+        data = self._get_matrix(db_type)
+        if data is None:
             return []
 
-        # 计算余弦相似度
-        results = []
-        for row in rows:
-            stored_emb = _bytes_to_embedding(row['embedding'])
-            # 已经 normalize 过，直接点积即余弦相似度
-            similarity = float(np.dot(query_emb, stored_emb))
-            results.append({
-                'chunk_id': row['id'],
-                'filename': row['filename'],
-                'chunk_text': row['chunk_text'],
-                'similarity': similarity
-            })
+        # 已 normalize，矩阵 @ 查询向量 = 全部余弦相似度（一次 BLAS 运算）
+        matrix = data['matrix']
+        scores = matrix @ query_emb  # shape (N,)
 
-        # 按相似度降序排列
-        results.sort(key=lambda x: x['similarity'], reverse=True)
-        return results[:top_k]
+        # 取 top_k（argpartition 无序，再对 top_k 排序）
+        n = len(scores)
+        k = min(top_k, n)
+        if k == 0:
+            return []
+        if k < n:
+            idx = np.argpartition(-scores, k)[:k]
+            idx = idx[np.argsort(-scores[idx])]
+        else:
+            idx = np.argsort(-scores)[:k]
+
+        results = []
+        for i in idx:
+            results.append({
+                'chunk_id': data['chunk_ids'][i],
+                'filename': data['filenames'][i],
+                'chunk_text': data['chunk_texts'][i],
+                'similarity': float(scores[i]),
+            })
+        return results
 
     def rebuild_all(self, db_type=None, extract_kg=True):
         """重建所有知识库文件的向量索引
@@ -310,6 +339,8 @@ class Embedder:
                 except Exception as e:
                     print(f"[RAG] 知识图谱提取失败 [{f['filename']}]: {e}")
 
+        # 重建后清检索矩阵缓存（id 变化也会自动失效，显式清更稳妥）
+        self.clear_matrix_cache()
         return count
 
     def _extract_knowledge_graph(self, file_id, db_type, content, chunks, embeddings):

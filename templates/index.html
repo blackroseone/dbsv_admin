@@ -462,6 +462,10 @@
                             </div>
                             <div id="agent-skill-panel" style="display: block;">
                                 <button class="btn-add" onclick="showAddSkillDialog()">+ 手动技能</button>
+                                <button class="btn-add" onclick="document.getElementById('agent-skill-doc-input').click()">📄 从手册生成</button>
+                                <input type="file" id="agent-skill-doc-input" style="display:none"
+                                       accept=".txt,.md,.pdf,.docx,.html,.doc"
+                                       onchange="uploadDocSkill(this)">
                                 <div id="agent-skill-list" class="connection-list"></div>
                             </div>
                             <div id="agent-memory-panel" style="display: none;">

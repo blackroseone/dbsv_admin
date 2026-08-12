@@ -22,7 +22,7 @@ DBSV 数据库运维工具是一套面向 DBA 的 Web 端数据库运维平台�
 | 数据库 | SQLite（WAL 模式，支持并发读，线程本地连接） |
 | 前端 | 原生 HTML/CSS/JS，单页应用，模块化 JS 架构 |
 | AI | OpenAI 兼容 API（支持多模型配置管理） |
-| RAG | sentence-transformers（moka-ai/m3e-base）+ numpy 余弦相似度 |
+| RAG | sentence-transformers（moka-ai/m3e-base）+ numpy 向量化矩阵检索（带缓存） |
 | 知识图谱 | Chunk-Entity 混合图谱，SQLite 存储，**已合并到知识库模块** |
 | 主题 | CSS 变量系统，支持亮色/暗色主题切换，localStorage 持久化 |
 | 外部监控 | 蓝鲸监控数据中间脚本（mon_metric_data 落库，供 Agent 查询） |
@@ -166,7 +166,7 @@ dbsv_admin/
 | agent_sessions | Agent会话 |
 | agent_steps | Agent执行步骤（ReAct过程记录） |
 | agent_skills | Agent Skills（内置 + 自动沉淀技能，含 trigger_keywords/usage_count/status） |
-| agent_memory | Agent长期记忆（跨会话环境事实，诊断自动写 + DBA 显式记录） |
+| agent_memory | Agent长期记忆（跨会话环境事实，含向量列供语义召回；诊断自动写 + DBA 反馈写） |
 
 ## 功能模块
 
@@ -226,6 +226,9 @@ dbsv_admin/
 
 ### 9. 智能运维Agent（/api/agent/*）
 - **ReAct 循环引擎**：Thought → Action → Observation → Conclusion 自主决策，观察结果回流对话历史实现链式推理
+- **并行只读工具（v3.0.9）**：一次思考可输出多个工具调用（JSON 数组），只读工具线程池并行执行（最多 4 并发/次 5 个），多指标诊断提速；每个动作独立过 Harness 校验
+- **上下文压缩（v3.0.9）**：对话历史过长时头尾保护 + 中间摘要，控制超长 prompt
+- **迭代预算（v3.0.9）**：max_steps 配置化 + 重复动作死循环检测 + 历史字符预算，超限强制收敛
 - **真实工具执行**：7 个工具均为真实实现
   - `query_database` — 按 db_type 连接目标库执行只读 SQL
   - `execute_command` — 通过 paramiko SSH 执行白名单数据库命令
@@ -238,7 +241,11 @@ dbsv_admin/
 - **Harness 安全约束框架**：SQL 白名单 + 命令白名单（按操作级别），剥离注释校验，禁止危险操作
 - **知识库 + 知识图谱双增强**：执行前检索知识库，并注入图谱实体卡片/关系链上下文
 - **Skills 领域知识**：6 个内置技能（慢查询诊断、Oracle RAC 检查、备份检查等）+ 自动沉淀技能
-- **学习闭环（v3.0.7）**：成功诊断后自动沉淀技能（LLM 提炼/离线回退 + Curator 去重淘汰），诊断结论与 DBA 反馈自动写入长期记忆，下次诊断按关键词召回注入环境上下文
+- **文档生成技能（v3.0.9）**：上传操作手册或从手册页直接「生成技能」，LLM 提炼为可复用技能（离线回退 + Curator 去重）
+- **学习闭环（v3.0.8）**：成功诊断后自动沉淀技能（LLM 提炼/离线回退 + Curator 去重淘汰），诊断结论与 DBA 反馈自动写入长期记忆，下次诊断按关键词召回注入环境上下文
+- **记忆语义召回（v3.0.9）**：记忆写入时自动编码向量，召回时语义检索 top-K（模型不可用回退关键词），并对主机/实例/集群记忆补图谱上下文
+- **记忆事实校验（v3.0.9）**：写前与图谱实体/监控对象/知识库支撑交叉验证，无支撑结论跳过不写，防污染
+- **DBA 反馈闭环（v3.0.9）**：结论后 👍/👎 + 纠正，反向修正该会话技能置信度/状态与记忆
 - **SSE 流式输出**：实时展示思考过程、工具执行、观察结果、最终结论
 - **SSH/数据库连接管理**：前端表单配置多个目标服务器和数据库连接（凭据加密存储）
 - **会话持久化**：每步写入 `agent_steps`，会话状态更新到 `agent_sessions`
@@ -281,7 +288,7 @@ dbsv_admin/
 | 知识覆盖率 | 0.80 | 判定"知识充分"的门限 |
 | 模型 | moka-ai/m3e-base | 中文语义理解更优；运行设备由 `DB_TOOL_EMBED_DEVICE` 控制（auto/cuda/cpu） |
 
-> 分块 500 后阈值 0.55/0.60 → 0.75/0.80（实测 30 个真实问答 top-1 相似度 0.766~0.869，详见 version_update v3.0.4）。
+> 分块 500 后阈值 0.55/0.60 → 0.75/0.80（实测 30 个真实问答 top-1 相似度 0.766~0.869，详见 version_update v3.0.5）。
 
 ### 知识图谱数据规模
 
@@ -377,7 +384,7 @@ waitress-serve --host=0.0.0.0 --port=5000 app:app
 
 ## 版本
 
-当前版本：v3.0.7。完整更新记录见 `version_update.md`。
+当前版本：v3.0.9。完整更新记录见 `version_update.md`。
 
 ## 贡献者
 

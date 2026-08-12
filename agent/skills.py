@@ -275,6 +275,132 @@ class SkillManager:
             print(f"[Skill] 技能沉淀失败: {e}")
             return None
 
+    def crystallize_from_document(self, text: str, db_type: Optional[str] = None,
+                                  category: str = 'diagnosis',
+                                  model_id: Optional[str] = None) -> Optional[str]:
+        """从操作手册/文档正文沉淀技能到 DB。
+
+        - 先走 LLM 提炼（可读步骤指南）；LLM 不可用回退文档摘录模板。
+        - 同样经过 Curator 写时去重合并。
+
+        返回技能名；失败返回 None（不抛出）。
+        """
+        try:
+            from db.database import save_skill, get_skill_by_name
+            if not text or not text.strip():
+                return None
+            skill = self._llm_skill_from_document(text, db_type, category, model_id)
+            if not skill:
+                skill = self._fallback_skill_from_document(text, db_type, category)
+            if not skill or not skill.get('name'):
+                return None
+
+            merged, _ = self._dedupe_or_new(skill)
+            name = merged['name']
+            save_skill(
+                name=name,
+                db_type=merged.get('db_type') or db_type,
+                category=merged.get('category') or category,
+                description=merged.get('description', ''),
+                prompt_template=merged.get('prompt_template', ''),
+                required_tools=merged.get('required_tools'),
+                knowledge_tags=merged.get('knowledge_tags'),
+                trigger_keywords=merged.get('trigger_keywords'),
+                source_session=merged.get('source_session', ''),
+                confidence=merged.get('confidence', 0.8),
+                status='active',
+                priority=merged.get('priority', 0),
+            )
+            db_skill = get_skill_by_name(name)
+            if db_skill:
+                self._skills[name] = db_skill
+            return name
+        except Exception as e:
+            print(f"[Skill] 文档技能沉淀失败: {e}")
+            return None
+
+    def _llm_skill_from_document(self, text: str, db_type: Optional[str],
+                                 category: str, model_id: Optional[str]) -> Optional[Dict]:
+        """LLM 从操作手册/文档提炼技能 JSON"""
+        try:
+            from utils import call_llm
+            snippet = text[:6000]  # 截断控制 token
+            prompt = f"""你是数据库运维专家。以下是用户提供的运维操作手册/问题修复流程文档。请将其沉淀为一个可复用技能（Skill），用于未来遇到同类问题时指导诊断与操作。
+
+文档类型: {db_type or '通用'}
+期望类别: {category or 'diagnosis'}
+
+文档内容:
+{snippet}
+
+请输出一个 JSON 对象（不要任何其他文字、不要 markdown 围栏）:
+{{
+  "name": "简短技能名，如「MySQL连接数故障恢复」",
+  "description": "一句话说明该技能解决什么问题",
+  "category": "diagnosis 或 maintenance",
+  "trigger_keywords": ["触发词数组：问题症状/错误码/指标名/对象名，5-10个，用于意图匹配"],
+  "prompt_template": "操作指南：从文档提炼出可执行的诊断/修复步骤，含SQL/命令示例，600字内"
+}}"""
+            messages = [
+                {"role": "system", "content": "你是一个数据库运维专家。只输出一个 JSON 对象，不要任何其他文字。"},
+                {"role": "user", "content": prompt},
+            ]
+            response, err = call_llm(messages, model_id=model_id)
+            if err or not response:
+                return None
+            content = response.strip()
+            fenced = re.search(r'```(?:json)?\s*(.*?)```', content, re.DOTALL)
+            if fenced:
+                content = fenced.group(1)
+            start, end = content.find('{'), content.rfind('}')
+            if start == -1 or end == -1 or end <= start:
+                return None
+            obj = json.loads(content[start:end + 1])
+            name = str(obj.get('name', '')).strip()
+            if not name:
+                return None
+            return {
+                'name': name,
+                'db_type': db_type,
+                'description': str(obj.get('description', '')).strip(),
+                'category': str(obj.get('category', '') or category or 'diagnosis').strip(),
+                'trigger_keywords': [str(k).strip() for k in (obj.get('trigger_keywords') or [])
+                                     if str(k).strip()][:12],
+                'prompt_template': str(obj.get('prompt_template', '')).strip(),
+                'confidence': 0.8,
+            }
+        except Exception:
+            return None
+
+    def _fallback_skill_from_document(self, text: str, db_type: Optional[str],
+                                      category: str) -> Optional[Dict]:
+        """离线回退：从文档标题/正文摘录拼接技能（LLM 不可用时保证闭环可用）"""
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        title = ''
+        for l in lines[:30]:
+            if l.startswith('#'):
+                title = l.lstrip('#').strip()
+                break
+        if not title:
+            title = lines[0][:30] if lines else '操作手册技能'
+        title = re.sub(r'\s+', ' ', title).strip()
+
+        name = self._extract_skill_name(title, db_type or '')
+        keywords = self._extract_keywords_from_text(text)
+        body = '\n'.join(lines)[:1500]
+        template = (f"适用文档：{title}\n"
+                    f"文档步骤摘录：\n{body}\n\n"
+                    f"注意：执行变更类操作前需确认影响范围并获批准。")
+        return {
+            'name': name,
+            'db_type': db_type,
+            'description': f"根据操作手册「{title[:20]}」沉淀的技能",
+            'category': category or 'diagnosis',
+            'trigger_keywords': keywords,
+            'prompt_template': template,
+            'confidence': 0.6,
+        }
+
     def _generate_skill(self, trace: Dict) -> Optional[Dict]:
         """生成技能：优先 LLM，失败回退模板"""
         skill = self._llm_generate_skill(trace)
@@ -393,14 +519,18 @@ class SkillManager:
 
     def _extract_keywords(self, question: str, steps: List[Dict],
                           conclusion: str) -> List[str]:
-        """提取触发关键词：错误码/指标/症状词 + 问题中的实体词"""
+        """提取触发关键词：错误码/指标/症状词 + 问题/工具参数中的实体词"""
         text = ' '.join(filter(None, [question, conclusion or '']))
         for st in steps:
             action = st.get('action') or {}
             for v in (action.get('parameters') or {}).values():
                 if isinstance(v, str):
                     text += ' ' + v
+        return self._extract_keywords_from_text(text)
 
+    @staticmethod
+    def _extract_keywords_from_text(text: str, limit: int = 12) -> List[str]:
+        """从任意文本提取触发关键词：错误码 / SQL 表名 / 常见症状与操作词"""
         keywords = []
         # 错误码（ORA-xxxxx / ERROR nnnn）
         for c in re.findall(r'ORA-\d+', text, re.I):
@@ -413,20 +543,25 @@ class SkillManager:
             tname = m.group(1).split('.')[-1]
             if 3 <= len(tname) <= 40 and tname.lower() not in ('dual',):
                 keywords.append(tname)
-        # 常见症状/指标词
+        # 数据库参数/标识符（snake_case 4-40 字符，如 max_connections）
+        for m in re.findall(r'\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b', text):
+            if 4 <= len(m) <= 40:
+                keywords.append(m)
+        # 常见症状/指标/操作词
         for kw in ('慢查询', '连接数', '锁等待', '死锁', '表空间', 'CPU', '内存',
-                   '磁盘', '性能', '备份', '集群', '主从', '日志', '告警', '吞吐'):
+                   '磁盘', '性能', '备份', '集群', '主从', '日志', '告警', '吞吐',
+                   '重启', '故障', '修复', '参数', '扩容', '迁移'):
             if kw.lower() in text.lower():
                 keywords.append(kw)
 
-        # 保序去重，最多 12 个
+        # 保序去重
         seen = set()
         result = []
         for k in keywords:
             if k not in seen:
                 seen.add(k)
                 result.append(k)
-        return result[:12]
+        return result[:limit]
 
     def _format_trace(self, trace: Dict) -> str:
         """把诊断步骤序列格式化为文本（供 LLM 生成技能）"""

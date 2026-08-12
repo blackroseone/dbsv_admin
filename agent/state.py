@@ -51,11 +51,11 @@ class AgentStep:
 class AgentState:
     """Agent状态管理器"""
 
-    def __init__(self, session_id: str):
+    def __init__(self, session_id: str, max_steps: int = 10):
         self.session_id = session_id
         self.status = AgentStatus.IDLE
         self.current_step = 0
-        self.max_steps = 10
+        self.max_steps = max_steps
         self.steps: List[AgentStep] = []
         self.conversation_history: List[Dict] = []
         self.error_message = ""

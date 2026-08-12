@@ -22,10 +22,42 @@ async function loadManuals() {
             <div class="manual-item ${ManualsModule.currentManual === file.name ? 'active' : ''}" onclick="viewManual('${escapeJsAttr(file.name)}')">
                 <div class="manual-name">${escapeHtml(file.name)}</div>
                 <div class="manual-size">${formatFileSize(file.size)}</div>
+                <div class="manual-actions">
+                    <span class="manual-skill-btn" title="从该手册生成运维技能"
+                          onclick="event.stopPropagation();genSkillFromManual('${escapeJsAttr(file.name)}', this)">📄 生成技能</span>
+                </div>
             </div>
         `).join('');
     } catch (error) {
         showToast('加载手册列表失败', 'error');
+    }
+}
+
+// 从已有手册生成运维技能
+async function genSkillFromManual(filename, btn) {
+    if (!confirm(`从手册「${filename}」生成运维技能？`)) return;
+    const oldText = btn.textContent;
+    btn.textContent = '⏳ 生成中...';
+    btn.disabled = true;
+    try {
+        const formData = new FormData();
+        formData.append('filename', filename);
+        formData.append('category', 'diagnosis');
+        const response = await fetch('/api/agent/skills/from-doc', {
+            method: 'POST',
+            body: formData
+        });
+        const data = await response.json();
+        if (response.ok) {
+            showToast(`${data.message}：${data.skill_name}`, 'success');
+        } else {
+            showToast(data.error || '生成失败', 'error');
+        }
+    } catch (error) {
+        showToast('生成失败', 'error');
+    } finally {
+        btn.textContent = oldText;
+        btn.disabled = false;
     }
 }
 

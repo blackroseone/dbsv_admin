@@ -599,6 +599,57 @@ function finalizeAgentConclusion() {
     const conclusionDiv = document.getElementById('agent-conclusion');
     if (conclusionDiv) {
         conclusionDiv.id = '';
+        showAgentFeedback();
+    }
+}
+
+// ==================== DBA 反馈闭环 ====================
+
+function showAgentFeedback() {
+    const conclusionDiv = document.getElementById('agent-conclusion');
+    if (!conclusionDiv || !agentCurrentSession) return;
+    if (conclusionDiv.querySelector('.agent-feedback')) return;
+
+    const row = document.createElement('div');
+    row.className = 'agent-feedback';
+    row.innerHTML = `
+        <div class="feedback-actions">
+            <span class="feedback-label">这个结论对你有帮助吗？</span>
+            <button class="feedback-btn" onclick="submitAgentFeedback('up')">👍 有帮助</button>
+            <button class="feedback-btn" onclick="showAgentFeedbackCorrection()">👎 有误/需纠正</button>
+        </div>
+        <div class="feedback-correction" style="display:none;">
+            <input type="text" id="agent-feedback-correction-input" placeholder="补充或纠正（可选），写入长期记忆">
+            <button class="feedback-btn primary" onclick="submitAgentFeedback('down')">提交</button>
+        </div>
+    `;
+    conclusionDiv.appendChild(row);
+    conclusionDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function showAgentFeedbackCorrection() {
+    const correction = document.querySelector('.agent-feedback .feedback-correction');
+    if (correction) correction.style.display = 'flex';
+}
+
+async function submitAgentFeedback(feedback) {
+    const input = document.getElementById('agent-feedback-correction-input');
+    const correction = input ? input.value.trim() : '';
+    try {
+        const response = await fetch('/api/agent/feedback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: agentCurrentSession, feedback, correction })
+        });
+        const data = await response.json();
+        if (response.ok) {
+            showToast(data.message || '反馈已记录', 'success');
+            document.querySelectorAll('.agent-feedback .feedback-btn').forEach(b => b.disabled = true);
+        } else {
+            showToast(data.error || '反馈失败', 'error');
+        }
+    } catch (error) {
+        showToast('反馈失败', 'error');
     }
 }
 
@@ -877,6 +928,34 @@ async function deleteAgentSkill(name) {
         }
     } catch (error) {
         showToast('删除失败', 'error');
+    }
+}
+
+async function uploadDocSkill(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const btn = document.querySelector('#agent-skill-panel .btn-add[onclick*="doc-input"]');
+    if (btn) btn.textContent = '⏳ 生成中...';
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('category', 'diagnosis');
+    try {
+        const response = await fetch('/api/agent/skills/from-doc', {
+            method: 'POST',
+            body: formData
+        });
+        const data = await response.json();
+        if (response.ok) {
+            showToast(`${data.message}：${data.skill_name}`, 'success');
+        } else {
+            showToast(data.error || '生成失败', 'error');
+        }
+    } catch (error) {
+        showToast('生成失败', 'error');
+    } finally {
+        if (btn) btn.textContent = '📄 从手册生成';
+        input.value = '';
+        loadAgentSkills();
     }
 }
 

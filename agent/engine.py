@@ -22,6 +22,19 @@ class SmartOpsAgent:
     MIN_SIMILARITY_THRESHOLD = 0.75
     MIN_KNOWLEDGE_COVERAGE = 0.80
 
+    # 可并行执行的只读工具白名单（无副作用，并行线程安全）
+    PARALLEL_SAFE_TOOLS = {
+        'query_database', 'get_schema_info', 'get_performance_metrics',
+        'get_monitor_metrics', 'retrieve_check', 'retrieve_knowledge',
+    }
+    PARALLEL_MAX_WORKERS = 4
+    MAX_PARALLEL_CALLS = 5
+
+    # 上下文压缩：对话历史超过该条数触发中间摘要，保留头尾逐字
+    HISTORY_COMPRESS_THRESHOLD = 10
+    HISTORY_KEEP_TAIL = 6
+    HISTORY_SUMMARY_MAX_CHARS = 1500
+
     def __init__(self, session_id: str, ssh_conn_id: Optional[str] = None,
                  db_conn_id: Optional[str] = None, model_id: Optional[str] = None):
         self.session_id = session_id
@@ -31,7 +44,12 @@ class SmartOpsAgent:
         self.embedder = Embedder()
         self.skill_manager = SkillManager()
         self.harness = Harness()
-        self.state = AgentState(session_id)
+        from config import AGENT_MAX_STEPS, AGENT_MAX_HISTORY_CHARS
+        self.state = AgentState(session_id, max_steps=int(AGENT_MAX_STEPS))
+        self.max_history_chars = int(AGENT_MAX_HISTORY_CHARS)
+
+        # 最近动作指纹（死循环检测）
+        self._recent_actions = []
 
         # 操作级别（默认只读）
         self.operation_level = OperationLevel.READONLY
@@ -87,6 +105,12 @@ class SmartOpsAgent:
         self.state.add_message('user', user_question)
 
         while self.state.current_step < self.state.max_steps:
+            # 迭代预算：对话历史字符超限 → 强制收敛
+            if self._history_chars() > self.max_history_chars:
+                yield {"type": "executing_warning",
+                       "warning": "⚠️ 对话历史过长，停止继续执行，直接给出结论"}
+                break
+
             # Thinking
             yield {"type": "thinking_start", "step": self.state.current_step}
             thought = self._think(system_prompt)
@@ -98,43 +122,47 @@ class SmartOpsAgent:
             self._persist_step(step)
             self.state.add_message('assistant', thought)
 
-            # Decision: 是否需要执行工具？（不再调用工具时自然结束）
-            action = self._decide_action(thought)
-            if not action:
+            # Decision: 提取工具调用（支持一次多个，只读工具并行执行）
+            actions = self._extract_tool_calls(thought, max_calls=self.MAX_PARALLEL_CALLS)
+            if not actions:
+                break
+
+            # 死循环检测：连续相同动作指纹 ≥3 次 → 强制收敛
+            self._recent_actions.append(self._action_fingerprint(actions))
+            if (len(self._recent_actions) >= 3
+                    and len(set(self._recent_actions[-3:])) == 1):
+                yield {"type": "executing_warning",
+                       "warning": "⚠️ 检测到重复执行相同操作，停止继续，直接给出结论"}
+                self.state.add_message('user', "⚠️ 检测到重复执行相同操作，请直接给出结论，不要再调用工具")
                 break
 
             # Planning
-            yield {"type": "planning", "action": action}
-
-            # Execution
-            yield {"type": "executing_start", "tool": action.get("tool"),
-                   "parameters": action.get("parameters")}
-
-            # 安全验证
-            is_safe, error = self._validate_action(action)
-            if not is_safe:
-                observation = f"❌ 安全验证失败: {error}"
-                yield {"type": "executing_error", "error": observation}
+            if len(actions) == 1:
+                yield {"type": "planning", "action": actions[0]}
             else:
-                # 知识库验证（执行前检查是否有知识库支撑）
-                has_knowledge = self._verify_knowledge_support(action, knowledge_refs)
-                if not has_knowledge:
-                    observation = "⚠️ 警告：该操作缺乏知识库支撑，执行风险较高"
-                    yield {"type": "executing_warning", "warning": observation}
+                yield {"type": "planning", "action": {"tool": "parallel",
+                                                      "actions": actions}}
 
-                result = self._execute_action(action)
-                observation = self._format_result(result)
-                yield {"type": "executing_end", "result": result}
+            # Execution（安全验证 + 并行/串行）
+            results = self._execute_actions(actions, knowledge_refs)
+            for item in results:
+                action = item['action']
+                if not item['is_safe']:
+                    yield {"type": "executing_error", "error": item['observation']}
+                else:
+                    if item['warning']:
+                        yield {"type": "executing_warning", "warning": item['warning']}
+                    yield {"type": "executing_end", "result": item['result']}
 
-            step = self.state.add_step(AgentPhase.EXECUTING, action=action,
-                                       observation=observation)
-            self._persist_step(step)
+                step = self.state.add_step(AgentPhase.EXECUTING, action=action,
+                                           observation=item['observation'])
+                self._persist_step(step)
 
-            # Observation
-            yield {"type": "observing", "observation": observation}
+                # Observation
+                yield {"type": "observing", "observation": item['observation']}
 
-            # 观察结果回流对话历史
-            self.state.add_message('user', f"观察结果:\n{observation}")
+                # 观察结果回流对话历史
+                self.state.add_message('user', f"观察结果:\n{item['observation']}")
 
             self.state.next_step()
 
@@ -152,7 +180,7 @@ class SmartOpsAgent:
         # 学习闭环：成功诊断 → 后台沉淀技能 + 写长期记忆（不阻塞流式返回）
         threading.Thread(
             target=self._crystallize_after_success,
-            args=(user_question, conclusion),
+            args=(user_question, conclusion, knowledge_refs),
             daemon=True,
         ).start()
 
@@ -251,6 +279,13 @@ class SmartOpsAgent:
 {"tool": "query_database", "parameters": {"sql": "SELECT ..."}}
 ```
 
+如果需要同时查多个只读指标/对象，可以一次输出多个工具调用（JSON数组），它们会被并行执行：
+```json
+[{"tool": "get_monitor_metrics", "parameters": {"metric_type": "cpu_usage"}},
+ {"tool": "query_database", "parameters": {"sql": "SELECT ..."}}]
+```
+注意：仅只读工具（query_database/get_schema_info/get_performance_metrics/get_monitor_metrics/retrieve_check/retrieve_knowledge）可并行；execute_command 涉及命令执行，请逐个调用。
+
 如果不需要工具，直接给出分析结论。
 """
 
@@ -283,12 +318,14 @@ class SmartOpsAgent:
                 elif template:
                     prompt += f"  操作指南: {template[:200]}...\n"
 
-        # 注入长期记忆（环境上下文）
+        # 注入长期记忆（环境上下文，含图谱补充）
         if memory_refs:
             prompt += "\n## 环境上下文（历史记录，供参考）\n"
             for mem in memory_refs[:8]:
                 entity = mem.get('entity_name') or '通用'
                 prompt += f"- [{mem.get('entity_type', 'general')}:{entity}] {mem.get('fact', '')[:150]}\n"
+                if mem.get('graph_context'):
+                    prompt += f"  {mem['graph_context']}\n"
                 if (mem.get('confidence') or 1) < 0.7:
                     prompt += "  （低置信度，需现场验证）\n"
 
@@ -323,28 +360,58 @@ class SmartOpsAgent:
         return prompt
 
     def _think(self, system_prompt: str) -> str:
-        """LLM思考（基于完整对话历史，含先前的工具观察结果）"""
-        messages = [
-            {"role": "system", "content": system_prompt},
-            *self.state.conversation_history,
-        ]
+        """LLM思考（基于对话历史，过长时自动压缩中间步骤）"""
+        messages = self._build_messages(system_prompt)
 
         response, _ = call_llm(messages, model_id=self.model_id)
         return response
 
-    def _decide_action(self, thought: str) -> Optional[Dict]:
-        """基于思考提取工具调用 JSON
+    def _build_messages(self, system_prompt: str) -> List[Dict]:
+        """构造 LLM 消息列表：对话历史过长时做头尾保护 + 中间摘要压缩。
+
+        保留用户问题（首条）与最近 HISTORY_KEEP_TAIL 条消息逐字，
+        中间消息各截断后拼成一条历史摘要，控制超长 prompt。
+        """
+        history = self.state.conversation_history
+        if len(history) <= self.HISTORY_COMPRESS_THRESHOLD:
+            return [{"role": "system", "content": system_prompt}, *history]
+
+        head = history[:1]  # 用户问题（头）
+        tail = history[-self.HISTORY_KEEP_TAIL:]  # 最近观察（尾，逐字保留）
+        middle = history[1:-self.HISTORY_KEEP_TAIL]
+
+        summary_lines = []
+        total = 0
+        for m in middle:
+            snippet = (m.get('content') or '')[:120]
+            summary_lines.append(f"[{m.get('role')}] {snippet}")
+            total += len(snippet) + 8
+            if total > self.HISTORY_SUMMARY_MAX_CHARS:
+                break
+        summary = "[历史摘要，已压缩较早步骤]\n" + "\n".join(summary_lines)
+
+        return [
+            {"role": "system", "content": system_prompt},
+            head[0],
+            {"role": "user", "content": summary},
+            *tail,
+        ]
+
+    def _extract_tool_calls(self, thought: str,
+                            max_calls: int = 5) -> List[Dict]:
+        """基于思考提取工具调用 JSON 列表（支持并行多调用）
 
         容错 markdown 代码围栏与嵌套括号/字符串内的大括号，
-        逐个尝试平衡的大括号对象，找到带 tool 字段的调用。
+        逐个扫描平衡的大括号对象，收集所有带 tool 字段的调用（上限 max_calls）。
         """
         if not thought:
-            return None
+            return []
         # 剥离 ```json ... ``` 代码围栏（保留内部内容）
         fenced = re.search(r'```(?:json)?\s*(.*?)```', thought, re.DOTALL)
         if fenced:
             thought = fenced.group(1)
 
+        calls = []
         start = thought.find('{')
         while start != -1:
             depth = 0
@@ -371,17 +438,74 @@ class SmartOpsAgent:
                         end = i
                         break
             if end == -1:
-                return None
+                break
             candidate = thought[start:end + 1]
             try:
                 obj = json.loads(candidate)
                 if isinstance(obj, dict) and obj.get('tool'):
-                    return obj
+                    calls.append(obj)
+                    if len(calls) >= max_calls:
+                        break
             except (json.JSONDecodeError, ValueError):
                 pass
             # 前一个对象非工具调用，继续找下一个 {（如模型先输出了一段分析 JSON）
             start = thought.find('{', end)
-        return None
+        return calls
+
+    @staticmethod
+    def _action_fingerprint(actions: List[Dict]) -> str:
+        """动作指纹：tool + 参数规范化，用于死循环检测"""
+        return json.dumps(actions, sort_keys=True, ensure_ascii=False)
+
+    def _history_chars(self) -> int:
+        """对话历史总字符数（迭代预算）"""
+        return sum(len(m.get('content', '')) for m in self.state.conversation_history)
+
+    def _execute_actions(self, actions: List[Dict],
+                         knowledge_refs: List[Dict]) -> List[Dict]:
+        """批量执行工具调用：全部只读且 >1 个时并行，否则串行。
+
+        每个动作先过 Harness 安全验证；返回
+        [{action, observation, result, is_safe, error, warning}, ...]。
+        """
+        validated = []
+        for action in actions:
+            is_safe, error = self._validate_action(action)
+            validated.append({'action': action, 'is_safe': is_safe, 'error': error})
+
+        can_parallel = (
+            len(validated) > 1
+            and all(v['is_safe'] for v in validated)
+            and all(v['action'].get('tool') in self.PARALLEL_SAFE_TOOLS for v in validated)
+        )
+
+        if can_parallel:
+            from concurrent.futures import ThreadPoolExecutor
+            results_map = {}
+            with ThreadPoolExecutor(max_workers=min(self.PARALLEL_MAX_WORKERS,
+                                                    len(validated))) as pool:
+                future_to_idx = {
+                    pool.submit(self._run_one_action, v, knowledge_refs): i
+                    for i, v in enumerate(validated)
+                }
+                for fut in future_to_idx:
+                    results_map[future_to_idx[fut]] = fut.result()
+            return [results_map[i] for i in range(len(validated))]
+
+        return [self._run_one_action(v, knowledge_refs) for v in validated]
+
+    def _run_one_action(self, item: Dict, knowledge_refs: List[Dict]) -> Dict:
+        """执行单个已校验动作：知识库支撑提示 + 执行 + 格式化观察"""
+        action = item['action']
+        if not item['is_safe']:
+            return {**item, 'observation': f"❌ 安全验证失败: {item['error']}",
+                    'result': None, 'warning': None}
+        warning = None
+        if not self._verify_knowledge_support(action, knowledge_refs):
+            warning = "⚠️ 该操作缺乏知识库支撑，执行风险较高"
+        result = self._execute_action(action)
+        return {**item, 'observation': self._format_result(result),
+                'result': result, 'warning': warning}
 
     def _validate_action(self, action: Dict) -> Tuple[bool, str]:
         """验证动作安全性"""
@@ -551,18 +675,62 @@ class SmartOpsAgent:
         return response
 
     def _recall_memory(self, question: str) -> List[Dict]:
-        """召回长期记忆（环境上下文），并累加命中计数"""
+        """召回长期记忆：语义优先，关键词兜底；对主机/实例/集群记忆做图谱补充。
+
+        返回 [{...memory, graph_context?: str}]
+        """
         try:
-            from db.database import search_memory_by_keyword, bump_memory_usage
-            refs = search_memory_by_keyword(question, limit=8)
+            from db.database import (search_memory_semantic, search_memory_by_keyword,
+                                     bump_memory_usage)
+            refs = search_memory_semantic(question, limit=6)
+            if not refs:
+                refs = search_memory_by_keyword(question, limit=6)
             for r in refs:
                 bump_memory_usage(r['id'])
-            return refs
+            return self._enrich_memory_graph(refs)
         except Exception as e:
             print(f"[Agent] 记忆召回失败: {e}")
             return []
 
-    def _crystallize_after_success(self, user_question: str, conclusion: str) -> None:
+    def _enrich_memory_graph(self, refs: List[Dict]) -> List[Dict]:
+        """对主机/实例/集群类记忆补充知识图谱上下文（实体描述 + 邻居关系），最多补 2 条"""
+        enriched = 0
+        for r in refs:
+            if enriched >= 2:
+                break
+            et = r.get('entity_type', '')
+            en = r.get('entity_name', '')
+            if et not in ('host', 'db_instance', 'cluster') or not en:
+                continue
+            try:
+                from kg.graph import search_entities_enhanced
+                result = search_entities_enhanced(en, include_neighbors=True,
+                                                  max_relations=10)
+                entities = result.get('entities') or []
+                subgraph = result.get('subgraph') or {}
+                lines = []
+                center_id = None
+                if entities:
+                    e0 = entities[0]
+                    center_id = e0.get('id')
+                    desc = (e0.get('description') or '')[:80]
+                    if desc:
+                        lines.append(f"{e0.get('name')}({e0.get('entity_type')}): {desc}")
+                for node in (subgraph.get('nodes') or {}).values():
+                    if node.get('id') == center_id:
+                        continue
+                    lines.append(f"  关联 {node.get('name')}({node.get('entity_type')})")
+                    if len(lines) >= 6:
+                        break
+                if lines:
+                    r['graph_context'] = "\n".join(lines)
+                    enriched += 1
+            except Exception:
+                continue
+        return refs
+
+    def _crystallize_after_success(self, user_question: str, conclusion: str,
+                                   knowledge_refs: List[Dict]) -> None:
         """学习闭环：成功诊断后沉淀技能 + 写入长期记忆。
 
         条件：至少 2 次工具调用且无执行出错。运行于后台线程，
@@ -590,28 +758,62 @@ class SmartOpsAgent:
             if skill_name:
                 print(f"[Agent] 已沉淀技能: {skill_name}")
 
-            self._write_memory(user_question, conclusion)
+            self._write_memory(user_question, conclusion, knowledge_refs)
         except Exception as e:
             print(f"[Agent] 学习闭环失败（不影响诊断）: {e}")
 
-    def _write_memory(self, user_question: str, conclusion: str) -> None:
-        """把本次诊断的环境事实写入长期记忆（低置信度标记，source=agent_session）"""
+    def _write_memory(self, user_question: str, conclusion: str,
+                      knowledge_refs: List[Dict]) -> None:
+        """把本次诊断的环境事实写入长期记忆（写前事实校验，防污染）"""
         try:
             from db.database import save_memory
             entity_name, entity_type = self._extract_entity(user_question)
             fact = self._condense_fact(conclusion)
             if not fact:
                 return
+            confidence = self._validate_fact(entity_name, knowledge_refs)
+            if confidence is None:
+                print(f"[Agent] 记忆校验未通过，跳过写入: {fact[:40]}")
+                return
             save_memory(
                 entity_type=entity_type,
                 entity_name=entity_name,
                 fact=fact,
                 category='incident',
-                confidence=0.5,
+                confidence=confidence,
                 source=f'agent_session:{self.session_id}',
             )
         except Exception as e:
             print(f"[Agent] 记忆写入失败: {e}")
+
+    def _validate_fact(self, entity_name: str, knowledge_refs: List[Dict]):
+        """记忆写入事实校验：图谱实体 + 知识库支撑 + 监控对象交叉验证。
+
+        返回置信度 (0~1)；无任何支撑且无实体时返回 None（跳过不写）。
+        """
+        score = 0.0
+        if entity_name:
+            try:
+                from db.kg_database import search_entities
+                if search_entities(entity_name, limit=1):
+                    score += 0.4
+            except Exception:
+                pass
+            try:
+                from db.database import get_mon_objects
+                if any(o.get('object_name') == entity_name for o in get_mon_objects()):
+                    score += 0.3
+            except Exception:
+                pass
+        if knowledge_refs:
+            max_sim = max((r.get('similarity', 0) or 0) for r in knowledge_refs)
+            if max_sim >= 0.75:
+                score += 0.3
+        if score <= 0.1 and not entity_name:
+            return None
+        if score >= 0.4:
+            return min(0.5 + score * 0.5, 0.85)
+        return 0.3
 
     @staticmethod
     def _extract_entity(question: str) -> Tuple[str, str]:

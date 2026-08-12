@@ -597,6 +597,13 @@ def init_db():
             conn.execute(f"ALTER TABLE agent_skills {ddl}")
             conn.commit()
 
+    # 数据库迁移：agent_memory 增加 embedding 列（记忆语义召回用，BLOB 存向量）
+    try:
+        conn.execute("SELECT embedding FROM agent_memory LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE agent_memory ADD COLUMN embedding BLOB")
+        conn.commit()
+
     # 数据库迁移：删除 servers 表的 cpu 和 memory 字段（数据迁移到 description）
     # 注意：SQLite 不支持直接删除列，这里只是标记，实际删除需要重建表
     # 暂时保留，通过前端不再使用这些字段
@@ -1483,6 +1490,80 @@ def get_all_embeddings():
     return [dict(r) for r in rows]
 
 
+def get_embeddings_stats(db_type=None):
+    """轻量查询嵌入统计 (count, max_id)，用于检索矩阵缓存失效判定。
+
+    重建索引后 id 变化 → key 变化 → 缓存自动失效；比全量加载矩阵便宜得多。
+    """
+    conn = get_db()
+    if db_type:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c, COALESCE(MAX(e.id), 0) AS m "
+            "FROM embeddings e JOIN knowledge_files k ON e.file_id = k.id "
+            "WHERE k.db_type=?",
+            (db_type,)
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c, COALESCE(MAX(id), 0) AS m FROM embeddings"
+        ).fetchone()
+    return {'count': row['c'], 'max_id': row['m']}
+
+
+def get_embeddings_matrix(db_type=None):
+    """一次加载全部嵌入为 numpy 矩阵 + 元数据，供向量化检索。
+
+    返回 {matrix, chunk_ids, filenames, chunk_texts, count, max_id}；
+    无数据返回 None。向量维度以多数为准，剔除维度不一致的异常行
+    （嵌入模型更换后残留的旧维度向量）。
+    """
+    import numpy as np
+    from collections import Counter
+    conn = get_db()
+    if db_type:
+        rows = conn.execute(
+            "SELECT e.id, e.chunk_text, e.embedding, k.filename "
+            "FROM embeddings e JOIN knowledge_files k ON e.file_id = k.id "
+            "WHERE k.db_type=?",
+            (db_type,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT e.id, e.chunk_text, e.embedding, k.filename "
+            "FROM embeddings e JOIN knowledge_files k ON e.file_id = k.id"
+        ).fetchall()
+    if not rows:
+        return None
+
+    vectors = []
+    valid_rows = []
+    for r in rows:
+        raw = r['embedding']
+        if not raw:
+            continue
+        vectors.append(np.frombuffer(raw, dtype=np.float32))
+        valid_rows.append(r)
+    if not vectors:
+        return None
+
+    dims = Counter(v.shape[0] for v in vectors)
+    main_dim = dims.most_common(1)[0][0]
+    keep = [(r, v) for r, v in zip(valid_rows, vectors) if v.shape[0] == main_dim]
+    if not keep:
+        return None
+
+    matrix = np.stack([v for _, v in keep])
+    keep_rows = [r for r, _ in keep]
+    return {
+        'matrix': matrix,
+        'chunk_ids': [r['id'] for r in keep_rows],
+        'filenames': [r['filename'] for r in keep_rows],
+        'chunk_texts': [r['chunk_text'] for r in keep_rows],
+        'count': len(keep_rows),
+        'max_id': max(r['id'] for r in keep_rows),
+    }
+
+
 def get_embeddings_by_db_type(db_type):
     """获取指定数据库类型的所有嵌入向量"""
     conn = get_db()
@@ -1828,16 +1909,35 @@ def delete_skill(name):
 # ==================== Agent长期记忆 CRUD ====================
 
 def _memory_from_row(row) -> dict:
-    return dict(row)
+    d = dict(row)
+    # 向量列不随 JSON 返回给前端/引擎（召回时单独用 semantic 检索）
+    d.pop('embedding', None)
+    return d
+
+
+def _encode_text(text: str):
+    """编码文本为向量 BLOB；模型不可用返回 None（不阻断写入）"""
+    if not text:
+        return None
+    try:
+        from rag.embedder import Embedder
+        emb = Embedder().embed_query(text)
+        if emb is None:
+            return None
+        return emb.astype('float32').tobytes()
+    except Exception:
+        return None
 
 
 def save_memory(entity_type='general', entity_name='', fact='', category='',
                 confidence=0.8, source=''):
-    """写入长期记忆。
+    """写入长期记忆（自动编码 fact 向量供语义召回）。
 
     相同 (entity_type, entity_name, fact) 视为同一事实，重复写入时更新
-    confidence/source 并累加 usage_count，避免诊断反复落同一条记忆造成污染。
+    confidence/source/embedding 并累加 usage_count，避免诊断反复落同一条
+    记忆造成污染。向量编码失败不影响写入（语义召回会回退关键词）。
     """
+    embedding = _encode_text(fact)
     conn = get_db()
     row = conn.execute(
         "SELECT id FROM agent_memory WHERE entity_type=? AND entity_name=? AND fact=?",
@@ -1845,16 +1945,16 @@ def save_memory(entity_type='general', entity_name='', fact='', category='',
     ).fetchone()
     if row:
         conn.execute(
-            """UPDATE agent_memory SET category=?, confidence=?, source=?,
+            """UPDATE agent_memory SET category=?, confidence=?, source=?, embedding=?,
                usage_count=usage_count+1, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
-            (category, confidence, source, row['id'])
+            (category, confidence, source, embedding, row['id'])
         )
         conn.commit()
         return row['id']
     conn.execute(
-        """INSERT INTO agent_memory (entity_type, entity_name, fact, category, confidence, source)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (entity_type, entity_name, fact, category, confidence, source)
+        """INSERT INTO agent_memory (entity_type, entity_name, fact, category, confidence, source, embedding)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (entity_type, entity_name, fact, category, confidence, source, embedding)
     )
     conn.commit()
     return conn.execute(
@@ -1916,3 +2016,62 @@ def delete_memory(memory_id):
     conn = get_db()
     conn.execute("DELETE FROM agent_memory WHERE id=?", (memory_id,))
     conn.commit()
+
+
+def search_memory_semantic(query, limit=8):
+    """记忆语义召回：编码查询 → 全量记忆向量余弦 top-K。
+
+    embedder 不可用或无向量记忆时回退关键词匹配。返回与
+    search_memory_by_keyword 同构的列表（不含 embedding 列）。
+    """
+    try:
+        from rag.embedder import Embedder
+        emb = Embedder().embed_query(query)
+    except Exception:
+        emb = None
+    if emb is None:
+        return search_memory_by_keyword(query, limit=limit)
+
+    import numpy as np
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT id, entity_type, entity_name, fact, category, confidence,
+                  source, usage_count, embedding FROM agent_memory"""
+    ).fetchall()
+    vectors = []
+    valid_rows = []
+    for r in rows:
+        raw = r['embedding']
+        if not raw:
+            continue
+        vectors.append(np.frombuffer(raw, dtype=np.float32))
+        valid_rows.append(r)
+    if not vectors:
+        return search_memory_by_keyword(query, limit=limit)
+
+    # 已 normalize，矩阵 @ 查询向量 = 全部余弦（一次 BLAS 运算）
+    matrix = np.stack(vectors)
+    scores = matrix @ emb
+    top_n = min(limit, len(scores))
+    idx = np.argsort(-scores)[:top_n]
+    return [_memory_from_row(valid_rows[i]) for i in idx]
+
+
+def get_skills_by_source(source_session):
+    """按来源会话查技能（反馈闭环：定位该会话沉淀的技能）"""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM agent_skills WHERE source_session=? ORDER BY created_at DESC",
+        (source_session,)
+    ).fetchall()
+    return [_skill_from_row(r) for r in rows]
+
+
+def list_memory_by_source(source):
+    """按来源查记忆（反馈闭环：定位该会话自动写入的记忆）"""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM agent_memory WHERE source=? ORDER BY updated_at DESC",
+        (source,)
+    ).fetchall()
+    return [_memory_from_row(r) for r in rows]

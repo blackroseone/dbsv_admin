@@ -9,7 +9,35 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
-## v3.0.7 (2026-08-12)
+## v3.0.9 (2026-08-12)
+
+### ⚡ Agent 强化（并行只读 + 上下文压缩 + 迭代预算）
+
+- **并行只读工具**：一次思考可输出多个工具调用（JSON 数组），只读工具（query_database/get_schema_info/get_performance_metrics/get_monitor_metrics/retrieve_check/retrieve_knowledge）在线程池并行执行（最多 4 并发、单次最多 5 个），多指标诊断显著提速；`execute_command` 一律串行。每个动作仍独立过 Harness 安全校验。
+- **上下文压缩**：对话历史超过 10 条时做头尾保护 + 中间摘要（中间消息各截断后拼成历史摘要，保留用户问题与最近 6 条逐字），控制超长 prompt。
+- **迭代预算形式化**：`AGENT_MAX_STEPS`（默认 10，环境变量 `DB_TOOL_AGENT_MAX_STEPS`）注入 AgentState；连续相同动作指纹 ≥3 次判定死循环强制收敛；对话历史字符超 `AGENT_MAX_HISTORY_CHARS`（默认 12000）强制收敛到结论。
+
+### 🧠 记忆完善（语义召回 + 事实校验 + DBA 反馈闭环）
+
+- **记忆语义召回**：`agent_memory` 加 embedding 列，写入记忆时自动编码 fact 向量；召回时向量余弦 top-K，模型不可用自动回退关键词。对主机/实例/集群类记忆补知识图谱上下文（实体描述 + 邻居关系）注入环境上下文。
+- **记忆写入事实校验**：写前与知识图谱实体/监控对象/本次知识库支撑交叉验证打分；有支撑按置信度落库，无任何支撑且无实体的结论跳过不写，防记忆污染。
+- **DBA 反馈闭环**：结论后前端提供 👍/👎 + 纠正输入；up → 该会话技能置信度 +0.05、记忆 +0.1；down → 该会话技能 deprecated、记忆删除；纠正文本写入高置信度偏好记忆（source=dba_feedback）。只影响该会话自己沉淀的数据，不误伤其他技能/记忆。
+
+### ⚡ RAG 检索性能优化
+
+- **向量化检索**：`similarity_search` 从逐行 Python 循环改为 numpy 矩阵乘（`matrix @ query_emb` 一次 BLAS 运算）+ `argpartition` 取 top-k；新增 `db.get_embeddings_matrix` 一次加载全量向量为 `(N, dim)` 矩阵。
+- **矩阵缓存**：`Embedder` 按 `(db_type, count, max_id)` 缓存检索矩阵，先用轻量 `get_embeddings_stats` 判失效（重建索引后 id 变化自动失效 + `rebuild_all` 显式清缓存）；命中后单次检索约 **7 倍提速**（59K 向量下 0.2s → 0.03s），矩阵加载首次一次性 ~0.5s 摊薄。
+- **记忆语义检索同步向量化**：`search_memory_semantic` 改 `np.stack` + `argsort`。
+- 检索路径纯 numpy/BLAS，与嵌入模型运行设备（CPU/GPU）无关，纯 CPU 部署同样生效。
+
+### 📄 操作手册 → 生成技能
+
+- **文档沉淀技能**：`SkillManager.crystallize_from_document(text, db_type, category)`——LLM 从手册提炼技能 JSON（步骤指南/触发词），LLM 不可用离线回退文档摘录模板；同样过 Curator 写时去重合并。
+- **接口**：`POST /api/agent/skills/from-doc`（multipart 上传文件，或 `filename` 读取 `data/manuals/` 已有手册；可选 db_type/category）。
+- **前端**：Agent 页「知识沉淀」技能库面板新增「📄 从手册生成」按钮；运维手册页每篇手册新增「📄 生成技能」入口。
+- 关键词提取增强：错误码/SQL 表名/数据库参数名（snake_case）/症状词，支持离线回退技能的意图匹配。
+
+## v3.0.8 (2026-08-12)
 
 ### 🧠 运维 Agent 学习闭环（技能自动沉淀 + 长期记忆）
 
@@ -23,16 +51,16 @@
 - **接口**：`POST/DELETE /api/agent/skills`（技能人工维护/停用/删除）、`GET/POST /api/agent/memory` 与 `DELETE /api/agent/memory/<id>`（记忆查看/显式记录/删除）。
 - **数据层**：`agent_skills` 表迁移加列（trigger_keywords/source_session/confidence/usage_count/status），新增 `agent_memory` 表；迁移采用 try-SELECT/ALTER 模式，旧库平滑升级不破坏既有数据。
 
-## v3.0.6 (2026-08-11)
+## v3.0.7 (2026-08-11)
 
 ### 🧩 运维检查项纳入知识图谱 + Agent 能力
-- 新增知识图谱实体类型 **check_item**（检查项）：把反编译的专家运维检查知识（1426 项）导入图谱，实体属性含 category/db_type/functions/sql/commands/knowledge_text/thresholds。
+- 新增知识图谱实体类型 **check_item**（检查项）：把部分运维检查知识导入图谱，实体属性含 category/db_type/functions/sql/commands/knowledge_text/thresholds。
 - **关系**：`applies_to`（检查项→数据库产品，1071 条）+ `diagnoses`（检查项→错误码，73 条），支持"查某错误码相关的检查项"。
-- **导入脚本** `tools/import_check_items.py`：读外部反编译目录（`--dir` 或环境变量 `CHECK_ITEMS_JSON_DIR`），批量建实体与关系，幂等可重跑；错误码追加进描述便于关键词检索。
+- **导入脚本** `tools/import_check_items.py`：批量建实体与关系，幂等可重跑；错误码追加进描述便于关键词检索。
 - **Agent 新工具 `retrieve_check`**：按关键词/db_type/类别检索检查项，返回 SQL/命令/建议，指导诊断。已注册进工具表 + system prompt。
 - 前端图谱视图：check_item 实体与 applies_to/diagnoses 关系颜色映射。
 
-## v3.0.5 (2026-08-11)
+## v3.0.6 (2026-08-11)
 
 ### 📡 外部监控数据接入（蓝鲸）
 - 新增 `mon_metric_data` 表（`db/database.py`）：外部监控平台指标落库（source/object_type/object_name/metric/value/unit/record_time），索引按 对象+指标+时间。
@@ -44,7 +72,7 @@
 - `tools/monitor_blueking.py`：`--pull` 拉取落库、`--dry-run` 试跑、`--list-metrics` 列出查询
 - `db/database.py` 新增 `save_mon_metrics` / `get_mon_metrics` / `get_mon_metric_names` / `get_mon_objects`
 
-## v3.0.4 (2026-08-11)
+## v3.0.5 (2026-08-11)
 
 ### 🔍 RAG 分块调整：2000 → 500
 - **根因**：嵌入模型 m3e-base 是 BERT（`max_position_embeddings=512`），2000 字符编码时被截断到前 ~512 token，块尾部对检索不可见，导致检索命中率下降、知识图谱实体-chunk 关联粒度粗糙。
@@ -65,7 +93,7 @@
 - `temp_scripts/rebuild_index_full.py`：全量重建（含图谱提取 + 计时），支持按 db_type
 - `temp_scripts/qa_similarity_sampling.py`：真实问答相似度分布采样（阈值重调依据）
 
-## v3.0.3 (2026-08-09)
+## v3.0.4 (2026-08-09)
 
 ### 🌐 企业微信接入
 - 新增 `wecom_qa_integration.md`：知识问答接口接入文档（非流式 `POST /api/qa/ask`，默认开启知识库增强 + 集群拓扑增强），企微后台可据此开发问答调用代码
@@ -95,7 +123,7 @@
 - 新增 `requirements/`：Linux 离线依赖清单 + wheelhouse 离线 wheel 包
 - CentOS 7 全离线部署方案（Python 3.12 + torch 2.5.1+cpu + m3e-base 模型本地缓存），详见 `deploy/DEPLOY_CENTOS7.md`
 
-## v3.0.2 (2026-08-08)
+## v3.0.3 (2026-08-08)
 
 ### 🤖 智能运维 Agent 全面接通（阶段1-4）
 - **真实工具执行**：5 个工具从桩改为真实实现
@@ -138,7 +166,7 @@
 
 > 完整审查结论见 `code_review_2026-08-07.md`。
 
-## v3.0.1 (2026-08-05)
+## v3.0.2 (2026-08-05)
 
 ### 🗂️ 集群拓扑批量导入功能
 - **Excel 导入模板**：新增 `cluster_topology_import_template_v2.xlsx`，支持两个工作表
@@ -176,7 +204,7 @@
 
 ---
 
-## v3.0.0.1 (2026-07-30)
+## v3.0.1 (2026-07-30)
 
 ### 🕸️ 知识图谱模块重构
 

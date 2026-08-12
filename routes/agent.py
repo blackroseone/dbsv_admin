@@ -212,6 +212,66 @@ def create_skill():
     return jsonify({'message': '保存成功', 'id': skill_id})
 
 
+@agent_bp.route('/api/agent/skills/from-doc', methods=['POST'])
+def create_skill_from_doc():
+    """上传操作手册 → 生成技能（LLM 提炼 / 离线回退）。
+
+    两种输入：
+    - multipart `file`（上传文档）
+    - `filename` 表单字段（读取 data/manuals/ 下已有手册）
+    可选表单字段：db_type / category / model_id
+    """
+    import os
+    import tempfile
+    from utils import extract_content, allowed_file, safe_join
+    from agent.skills import SkillManager
+
+    file = request.files.get('file')
+    filename = (request.form.get('filename') or '').strip()
+    db_type = (request.form.get('db_type') or '').strip() or None
+    category = (request.form.get('category') or 'diagnosis').strip()
+    model_id = request.form.get('model_id') or None
+
+    text = None
+    temp_path = None
+    try:
+        if file and file.filename:
+            if not allowed_file(file.filename):
+                return jsonify({'error': '不支持的文件类型'}), 400
+            suffix = os.path.splitext(file.filename)[1]
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+                file.save(f.name)
+                temp_path = f.name
+            text = extract_content(temp_path)
+        elif filename:
+            from config import MANUALS_DIR
+            filepath = safe_join(MANUALS_DIR, filename)
+            if not filepath or not os.path.isfile(filepath):
+                return jsonify({'error': '手册文件不存在'}), 404
+            text = extract_content(filepath)
+        else:
+            return jsonify({'error': '请上传文件或指定手册文件名'}), 400
+    except Exception as e:
+        return jsonify({'error': f'文件解析失败: {e}'}), 400
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+    if not text or not text.strip():
+        return jsonify({'error': '未能从文件中提取文本内容'}), 400
+
+    skill_name = SkillManager().crystallize_from_document(
+        text, db_type=db_type, category=category, model_id=model_id)
+    if not skill_name:
+        return jsonify({'error': '技能生成失败（LLM 不可用且无法回退）'}), 500
+
+    add_operation_log('Agent', '文档生成技能', skill_name)
+    return jsonify({'message': '技能生成成功', 'skill_name': skill_name})
+
+
 @agent_bp.route('/api/agent/skills/<skill_name>', methods=['DELETE'])
 def remove_skill(skill_name):
     """删除技能（自动沉淀技能库维护）"""
@@ -266,6 +326,88 @@ def delete_memory_record(memory_id):
     delete_memory(memory_id)
     add_operation_log('Agent', '删除记忆', str(memory_id))
     return jsonify({'message': '删除成功'})
+
+
+# ==================== DBA 反馈闭环 ====================
+
+@agent_bp.route('/api/agent/feedback', methods=['POST'])
+def submit_feedback():
+    """DBA 反馈闭环：评价该会话沉淀的技能/记忆，可附带纠正文本。
+
+    - up   → 该会话技能 confidence+0.05、记忆 confidence+0.1
+    - down → 该会话技能 deprecated、该会话记忆删除
+    - correction 非空 → 存为高置信度偏好记忆（source=dba_feedback）
+    """
+    data = request.get_json() or {}
+    session_id = data.get('session_id')
+    feedback = data.get('feedback')  # 'up' | 'down'
+    correction = (data.get('correction') or '').strip()
+
+    if not session_id or feedback not in ('up', 'down'):
+        return jsonify({'error': '缺少session_id或feedback'}), 400
+
+    from db.database import (get_skills_by_source, save_skill,
+                             list_memory_by_source, delete_memory, save_memory)
+
+    source = f'agent_session:{session_id}'
+    affected_skills = 0
+    affected_memory = 0
+
+    # 技能调整（只动该会话自己沉淀的技能）
+    for skill in get_skills_by_source(session_id):
+        conf = float(skill.get('confidence') or 0.8)
+        if feedback == 'up':
+            status, new_conf = 'active', min(conf + 0.05, 0.95)
+        else:
+            status, new_conf = 'deprecated', max(conf - 0.2, 0.1)
+        save_skill(
+            name=skill['name'],
+            db_type=skill.get('db_type'),
+            category=skill.get('category', 'diagnosis'),
+            description=skill.get('description', ''),
+            prompt_template=skill.get('prompt_template', ''),
+            required_tools=skill.get('required_tools'),
+            knowledge_tags=skill.get('knowledge_tags'),
+            trigger_keywords=skill.get('trigger_keywords'),
+            source_session=session_id,
+            confidence=new_conf,
+            status=status,
+            priority=skill.get('priority', 0),
+        )
+        affected_skills += 1
+
+    # 记忆调整（只动该会话自动写入的记忆）
+    for mem in list_memory_by_source(source):
+        if feedback == 'up':
+            save_memory(
+                entity_type=mem.get('entity_type', 'general'),
+                entity_name=mem.get('entity_name', ''),
+                fact=mem.get('fact', ''),
+                category=mem.get('category', ''),
+                confidence=min(float(mem.get('confidence') or 0.5) + 0.1, 0.95),
+                source=source,
+            )
+        else:
+            delete_memory(mem['id'])
+        affected_memory += 1
+
+    # 纠正文本 → 高置信度偏好记忆
+    if correction:
+        save_memory(
+            entity_type='preference',
+            entity_name='',
+            fact=correction,
+            category='feedback',
+            confidence=0.9,
+            source='dba_feedback',
+        )
+
+    add_operation_log('Agent', 'DBA反馈', f'{feedback} ({session_id})')
+    return jsonify({
+        'message': '反馈已记录',
+        'affected_skills': affected_skills,
+        'affected_memory': affected_memory,
+    })
 
 
 # ==================== 工具Schema ====================
