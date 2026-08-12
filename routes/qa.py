@@ -273,29 +273,78 @@ def _build_qa_messages(db_type, question, use_rag, conversation_id=None, use_top
         system_results = []
         if use_topology:
             try:
-                from db.database import get_knowledge_files
+                from db.database import get_knowledge_files, get_db
                 system_files = get_knowledge_files('_system')
                 if system_files:
+                    # 先提取问题中的关键词（IP、主机名等），用于精确匹配
+                    keywords = _extract_keywords(question)
+
+                    # 关键词精确匹配：用 SQL LIKE 找到匹配文件和位置，
+                    # 然后从文件内容中截取足够大的上下文窗口（而非默认的 ±50 字符）
+                    keyword_results = []
+                    if keywords:
+                        conn = get_db()
+                        seen_keyword_chunks = set()
+                        for kw in keywords:
+                            rows = conn.execute(
+                                "SELECT id, filename, content_text FROM knowledge_files "
+                                "WHERE db_type='_system' AND content_text LIKE ?",
+                                (f'%{kw}%',)
+                            ).fetchall()
+                            for row in rows:
+                                content = row['content_text'] or ''
+                                idx = content.lower().find(kw.lower())
+                                if idx >= 0:
+                                    # 取 ±600 字符上下文（远大于默认 ±50），
+                                    # 确保能覆盖服务器信息 + 实例列表 + 租户信息
+                                    start = max(0, idx - 300)
+                                    end = min(len(content), idx + len(kw) + 600)
+                                    chunk_text = content[start:end]
+                                    chunk_key = (row['filename'], chunk_text[:100])
+                                    if chunk_key not in seen_keyword_chunks:
+                                        seen_keyword_chunks.add(chunk_key)
+                                        keyword_results.append({
+                                            'filename': row['filename'],
+                                            'context': chunk_text,
+                                            'similarity': 1.0  # 精确匹配标记
+                                        })
+
                     try:
                         from rag import Embedder
                         embedder = Embedder()
                         vector_results = embedder.similarity_search(question, db_type='_system', top_k=6)
+
+                        # 混合策略：关键词精确匹配 + 向量语义检索合并
+                        # BERT 模型无法有效区分不同 IP 地址，纯向量检索会把所有 IP chunk
+                        # 都视为"相似"而漏掉真正目标。因此拓扑检索始终双路并行。
+                        seen_chunks = set()
+                        merged_results = []
+
+                        # 第一路：关键词精确匹配结果（优先级高，排在前面）
+                        for r in keyword_results:
+                            chunk_key = (r['filename'], r['context'][:100])
+                            if chunk_key not in seen_chunks:
+                                seen_chunks.add(chunk_key)
+                                merged_results.append(r)
+
+                        # 第二路：向量检索结果（补充语义相关）
                         if vector_results:
-                            # 过滤低相似度结果
-                            filtered_results = [r for r in vector_results if r.get('similarity', 0) >= MIN_SIMILARITY_THRESHOLD]
-                            if filtered_results:
-                                system_results = [{
-                                    'filename': r['filename'],
-                                    'context': r['chunk_text'],
-                                    'similarity': r.get('similarity', 0)
-                                } for r in filtered_results]
-                                all_vector_results.extend(filtered_results)
-                        elif not embedder.is_available():
-                            # 模型不可用导致检索为空，回退到关键词检索（兜底）
-                            system_results = _search_with_keywords('_system', question)
+                            for r in vector_results:
+                                chunk_key = (r['filename'], r['chunk_text'][:100])
+                                if chunk_key not in seen_chunks and r.get('similarity', 0) >= MIN_SIMILARITY_THRESHOLD:
+                                    seen_chunks.add(chunk_key)
+                                    merged_results.append({
+                                        'filename': r['filename'],
+                                        'context': r['chunk_text'],
+                                        'similarity': r.get('similarity', 0)
+                                    })
+                                    all_vector_results.append(r)
+
+                        system_results = merged_results[:6]  # 最多取 6 条
+
                     except Exception:
                         # 向量检索异常，回退到关键词检索（兜底）
-                        system_results = _search_with_keywords('_system', question)
+                        system_results = keyword_results
             except Exception:
                 pass
 

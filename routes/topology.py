@@ -654,6 +654,14 @@ def import_servers():
             }), 207  # Multi-Status
 
         add_operation_log('集群拓扑', '批量导入服务器', f'成功导入 {success_count} 条服务器数据')
+
+        # 导入后自动重建拓扑向量索引，确保"集群拓扑增强"能检索到新数据
+        try:
+            from app import sync_topology_to_knowledge
+            sync_topology_to_knowledge()
+        except Exception as e:
+            print(f"[拓扑导入] 同步拓扑索引失败: {e}")
+
         return jsonify({
             'message': f'成功导入 {success_count} 条服务器数据',
             'success_count': success_count
@@ -697,6 +705,14 @@ def import_instances():
             }), 207  # Multi-Status
 
         add_operation_log('集群拓扑', '批量导入实例', f'成功导入 {success_count} 条实例数据')
+
+        # 导入后自动重建拓扑向量索引，确保"集群拓扑增强"能检索到新数据
+        try:
+            from app import sync_topology_to_knowledge
+            sync_topology_to_knowledge()
+        except Exception as e:
+            print(f"[拓扑导入] 同步拓扑索引失败: {e}")
+
         return jsonify({
             'message': f'成功导入 {success_count} 条实例数据',
             'success_count': success_count
@@ -741,6 +757,13 @@ def import_topology():
 
         add_operation_log('集群拓扑', '批量导入拓扑',
             f'服务器: {server_success} 条, 实例: {instance_success} 条')
+
+        # 导入后自动重建拓扑向量索引，确保"集群拓扑增强"能检索到新数据
+        try:
+            from app import sync_topology_to_knowledge
+            sync_topology_to_knowledge()
+        except Exception as e:
+            print(f"[拓扑导入] 同步拓扑索引失败: {e}")
 
         return jsonify({
             'message': '导入完成',

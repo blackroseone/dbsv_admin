@@ -254,10 +254,12 @@ async function loadDBTypes() {
             const select = document.getElementById(selectId);
             if (!select) return;
 
-            // 保留第一个选项
+            // 保留第一个选项（兼容 Firefox）
             const firstOption = select.options[0];
-            select.innerHTML = '';
-            select.appendChild(firstOption);
+            select.replaceChildren();
+            if (firstOption) {
+                select.appendChild(firstOption);
+            }
 
             dbTypes.forEach(type => {
                 const option = document.createElement('option');
@@ -296,7 +298,8 @@ async function loadDBTypes() {
 // 加载模型列表到所有模型选择下拉框
 async function loadModelSelects() {
     try {
-        const response = await fetch('/api/config/llm/models');
+        // 禁用缓存，避免 Firefox 缓存空响应导致下拉框不显示模型
+        const response = await fetch('/api/config/llm/models', { cache: 'no-cache' });
         const data = await response.json();
         const models = data.models || [];
 
@@ -305,18 +308,25 @@ async function loadModelSelects() {
             const select = document.getElementById(selectId);
             if (!select) return;
 
-            // 保存第一个选项的文本和值
-            const firstOptionText = select.options[0] ? select.options[0].textContent : '使用默认模型';
-            const firstOptionValue = select.options[0] ? select.options[0].value : '';
+            // 保存第一个选项的 DOM 引用（兼容 Firefox：innerHTML 清空 select 后，
+            // 新创建的 option 在某些 Firefox 版本上可能无法正常渲染，保留原始节点引用更可靠）
+            const firstOption = select.options[0];
+            const fallbackText = selectId === 'qa-model-select' ? '使用默认模型' : '使用默认模型';
+            const fallbackValue = select.options[0] ? select.options[0].value : '';
 
-            // 清空并重建下拉框
-            select.innerHTML = '';
+            // 清空下拉框（用 replaceChildren 替代 innerHTML，兼容性更好）
+            select.replaceChildren();
 
-            // 添加默认选项
-            const defaultOption = document.createElement('option');
-            defaultOption.value = firstOptionValue;
-            defaultOption.textContent = firstOptionText;
-            select.appendChild(defaultOption);
+            // 恢复默认选项（保留原始 DOM 节点引用进行 re-append）
+            if (firstOption) {
+                select.appendChild(firstOption);
+            } else {
+                // 兜底：如果原始节点丢失，创建新的
+                const defaultOption = document.createElement('option');
+                defaultOption.value = fallbackValue;
+                defaultOption.textContent = fallbackText;
+                select.appendChild(defaultOption);
+            }
 
             // 添加模型选项
             models.forEach(model => {
