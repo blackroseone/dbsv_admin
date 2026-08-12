@@ -9,6 +9,22 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v3.0.10 (2026-08-12)
+
+### 🧾 运维操作两分法 + 变更类审批闭环
+
+**运维操作统一为两类**：
+- **查询类**：从指定节点/数据库获取信息（只读，现有 ReAct 行为不变）。
+- **变更类**：修改参数/配置/执行变更命令，走通用审批流程，可迭代自愈：
+  `确认操作范围 → 创建操作计划 → DBA 审批 → 引擎执行 → 遇问题 → agent 自分析自查询（只读）→ 追加新计划 → 再审批 → 再执行 → …直至完成`
+
+- **操作计划**：模型输出 `{"type":"plan","plan":{title, scope, operations[{tool, parameters, impact, risk}], rollback}}`，引擎持久化到新增 `agent_plans` 表（status: pending/approved/rejected/expired）并发 `approval_required` SSE 事件暂停等待审批（超时 `AGENT_PLAN_TIMEOUT_MINUTES` 默认 15 分钟置 expired）。
+- **引擎按计划确定性执行**：审批通过后引擎逐项执行计划内已批准的 SQL/命令（会话现有连接），流式返回 `plan_operation_result`；**遇错即停**，报错交给模型自分析后追加新计划继续，直至任务完成。
+- **安全模型**：模型工具永远只读（Harness 拦截写调用）；写操作唯一通道 = 计划 → DBA 审批 → 引擎执行，无需提升操作级别。
+- **变更白名单**：`Harness.validate_change_sql` 仅放行参数/配置变更（ALTER SYSTEM SET / SET GLOBAL / ALTER SESSION SET / ALTER DATABASE ... SET），拦截 DROP/UPDATE/INSERT/GRANT 等；`validate_change_command` 仅放行 COMMAND_POLICY 内需 MAINTENANCE 的变更动作（srvctl start/stop 等），杜绝只读命令冒充变更。
+- **审批接口**：`POST /api/agent/approve`（approve/reject + 原因）。
+- **前端**：审批面板展示计划标题/影响范围/**临时操作项列表**（tool+SQL+影响+风险）+ 批准/拒绝按钮，引擎执行时逐项打勾/叉显示结果。
+
 ## v3.0.9 (2026-08-12)
 
 ### ⚡ Agent 强化（并行只读 + 上下文压缩 + 迭代预算）
@@ -798,6 +814,12 @@
 - 主从节点颜色区分
 - 拓扑图导出为图片
 - **容灾视图（跨机房复制关系可视化）**：支持展示实例间的同步/异步复制关系，横向排列机房，用连线表示复制链路
+
+### 运维智能化（Agent）
+- **变更审批流的集群多实例扩展**：get_cluster_info 拓扑枚举（集群→租户→实例）+ 全局只读/高权凭据对（加密存储）+ 按实例 host/port 动态建连，接入现有变更审批流程支持跨实例批量变更；多节点 SSH 批量执行、计划回滚自动执行、审批通知/历史审计页
+- **蓝鲸监控表结构接入**：用户提供蓝鲸库建表语句/字段清单后，填 `tools/monitor_blueking.py` 的 `BlueKingMetrics.QUERIES` 后端到端拉数据
+- **Hermes 后续**：技能多模型竞争/自修复、记忆定期重嵌入与去重归档、并行工具前端逐结果实时流
+- **表名前缀标准化**：无前缀表（集群拓扑 resource_pools/clusters/servers/instances/tenants/instance_relations 等）统一加模块前缀（topo_*），方向待定（全量重命名 / 仅新表前缀 / 只读视图别名）
 
 ### 其他优化方向
 - 用户认证与权限管理

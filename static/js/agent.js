@@ -341,6 +341,21 @@ function handleAgentEvent(event) {
         case 'observing':
             renderAgentObservation(event.observation);
             break;
+        case 'approval_required':
+            renderAgentApproval(event);
+            break;
+        case 'approval_granted':
+            renderAgentApprovalGranted(event);
+            break;
+        case 'approval_rejected':
+            renderAgentApprovalRejected(event);
+            break;
+        case 'approval_expired':
+            renderAgentApprovalExpired(event);
+            break;
+        case 'plan_operation_result':
+            renderPlanOperationResult(event);
+            break;
         case 'concluding_start':
             showAgentConclusion();
             break;
@@ -600,6 +615,148 @@ function finalizeAgentConclusion() {
     if (conclusionDiv) {
         conclusionDiv.id = '';
         showAgentFeedback();
+    }
+}
+
+// ==================== 变更类操作审批 ====================
+
+function renderAgentApproval(event) {
+    const chat = document.getElementById('agent-chat');
+    const plan = event.plan || {};
+    const ops = plan.operations || [];
+
+    const div = document.createElement('div');
+    div.className = 'agent-message approval';
+    div.id = `agent-approval-${event.plan_id}`;
+    div.dataset.planId = event.plan_id;
+
+    const opsHtml = ops.map((op, i) => {
+        const params = op.parameters || {};
+        const paramText = op.tool === 'execute_command'
+            ? (params.command || '')
+            : (params.sql || '');
+        const riskClass = `risk-${(op.risk || 'low').toLowerCase()}`;
+        return `
+            <div class="plan-op" data-op="${i + 1}">
+                <span class="op-index">${i + 1}</span>
+                <span class="op-tool">${escapeHtml(op.tool || '')}</span>
+                <code class="op-params">${escapeHtml(paramText)}</code>
+                <div class="op-meta">
+                    <span class="op-impact">${escapeHtml(op.impact || '')}</span>
+                    <span class="op-risk ${riskClass}">${escapeHtml(op.risk || 'low')}</span>
+                </div>
+                <span class="op-status"></span>
+            </div>`;
+    }).join('');
+
+    div.innerHTML = `
+        <div class="message-header">
+            <span class="icon">🧾</span>
+            <span class="label">操作计划待审批</span>
+        </div>
+        <div class="message-content">
+            <div class="plan-title">${escapeHtml(plan.title || '操作计划')}</div>
+            ${plan.scope ? `<div class="plan-scope">🎯 影响范围：${escapeHtml(plan.scope)}</div>` : ''}
+            <div class="plan-ops">${opsHtml || '<div class="empty-message">计划无操作项</div>'}</div>
+            ${plan.rollback ? `<div class="plan-rollback">↩️ 回滚：${escapeHtml(plan.rollback)}</div>` : ''}
+            <div class="plan-actions">
+                <button class="btn btn-primary" onclick="approvePlan(${event.plan_id}, 'approve')">✅ 批准</button>
+                <button class="btn btn-danger" onclick="approvePlan(${event.plan_id}, 'reject')">❌ 拒绝</button>
+            </div>
+        </div>
+    `;
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+}
+
+async function approvePlan(planId, action) {
+    let comment = '';
+    if (action === 'reject') {
+        comment = prompt('请输入拒绝原因（可选）：') || '';
+    }
+    const box = document.getElementById(`agent-approval-${planId}`);
+    try {
+        const response = await fetch('/api/agent/approve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ plan_id: planId, action, comment })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            showToast(data.error || '审批提交失败', 'error');
+            return;
+        }
+        showToast(data.message || '审批已提交', 'success');
+        if (box) {
+            const header = box.querySelector('.message-header .label');
+            const actions = box.querySelector('.plan-actions');
+            if (actions) actions.innerHTML = '<span class="approval-waiting">⏳ 等待执行...</span>';
+            if (header) header.textContent = action === 'approve' ? '✅ 已批准，执行中' : '❌ 已拒绝';
+        }
+    } catch (error) {
+        showToast('审批提交失败', 'error');
+    }
+}
+
+function renderAgentApprovalGranted(event) {
+    const box = document.getElementById(`agent-approval-${event.plan_id}`);
+    if (!box) return;
+    const header = box.querySelector('.message-header .label');
+    if (header) header.textContent = '✅ 已批准，开始执行';
+    const actions = box.querySelector('.plan-actions');
+    if (actions) actions.remove();
+}
+
+function renderAgentApprovalRejected(event) {
+    const box = document.getElementById(`agent-approval-${event.plan_id}`);
+    if (!box) return;
+    const header = box.querySelector('.message-header .label');
+    if (header) header.textContent = '❌ 已拒绝';
+    const actions = box.querySelector('.plan-actions');
+    if (actions) actions.remove();
+    const content = box.querySelector('.message-content');
+    if (content && event.comment) {
+        content.insertAdjacentHTML('beforeend', `<div class="plan-reject-comment">拒绝原因：${escapeHtml(event.comment)}</div>`);
+    }
+}
+
+function renderAgentApprovalExpired(event) {
+    const box = document.getElementById(`agent-approval-${event.plan_id}`);
+    if (!box) return;
+    const header = box.querySelector('.message-header .label');
+    if (header) header.textContent = '⏰ 审批超时';
+    const actions = box.querySelector('.plan-actions');
+    if (actions) actions.remove();
+}
+
+function renderPlanOperationResult(event) {
+    const box = document.getElementById(`agent-approval-${event.plan_id}`);
+    if (!box) return;
+    const opRow = box.querySelector(`.plan-op[data-op="${event.index}"]`);
+    if (!opRow) return;
+    const statusEl = opRow.querySelector('.op-status');
+    const result = event.result || {};
+
+    if (event.status === 'success') {
+        opRow.classList.add('op-success');
+        if (statusEl) statusEl.textContent = '✅';
+        let summary = '';
+        if (result.row_count !== undefined) summary = `${result.row_count} 行`;
+        else if (result.stdout !== undefined) summary = '已执行';
+        if (summary && statusEl) statusEl.textContent = `✅ ${summary}`;
+    } else if (event.status === 'error') {
+        opRow.classList.add('op-error');
+        if (statusEl) statusEl.textContent = '❌';
+        const errMsg = (result.error || '') || (event.error || '');
+        if (errMsg) {
+            opRow.insertAdjacentHTML('beforeend', `<div class="op-error-msg">${escapeHtml(errMsg)}</div>`);
+        }
+    } else if (event.status === 'rejected') {
+        opRow.classList.add('op-error');
+        if (statusEl) statusEl.textContent = '⛔';
+        if (event.error) {
+            opRow.insertAdjacentHTML('beforeend', `<div class="op-error-msg">${escapeHtml(event.error)}</div>`);
+        }
     }
 }
 

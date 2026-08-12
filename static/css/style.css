@@ -5471,6 +5471,154 @@ body {
     font-size: 0.82rem;
 }
 
+/* 变更类操作审批 */
+.agent-message.approval {
+    border-color: var(--primary-color);
+}
+
+.plan-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 6px;
+}
+
+.plan-scope {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.plan-ops {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.plan-op {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-module);
+    font-size: 0.82rem;
+}
+
+.plan-op .op-index {
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--primary-color);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.72rem;
+}
+
+.plan-op .op-tool {
+    flex-shrink: 0;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.plan-op .op-params {
+    flex: 1;
+    word-break: break-all;
+    color: var(--text-primary);
+    background: var(--bg-input, var(--bg-card));
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.78rem;
+}
+
+.plan-op .op-meta {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    align-items: flex-end;
+    font-size: 0.75rem;
+}
+
+.plan-op .op-impact {
+    color: var(--text-secondary);
+}
+
+.plan-op .op-risk {
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+}
+
+.plan-op .op-risk.risk-high {
+    background: var(--bg-error, #fdecea);
+    color: #e74c3c;
+}
+
+.plan-op .op-risk.risk-medium {
+    background: #fff4e5;
+    color: #e67e22;
+}
+
+.plan-op .op-risk.risk-low {
+    background: #e8f7ef;
+    color: #27ae60;
+}
+
+.plan-op .op-status {
+    flex-shrink: 0;
+    color: var(--text-secondary);
+}
+
+.plan-op.op-success {
+    border-color: #27ae60;
+}
+
+.plan-op.op-error {
+    border-color: #e74c3c;
+}
+
+.plan-op .op-error-msg {
+    flex-basis: 100%;
+    color: #e74c3c;
+    font-size: 0.78rem;
+    word-break: break-all;
+}
+
+.plan-rollback {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.plan-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.plan-actions .btn {
+    font-size: 0.82rem;
+}
+
+.approval-waiting {
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+}
+
+.plan-reject-comment {
+    margin-top: 8px;
+    padding: 6px 8px;
+    border-left: 3px solid #e74c3c;
+    background: var(--bg-module);
+    font-size: 0.8rem;
+    color: #e74c3c;
+}
+
 .message-header {
     display: flex;
     align-items: center;

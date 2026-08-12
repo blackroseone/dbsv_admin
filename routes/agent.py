@@ -328,6 +328,32 @@ def delete_memory_record(memory_id):
     return jsonify({'message': '删除成功'})
 
 
+# ==================== 操作计划审批 ====================
+
+@agent_bp.route('/api/agent/approve', methods=['POST'])
+def approve_plan():
+    """审批操作计划（变更类）：approve 放行引擎执行，reject 拒绝并附原因。"""
+    data = request.get_json() or {}
+    plan_id = data.get('plan_id')
+    action = data.get('action')  # 'approve' | 'reject'
+    comment = (data.get('comment') or '').strip()
+
+    if not plan_id or action not in ('approve', 'reject'):
+        return jsonify({'error': '缺少plan_id或action'}), 400
+
+    from db.database import get_plan, update_plan_status
+    plan = get_plan(plan_id)
+    if not plan:
+        return jsonify({'error': '计划不存在'}), 404
+    if plan['status'] != 'pending':
+        return jsonify({'error': f"计划已处理（{plan['status']}）"}), 400
+
+    status = 'approved' if action == 'approve' else 'rejected'
+    update_plan_status(plan_id, status, approved_by='dba', comment=comment)
+    add_operation_log('Agent', '审批操作计划', f'{status} {plan.get("title", "")[:40]}')
+    return jsonify({'message': '审批已提交', 'plan_id': plan_id, 'status': status})
+
+
 # ==================== DBA 反馈闭环 ====================
 
 @agent_bp.route('/api/agent/feedback', methods=['POST'])

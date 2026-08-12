@@ -1,10 +1,11 @@
-"""Agent核心引擎 - ReAct循环 + 知识库增强 + Skills指导 + 学习闭环"""
+"""Agent核心引擎 - ReAct循环 + 知识库增强 + Skills指导 + 学习闭环 + 变更审批流"""
 import json
 import uuid
 import re
+import time
 import threading
 from typing import Dict, List, Optional, Generator, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from db.database import get_db
 from utils import call_llm
@@ -135,6 +136,15 @@ class SmartOpsAgent:
                        "warning": "⚠️ 检测到重复执行相同操作，停止继续，直接给出结论"}
                 self.state.add_message('user', "⚠️ 检测到重复执行相同操作，请直接给出结论，不要再调用工具")
                 break
+
+            # 变更类：识别操作计划 → 审批暂停 → 获批执行 / 拒绝继续 / 超时收尾
+            plan_obj = next((a.get('plan') for a in actions if a.get('type') == 'plan'), None)
+            if plan_obj:
+                plan_result = yield from self._handle_plan_approval(plan_obj)
+                if plan_result == 'expired':
+                    break
+                # 获批执行（计划操作已记步骤）或拒绝后，本轮不执行其他工具，进入下一轮思考
+                continue
 
             # Planning
             if len(actions) == 1:
@@ -272,6 +282,15 @@ class SmartOpsAgent:
 2. Action: 调用合适的工具获取数据（格式: {"tool": "xxx", "parameters": {...}}）
 3. Observation: 观察执行结果
 4. Thought: 基于结果继续分析或总结
+
+## 变更类操作（需审批）
+涉及修改参数/配置/执行变更命令（如 ALTER SYSTEM SET、SET GLOBAL、srvctl start/stop）属于**变更类**。
+- 变更类操作必须先输出**操作计划**等待 DBA 审批，格式：
+```json
+{"type": "plan", "plan": {"title": "计划标题", "scope": "影响范围", "operations": [{"tool": "query_database", "parameters": {"sql": "ALTER SYSTEM SET ..."}, "impact": "影响说明", "risk": "high/medium/low"}], "rollback": "回滚方法"}}
+```
+- 审批通过后引擎按计划执行；执行中遇问题请用只读工具自行分析探索，再追加新的操作计划等待审批，直至任务完成。
+- 不得直接调用工具执行变更 SQL/命令（会被安全校验拦截）。
 
 ## 输出格式
 当你需要调用工具时，请使用以下JSON格式：
@@ -442,9 +461,14 @@ class SmartOpsAgent:
             candidate = thought[start:end + 1]
             try:
                 obj = json.loads(candidate)
-                if isinstance(obj, dict) and obj.get('tool'):
-                    calls.append(obj)
-                    if len(calls) >= max_calls:
+                if isinstance(obj, dict):
+                    if obj.get('tool'):
+                        calls.append(obj)
+                        if len(calls) >= max_calls:
+                            break
+                    elif obj.get('type') == 'plan' and isinstance(obj.get('plan'), dict):
+                        # 变更类操作计划是独立动作，遇到即止
+                        calls.append(obj)
                         break
             except (json.JSONDecodeError, ValueError):
                 pass
@@ -506,6 +530,105 @@ class SmartOpsAgent:
         result = self._execute_action(action)
         return {**item, 'observation': self._format_result(result),
                 'result': result, 'warning': warning}
+
+    # ==================== 变更类操作：审批流 ====================
+
+    def _handle_plan_approval(self, plan: Dict) -> Generator[Dict, None, str]:
+        """变更类操作审批流：创建计划 → 暂停轮询审批 → 获批执行 / 拒绝继续 / 超时收尾。
+
+        返回 'approved' / 'rejected' / 'expired'。
+        """
+        from db.database import create_plan, get_plan, update_plan_status
+        plan_id = create_plan(self.session_id, plan.get('title', '操作计划'), plan)
+        yield {"type": "approval_required", "plan_id": plan_id, "plan": plan}
+
+        from config import AGENT_PLAN_TIMEOUT_MINUTES
+        deadline = datetime.now() + timedelta(minutes=int(AGENT_PLAN_TIMEOUT_MINUTES))
+        while True:
+            if datetime.now() > deadline:
+                update_plan_status(plan_id, 'expired')
+                yield {"type": "approval_expired", "plan_id": plan_id}
+                return 'expired'
+            row = get_plan(plan_id)
+            status = (row or {}).get('status', 'expired')
+            if status == 'approved':
+                break
+            if status == 'rejected':
+                comment = (row or {}).get('comment', '') or ''
+                yield {"type": "approval_rejected", "plan_id": plan_id, "comment": comment}
+                self.state.add_message(
+                    'user', f"操作计划被拒绝：{comment or '未提供原因'}。"
+                            f"可基于反馈调整计划或只读探索，禁止执行写操作。")
+                return 'rejected'
+            time.sleep(2)
+
+        yield {"type": "approval_granted", "plan_id": plan_id}
+        self.state.add_message('user', "操作计划已批准。开始执行已批准的操作。")
+        yield from self._execute_plan_operations(plan)
+        return 'approved'
+
+    def _execute_plan_operations(self, plan: Dict) -> Generator[Dict, None, None]:
+        """按计划确定性执行已批准的变更操作（会话现有连接）。遇错即停。
+
+        逐 op：Harness 变更白名单二次校验 → load 连接 → run_sql/run_ssh_command →
+        流式结果 + 记录 AgentStep + 观察回流历史。失败即停止剩余操作，交给模型自分析。
+        """
+        from agent.connectors import load_db_conn, load_ssh_conn, run_sql, run_ssh_command
+        operations = plan.get('operations') or []
+        db_type = self._get_db_type()
+
+        for i, op in enumerate(operations, 1):
+            tool = op.get('tool')
+            params = op.get('parameters') or {}
+            if tool == 'query_database':
+                is_safe, err = Harness.validate_change_sql(params.get('sql', ''))
+            elif tool == 'execute_command':
+                is_safe, err = Harness.validate_change_command(params.get('command', ''), db_type)
+            else:
+                is_safe, err = False, f'计划操作不支持的工具: {tool}'
+
+            if not is_safe:
+                observation = f"❌ 计划操作 {i} 校验失败: {err}"
+                yield {"type": "plan_operation_result", "index": i, "tool": tool,
+                       "parameters": params, "status": "rejected", "error": err}
+                self.state.add_message('user', observation)
+                self._persist_plan_step(i, op, observation, None)
+                break  # 遇错即停
+
+            if tool == 'query_database':
+                conn_info, load_err = load_db_conn(self.db_conn_id)
+                if load_err:
+                    result = {"error": load_err}
+                else:
+                    result = run_sql(conn_info, params.get('sql', ''))
+            else:
+                conn_info, load_err = load_ssh_conn(self.ssh_conn_id)
+                if load_err:
+                    result = {"error": load_err}
+                else:
+                    result = run_ssh_command(conn_info, params.get('command', ''),
+                                             timeout=params.get('timeout', 30))
+
+            observation = self._format_result(result)
+            is_error = 'error' in result
+            yield {"type": "plan_operation_result", "index": i, "tool": tool,
+                   "parameters": params, "status": "error" if is_error else "success",
+                   "result": result}
+            self.state.add_message('user', f"计划操作 {i} 观察结果:\n{observation}")
+            self._persist_plan_step(i, op, observation, result)
+            if is_error:
+                break  # 遇错即停，交给模型自分析
+
+    def _persist_plan_step(self, index: int, op: Dict,
+                           observation: str, result: Optional[Dict]) -> None:
+        """把单个计划操作记录为执行步骤（消耗一个步数预算）"""
+        step = self.state.add_step(
+            AgentPhase.EXECUTING,
+            action={'tool': op.get('tool'), 'parameters': op.get('parameters')},
+            observation=observation,
+        )
+        self._persist_step(step)
+        self.state.current_step += 1
 
     def _validate_action(self, action: Dict) -> Tuple[bool, str]:
         """验证动作安全性"""

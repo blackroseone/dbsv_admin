@@ -16,7 +16,7 @@ COMMANDS_DIR = os.path.join(DATA_DIR, 'commands')
 # ==================== 应用配置 ====================
 
 # 版本号
-APP_VERSION = '3.0.9'
+APP_VERSION = '3.0.10'
 
 # Secret Key（生产环境应从环境变量读取）
 SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dbsv-admin-dev-secret-key-change-in-production')
@@ -47,6 +47,9 @@ AGENT_MAX_STEPS = int(os.environ.get('DB_TOOL_AGENT_MAX_STEPS', '10'))
 
 # 对话历史字符预算：超过则强制收敛到结论（防超长 prompt）
 AGENT_MAX_HISTORY_CHARS = int(os.environ.get('DB_TOOL_AGENT_MAX_HISTORY_CHARS', '12000'))
+
+# 变更类操作计划审批超时（分钟）：DBA 未在时限内审批则计划置 expired
+AGENT_PLAN_TIMEOUT_MINUTES = int(os.environ.get('DB_TOOL_AGENT_PLAN_TIMEOUT_MINUTES', '15'))
 
 # ==================== RAG 配置 ====================
 

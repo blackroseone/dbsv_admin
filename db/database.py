@@ -321,6 +321,20 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_agent_memory_entity
             ON agent_memory(entity_type, entity_name);
 
+        -- Agent操作计划（变更类操作：DBA 审批后由引擎执行）
+        CREATE TABLE IF NOT EXISTS agent_plans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            plan_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            approved_by TEXT DEFAULT '',
+            approved_at TEXT,
+            comment TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_plans_session ON agent_plans(session_id);
+
         -- ==================== 监控指标数据 ====================
         -- 由外部监控平台中间脚本（monitor_blueking.py 等）拉取落库，
         -- 供运维 Agent 查询（get_monitor_metrics）与展示/评分消费。
@@ -2075,3 +2089,51 @@ def list_memory_by_source(source):
         (source,)
     ).fetchall()
     return [_memory_from_row(r) for r in rows]
+
+
+# ==================== Agent操作计划 CRUD（变更审批流） ====================
+
+def _plan_from_row(row) -> dict:
+    d = dict(row)
+    try:
+        d['plan'] = json.loads(d.pop('plan_json') or '{}')
+    except (TypeError, ValueError):
+        d['plan'] = {}
+    return d
+
+
+def create_plan(session_id, title, plan) -> int:
+    """创建操作计划（初始 pending）。返回计划 id。"""
+    conn = get_db()
+    cur = conn.execute(
+        "INSERT INTO agent_plans (session_id, title, plan_json) VALUES (?, ?, ?)",
+        (session_id, title, json.dumps(plan, ensure_ascii=False))
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_plan(plan_id) -> dict:
+    """按 id 获取计划（plan_json 解码为 plan 字段）"""
+    conn = get_db()
+    row = conn.execute("SELECT * FROM agent_plans WHERE id=?", (plan_id,)).fetchone()
+    return _plan_from_row(row) if row else None
+
+
+def update_plan_status(plan_id, status, approved_by='', comment=''):
+    """更新计划状态（pending→approved/rejected/expired）。"""
+    conn = get_db()
+    conn.execute(
+        "UPDATE agent_plans SET status=?, approved_by=?, approved_at=CURRENT_TIMESTAMP, comment=? WHERE id=?",
+        (status, approved_by, comment, plan_id)
+    )
+    conn.commit()
+
+
+def list_plans(session_id):
+    """列出会话的操作计划（含计划内容）"""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM agent_plans WHERE session_id=? ORDER BY id DESC", (session_id,)
+    ).fetchall()
+    return [_plan_from_row(r) for r in rows]

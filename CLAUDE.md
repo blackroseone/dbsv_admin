@@ -35,7 +35,7 @@ python -c "from app import create_app; app = create_app(); print('OK')"
 
 - 首次启动会自动建库（`data/db_tool.db`）、执行 JSON→SQLite 迁移、扫描 `data/knowledge/` 同步新文件。
 - `temp_scripts/` 下是历史一次性调试脚本（`test_*.py`、`check_*.py` 等），**不是**正式测试，不要当测试套件使用。
-- 版本号以 `config.py` 的 `APP_VERSION` 为准（当前 3.0.9），README 里的版本号可能过期。
+- 版本号以 `config.py` 的 `APP_VERSION` 为准（当前 3.0.10），README 里的版本号可能过期。
 
 ## 架构总览
 

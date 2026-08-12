@@ -208,6 +208,98 @@ class Harness:
 
         return True, None
 
+    # ==================== 变更类操作校验（审批后执行前二次校验） ====================
+
+    # 参数/配置变更 SQL 白名单（主导语句必须命中其一）
+    CHANGE_SQL_WHITELIST = [
+        (re.compile(r'ALTER\s+SYSTEM\s+SET', re.I), 'ALTER SYSTEM SET'),
+        (re.compile(r'SET\s+GLOBAL', re.I), 'SET GLOBAL'),
+        (re.compile(r'ALTER\s+SESSION\s+SET', re.I), 'ALTER SESSION SET'),
+        (re.compile(r'ALTER\s+DATABASE\s+\S+\s+SET', re.I), 'ALTER DATABASE SET'),
+    ]
+    # 变更 SQL 危险关键字（一旦出现即拒绝；ALTER 由白名单模式管控，不入黑名单）
+    CHANGE_SQL_BLACKLIST = {'DROP', 'DELETE', 'UPDATE', 'INSERT', 'TRUNCATE',
+                            'GRANT', 'REVOKE', 'CREATE', 'EXEC', 'EXECUTE',
+                            'OUTFILE', 'LOAD_FILE', 'RENAME'}
+
+    @classmethod
+    def validate_change_sql(cls, sql: str) -> Tuple[bool, str]:
+        """校验变更 SQL：仅放行参数/配置变更语句（ALTER SYSTEM SET / SET GLOBAL /
+        ALTER SESSION SET / ALTER DATABASE ... SET）。
+
+        用于操作计划经 DBA 审批后、引擎执行前的二次校验，防止被污染的计划
+        执行危险语句（DROP/UPDATE/INSERT 等）。
+        """
+        if not sql or not sql.strip():
+            return False, "SQL为空"
+        try:
+            clean_sql = sqlparse.format(sql, strip_comments=True, reindent=False)
+        except Exception:
+            clean_sql = sql
+        clean_sql = re.sub(r'#[^\n]*', ' ', clean_sql)
+
+        matched = None
+        for pat, label in cls.CHANGE_SQL_WHITELIST:
+            if pat.search(clean_sql):
+                matched = label
+                break
+        if matched is None:
+            return False, ("仅允许参数/配置变更语句"
+                           "（ALTER SYSTEM SET / SET GLOBAL / ALTER SESSION SET / ALTER DATABASE ... SET）")
+
+        try:
+            parsed = sqlparse.parse(clean_sql)
+        except Exception as e:
+            return False, f"SQL解析失败: {e}"
+        for statement in parsed:
+            for token in statement.flatten():
+                if token.is_whitespace or token.ttype in sqlparse.tokens.Comment:
+                    continue
+                if token.ttype in sqlparse.tokens.String:
+                    continue
+                if token.value.upper() in cls.CHANGE_SQL_BLACKLIST:
+                    return False, f"检测到危险关键字: {token.value}"
+        return True, None
+
+    @classmethod
+    def validate_change_command(cls, command: str, db_type: str) -> Tuple[bool, str]:
+        """校验变更命令：必须在 COMMAND_POLICY 白名单内、级别 ≥ MAINTENANCE、
+        且含需审批的变更类动作（blocked_actions 中的 start/stop 等），
+        而非只读 check/status。独立校验全局危险特征。
+
+        注意：不依赖 validate_command 的只读 actions 检查（该检查会把
+        start/stop 等变更动作一并拒绝）；变更命令走本方法独立语义。
+        """
+        if not command or not command.strip():
+            return False, "命令为空"
+        if re.search(r'[\n\r\t\x00-\x08\x0b\x0c\x0e-\x1f]', command):
+            return False, "检测到危险控制字符"
+
+        cmd_parts = command.strip().split()
+        if not cmd_parts:
+            return False, "空命令"
+        cmd_name = cmd_parts[0]
+        policy = cls.COMMAND_POLICY.get(db_type, {}).get(cmd_name)
+        if policy is None:
+            return False, f"命令 {cmd_name} 不在白名单中（数据库类型: {db_type}）"
+
+        min_level = policy.get('level', OperationLevel.READONLY)
+        if cls.LEVEL_ORDER[OperationLevel.MAINTENANCE] < cls.LEVEL_ORDER[min_level]:
+            return False, f"命令 {cmd_name} 需要级别 {min_level.value}"
+
+        blocked = policy.get('blocked_actions', {})
+        if not any(arg in blocked for arg in cmd_parts[1:]):
+            return False, "命令不含需审批的变更类动作（start/stop/…）"
+
+        for arg in cmd_parts[1:]:
+            if any(m in arg for m in cls.DANGEROUS_METACHARS):
+                return False, f"检测到危险参数: {arg}"
+            if arg in cls.DANGEROUS_TOKENS:
+                return False, f"检测到危险参数: {arg}"
+            if '..' in arg:
+                return False, f"检测到危险路径参数: {arg}"
+        return True, None
+
     @classmethod
     def get_allowed_commands(cls, db_type: str) -> Dict[str, List[str]]:
         """获取允许执行的命令列表（命令名 → 允许的动作词/要求级别）"""
