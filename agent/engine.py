@@ -1,7 +1,8 @@
-"""Agent核心引擎 - ReAct循环 + 知识库增强 + Skills指导"""
+"""Agent核心引擎 - ReAct循环 + 知识库增强 + Skills指导 + 学习闭环"""
 import json
 import uuid
 import re
+import threading
 from typing import Dict, List, Optional, Generator, Tuple
 from datetime import datetime
 
@@ -73,9 +74,12 @@ class SmartOpsAgent:
             user_question, self._get_db_type()
         )
 
-        # 3. 构建system prompt（注入知识库 + 知识图谱 + Skills）
+        # 2.5 长期记忆召回（环境上下文）
+        memory_refs = self._recall_memory(user_question)
+
+        # 3. 构建system prompt（注入知识库 + 知识图谱 + Skills + 环境上下文）
         kg_context = self._retrieve_kg_context(user_question, chunk_ids) if chunk_ids else None
-        system_prompt = self._build_system_prompt(knowledge_refs, matched_skills, kg_context)
+        system_prompt = self._build_system_prompt(knowledge_refs, matched_skills, kg_context, memory_refs)
 
         # 4. ReAct循环
         # 用户问题作为对话起点；每步的思考与观察结果通过 add_message 回流，
@@ -145,6 +149,13 @@ class SmartOpsAgent:
         self.state.set_status(AgentStatus.COMPLETED)
         self._persist_session(AgentStatus.COMPLETED)
 
+        # 学习闭环：成功诊断 → 后台沉淀技能 + 写长期记忆（不阻塞流式返回）
+        threading.Thread(
+            target=self._crystallize_after_success,
+            args=(user_question, conclusion),
+            daemon=True,
+        ).start()
+
         yield {"type": "done"}
 
     def _retrieve_knowledge_strict(self, query: str, top_k: int = 5) -> Dict:
@@ -205,7 +216,8 @@ class SmartOpsAgent:
 
     def _build_system_prompt(self, knowledge_refs: List[Dict],
                             skills: List[Dict],
-                            kg_context: Optional[Dict] = None) -> str:
+                            kg_context: Optional[Dict] = None,
+                            memory_refs: Optional[List[Dict]] = None) -> str:
         """构建system prompt（注入知识库 + 知识图谱 + Skills）"""
         prompt = """你是一个智能数据库运维Agent。你的任务是根据用户的指令，自主分析、自主决策、自主执行数据库运维任务。
 
@@ -249,13 +261,36 @@ class SmartOpsAgent:
                 prompt += f"[{i}] {ref['file']} (相似度: {ref['similarity']})\n"
                 prompt += f"{ref['chunk']}\n\n"
 
-        # 注入Skills
+        # 注入Skills（自动沉淀技能全文注入，最多 2 个；内置技能 200 字预览）
         if skills:
             prompt += "\n## 适用技能\n"
+            auto_injected = 0
             for skill in skills:
                 prompt += f"- {skill['name']}: {skill['description']}\n"
-                if skill.get('prompt_template'):
-                    prompt += f"  操作指南: {skill['prompt_template'][:200]}...\n"
+                template = skill.get('prompt_template') or ''
+                is_auto = skill.get('usage_count') is not None  # DB 自动沉淀技能
+                if is_auto:
+                    try:
+                        from db.database import bump_skill_usage
+                        bump_skill_usage(skill['name'])
+                    except Exception:
+                        pass
+                    if template and auto_injected < 2:
+                        prompt += f"  操作指南:\n{template}\n"
+                        auto_injected += 1
+                    elif template:
+                        prompt += f"  操作指南: {template[:200]}...\n"
+                elif template:
+                    prompt += f"  操作指南: {template[:200]}...\n"
+
+        # 注入长期记忆（环境上下文）
+        if memory_refs:
+            prompt += "\n## 环境上下文（历史记录，供参考）\n"
+            for mem in memory_refs[:8]:
+                entity = mem.get('entity_name') or '通用'
+                prompt += f"- [{mem.get('entity_type', 'general')}:{entity}] {mem.get('fact', '')[:150]}\n"
+                if (mem.get('confidence') or 1) < 0.7:
+                    prompt += "  （低置信度，需现场验证）\n"
 
         # 注入知识图谱上下文
         if kg_context:
@@ -514,6 +549,89 @@ class SmartOpsAgent:
 
         response, _ = call_llm(messages, model_id=self.model_id)
         return response
+
+    def _recall_memory(self, question: str) -> List[Dict]:
+        """召回长期记忆（环境上下文），并累加命中计数"""
+        try:
+            from db.database import search_memory_by_keyword, bump_memory_usage
+            refs = search_memory_by_keyword(question, limit=8)
+            for r in refs:
+                bump_memory_usage(r['id'])
+            return refs
+        except Exception as e:
+            print(f"[Agent] 记忆召回失败: {e}")
+            return []
+
+    def _crystallize_after_success(self, user_question: str, conclusion: str) -> None:
+        """学习闭环：成功诊断后沉淀技能 + 写入长期记忆。
+
+        条件：至少 2 次工具调用且无执行出错。运行于后台线程，
+        任何异常都不影响已返回的诊断结果。
+        """
+        try:
+            tool_steps = [s for s in self.state.steps if s.action and s.action.get('tool')]
+            if len(tool_steps) < 2:
+                return
+            if any('❌ 执行出错' in (s.observation or '') for s in tool_steps):
+                return
+
+            trace = {
+                'question': user_question,
+                'db_type': self._get_db_type(),
+                'session_id': self.session_id,
+                'model_id': self.model_id,
+                'steps': [
+                    {'thought': s.thought, 'action': s.action, 'observation': s.observation}
+                    for s in tool_steps
+                ],
+                'conclusion': conclusion,
+            }
+            skill_name = self.skill_manager.crystallize_skill(trace)
+            if skill_name:
+                print(f"[Agent] 已沉淀技能: {skill_name}")
+
+            self._write_memory(user_question, conclusion)
+        except Exception as e:
+            print(f"[Agent] 学习闭环失败（不影响诊断）: {e}")
+
+    def _write_memory(self, user_question: str, conclusion: str) -> None:
+        """把本次诊断的环境事实写入长期记忆（低置信度标记，source=agent_session）"""
+        try:
+            from db.database import save_memory
+            entity_name, entity_type = self._extract_entity(user_question)
+            fact = self._condense_fact(conclusion)
+            if not fact:
+                return
+            save_memory(
+                entity_type=entity_type,
+                entity_name=entity_name,
+                fact=fact,
+                category='incident',
+                confidence=0.5,
+                source=f'agent_session:{self.session_id}',
+            )
+        except Exception as e:
+            print(f"[Agent] 记忆写入失败: {e}")
+
+    @staticmethod
+    def _extract_entity(question: str) -> Tuple[str, str]:
+        """从问题提取对象（主机IP/实例名），无则 (空, general)"""
+        ip = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', question)
+        if ip:
+            return ip.group(0), 'host'
+        host = re.search(
+            r'([a-zA-Z][a-zA-Z0-9_-]*-(?:prod|test|dev|mysql|oracle|dm)[a-zA-Z0-9_-]*)',
+            question, re.I)
+        if host:
+            return host.group(1), 'db_instance'
+        return '', 'general'
+
+    @staticmethod
+    def _condense_fact(conclusion: str, max_len: int = 200) -> str:
+        """把结论压成一条可检索的事实句（去换行/冗余）"""
+        if not conclusion:
+            return ''
+        return re.sub(r'\s+', ' ', conclusion).strip()[:max_len]
 
     def _get_db_type(self) -> str:
         """获取当前数据库类型"""

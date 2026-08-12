@@ -452,6 +452,23 @@
                             <h3>📋 会话历史</h3>
                             <div id="agent-session-list" class="session-list"></div>
                         </div>
+
+                        <!-- 知识沉淀（技能库 + 长期记忆） -->
+                        <div class="agent-section">
+                            <h3>🧠 知识沉淀</h3>
+                            <div class="knowledge-tabs">
+                                <button class="tab-btn active" data-tab="skill" onclick="switchKnowledgeTab('skill')">技能库</button>
+                                <button class="tab-btn" data-tab="memory" onclick="switchKnowledgeTab('memory')">记忆</button>
+                            </div>
+                            <div id="agent-skill-panel" style="display: block;">
+                                <button class="btn-add" onclick="showAddSkillDialog()">+ 手动技能</button>
+                                <div id="agent-skill-list" class="connection-list"></div>
+                            </div>
+                            <div id="agent-memory-panel" style="display: none;">
+                                <button class="btn-add" onclick="showAddMemoryDialog()">+ 记录</button>
+                                <div id="agent-memory-list" class="connection-list"></div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- 右侧主区域 -->
@@ -604,6 +621,84 @@
                     <div class="modal-footer">
                         <button class="btn btn-secondary" onclick="closeModal('modal-add-db')">取消</button>
                         <button class="btn btn-primary" onclick="saveDBConnection()">保存</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 添加手动技能 -->
+            <div class="modal" id="modal-add-skill" style="display: none">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h3>添加技能</h3>
+                        <button class="modal-close" onclick="closeModal('modal-add-skill')">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label>技能名称 <span style="color:red">*</span></label>
+                            <input type="text" id="agent-skill-name" placeholder="如：MySQL锁诊断">
+                        </div>
+                        <div class="form-group">
+                            <label>数据库类型</label>
+                            <input type="text" id="agent-skill-dbtype" placeholder="如：mysql / oracle / dm（留空通用）">
+                        </div>
+                        <div class="form-group">
+                            <label>类别</label>
+                            <select id="agent-skill-category">
+                                <option value="diagnosis">diagnosis（诊断）</option>
+                                <option value="maintenance">maintenance（维护）</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>描述</label>
+                            <input type="text" id="agent-skill-desc" placeholder="一句话说明解决的问题">
+                        </div>
+                        <div class="form-group">
+                            <label>触发关键词（逗号分隔）</label>
+                            <input type="text" id="agent-skill-keywords" placeholder="如：锁,死锁,blocking">
+                        </div>
+                        <div class="form-group">
+                            <label>操作指南（prompt_template）</label>
+                            <textarea id="agent-skill-template" rows="5" placeholder="分步骤说明如何诊断，含SQL/命令示例"></textarea>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="closeModal('modal-add-skill')">取消</button>
+                        <button class="btn btn-primary" onclick="saveAgentSkill()">保存</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 记录长期记忆 -->
+            <div class="modal" id="modal-add-memory" style="display: none">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h3>记录长期记忆</h3>
+                        <button class="modal-close" onclick="closeModal('modal-add-memory')">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label>对象类型</label>
+                            <select id="agent-memory-etype">
+                                <option value="db_instance">数据库实例</option>
+                                <option value="host">主机</option>
+                                <option value="cluster">集群</option>
+                                <option value="preference">DBA偏好</option>
+                                <option value="known_issue">已知问题</option>
+                                <option value="general">通用</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>对象名</label>
+                            <input type="text" id="agent-memory-ename" placeholder="如：mysql-prod-01 / 10.1.1.5（留空通用）">
+                        </div>
+                        <div class="form-group">
+                            <label>记忆内容 <span style="color:red">*</span></label>
+                            <textarea id="agent-memory-fact" rows="3" placeholder="如：生产库禁止在业务高峰执行全表扫描"></textarea>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="closeModal('modal-add-memory')">取消</button>
+                        <button class="btn btn-primary" onclick="saveAgentMemory()">保存</button>
                     </div>
                 </div>
             </div>

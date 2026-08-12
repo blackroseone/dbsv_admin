@@ -3,6 +3,7 @@
 SQLite 数据库管理层
 """
 import os
+import re
 import sqlite3
 import threading
 import json
@@ -303,6 +304,23 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_agent_skills_db_type ON agent_skills(db_type);
         CREATE INDEX IF NOT EXISTS idx_agent_skills_category ON agent_skills(category);
 
+        -- Agent长期记忆（跨会话环境事实：拓扑/已知问题/DBA偏好）
+        -- 由诊断结论与DBA反馈自动写入，诊断开始时按关键词召回注入prompt。
+        CREATE TABLE IF NOT EXISTS agent_memory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type TEXT NOT NULL DEFAULT 'general',
+            entity_name TEXT NOT NULL DEFAULT '',
+            fact TEXT NOT NULL,
+            category TEXT DEFAULT '',
+            confidence REAL DEFAULT 0.8,
+            source TEXT DEFAULT '',
+            usage_count INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_memory_entity
+            ON agent_memory(entity_type, entity_name);
+
         -- ==================== 监控指标数据 ====================
         -- 由外部监控平台中间脚本（monitor_blueking.py 等）拉取落库，
         -- 供运维 Agent 查询（get_monitor_metrics）与展示/评分消费。
@@ -563,6 +581,21 @@ def init_db():
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE log_analysis_tasks ADD COLUMN db_type TEXT DEFAULT ''")
         conn.commit()
+
+    # 数据库迁移：为 agent_skills 表补充自动沉淀技能所需字段
+    # （trigger_keywords/source_session/confidence/usage_count/status）
+    for col, ddl in [
+        ('trigger_keywords', "ADD COLUMN trigger_keywords TEXT"),
+        ('source_session', "ADD COLUMN source_session TEXT"),
+        ('confidence', "ADD COLUMN confidence REAL DEFAULT 0.8"),
+        ('usage_count', "ADD COLUMN usage_count INTEGER DEFAULT 0"),
+        ('status', "ADD COLUMN status TEXT DEFAULT 'active'"),
+    ]:
+        try:
+            conn.execute(f"SELECT {col} FROM agent_skills LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute(f"ALTER TABLE agent_skills {ddl}")
+            conn.commit()
 
     # 数据库迁移：删除 servers 表的 cpu 和 memory 字段（数据迁移到 description）
     # 注意：SQLite 不支持直接删除列，这里只是标记，实际删除需要重建表
@@ -1685,4 +1718,201 @@ def delete_log_analysis_files(task_id):
     """删除任务的所有日志文件"""
     conn = get_db()
     conn.execute("DELETE FROM log_analysis_files WHERE task_id=?", (task_id,))
+    conn.commit()
+
+
+# ==================== Agent技能 CRUD（自动沉淀技能持久化） ====================
+
+def _skill_from_row(row) -> dict:
+    """行 → dict，解码 JSON 数组字段"""
+    d = dict(row)
+    for k in ('required_tools', 'knowledge_tags', 'trigger_keywords'):
+        raw = d.get(k)
+        try:
+            d[k] = json.loads(raw) if raw else []
+        except (TypeError, ValueError):
+            d[k] = []
+    return d
+
+
+def save_skill(name, db_type=None, category='diagnosis', description='',
+               prompt_template='', required_tools=None, knowledge_tags=None,
+               trigger_keywords=None, source_session='', confidence=0.8,
+               status='active', priority=0):
+    """新增或更新技能（按 name 幂等 upsert）。
+
+    更新时保留 usage_count；其余字段覆盖。返回技能 id。
+    """
+    conn = get_db()
+    row = conn.execute("SELECT id FROM agent_skills WHERE name=?", (name,)).fetchone()
+    required_tools_json = json.dumps(required_tools or [], ensure_ascii=False)
+    knowledge_tags_json = json.dumps(knowledge_tags or [], ensure_ascii=False)
+    trigger_keywords_json = json.dumps(trigger_keywords or [], ensure_ascii=False)
+
+    if row:
+        conn.execute(
+            """UPDATE agent_skills SET db_type=?, category=?, description=?, prompt_template=?,
+               required_tools=?, knowledge_tags=?, trigger_keywords=?, source_session=?,
+               confidence=?, status=?, priority=? WHERE name=?""",
+            (db_type, category, description, prompt_template, required_tools_json,
+             knowledge_tags_json, trigger_keywords_json, source_session, confidence,
+             status, priority, name)
+        )
+        conn.commit()
+        return row['id']
+
+    conn.execute(
+        """INSERT INTO agent_skills
+           (name, db_type, category, description, prompt_template, required_tools,
+            knowledge_tags, trigger_keywords, source_session, confidence, status, priority)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (name, db_type, category, description, prompt_template, required_tools_json,
+         knowledge_tags_json, trigger_keywords_json, source_session, confidence,
+         status, priority)
+    )
+    conn.commit()
+    return conn.execute(
+        "SELECT id FROM agent_skills WHERE name=?", (name,)
+    ).fetchone()['id']
+
+
+def get_skill_by_name(name) -> dict:
+    """按名称获取技能（含 JSON 字段解码）"""
+    conn = get_db()
+    row = conn.execute("SELECT * FROM agent_skills WHERE name=?", (name,)).fetchone()
+    return _skill_from_row(row) if row else None
+
+
+def list_skills(active_only=True, db_type=None, category=None):
+    """列出技能，按 priority/created_at 排序"""
+    conn = get_db()
+    where = []
+    params = []
+    if active_only:
+        where.append("status='active'")
+    if db_type:
+        where.append("db_type=?")
+        params.append(db_type)
+    if category:
+        where.append("category=?")
+        params.append(category)
+    sql = "SELECT * FROM agent_skills"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY priority DESC, created_at DESC"
+    rows = conn.execute(sql, params).fetchall()
+    return [_skill_from_row(r) for r in rows]
+
+
+def bump_skill_usage(name):
+    """技能命中计数 +1（被注入 system prompt 时调用）"""
+    conn = get_db()
+    conn.execute("UPDATE agent_skills SET usage_count=usage_count+1 WHERE name=?", (name,))
+    conn.commit()
+
+
+def set_skill_status(name, status):
+    """设置技能状态（active/deprecated，Curator 淘汰用）"""
+    conn = get_db()
+    conn.execute("UPDATE agent_skills SET status=? WHERE name=?", (status, name))
+    conn.commit()
+
+
+def delete_skill(name):
+    """删除技能"""
+    conn = get_db()
+    conn.execute("DELETE FROM agent_skills WHERE name=?", (name,))
+    conn.commit()
+
+
+# ==================== Agent长期记忆 CRUD ====================
+
+def _memory_from_row(row) -> dict:
+    return dict(row)
+
+
+def save_memory(entity_type='general', entity_name='', fact='', category='',
+                confidence=0.8, source=''):
+    """写入长期记忆。
+
+    相同 (entity_type, entity_name, fact) 视为同一事实，重复写入时更新
+    confidence/source 并累加 usage_count，避免诊断反复落同一条记忆造成污染。
+    """
+    conn = get_db()
+    row = conn.execute(
+        "SELECT id FROM agent_memory WHERE entity_type=? AND entity_name=? AND fact=?",
+        (entity_type, entity_name, fact)
+    ).fetchone()
+    if row:
+        conn.execute(
+            """UPDATE agent_memory SET category=?, confidence=?, source=?,
+               usage_count=usage_count+1, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+            (category, confidence, source, row['id'])
+        )
+        conn.commit()
+        return row['id']
+    conn.execute(
+        """INSERT INTO agent_memory (entity_type, entity_name, fact, category, confidence, source)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (entity_type, entity_name, fact, category, confidence, source)
+    )
+    conn.commit()
+    return conn.execute(
+        "SELECT id FROM agent_memory WHERE entity_type=? AND entity_name=? AND fact=?",
+        (entity_type, entity_name, fact)
+    ).fetchone()['id']
+
+
+def search_memory_by_keyword(query, limit=10):
+    """按关键词召回记忆（任一关键词命中 entity_name 或 fact）。
+
+    关键词按空白/中英文标点切分，长度 <2 的噪声词跳过。按使用频次与
+    更新时间排序，供诊断开始时注入「环境上下文」。
+    """
+    terms = [t for t in re.split(r'[\s,，。;；:：]+', query) if len(t) >= 2]
+    if not terms:
+        return []
+    conn = get_db()
+    clauses = []
+    params = []
+    for t in terms:
+        like = f'%{t}%'
+        clauses.append("(entity_name LIKE ? OR fact LIKE ?)")
+        params.extend([like, like])
+    sql = ("SELECT * FROM agent_memory WHERE " + " OR ".join(clauses)
+           + " ORDER BY usage_count DESC, updated_at DESC LIMIT ?")
+    params.append(int(limit))
+    rows = conn.execute(sql, params).fetchall()
+    return [_memory_from_row(r) for r in rows]
+
+
+def list_memory(entity_type=None, limit=100):
+    """列出长期记忆（按更新时间倒序）"""
+    conn = get_db()
+    if entity_type:
+        rows = conn.execute(
+            "SELECT * FROM agent_memory WHERE entity_type=? ORDER BY updated_at DESC LIMIT ?",
+            (entity_type, limit)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM agent_memory ORDER BY updated_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [_memory_from_row(r) for r in rows]
+
+
+def bump_memory_usage(memory_id):
+    """记忆命中计数 +1（被注入 prompt 时调用）"""
+    conn = get_db()
+    conn.execute(
+        "UPDATE agent_memory SET usage_count=usage_count+1, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        (memory_id,)
+    )
+    conn.commit()
+
+
+def delete_memory(memory_id):
+    """删除一条长期记忆"""
+    conn = get_db()
+    conn.execute("DELETE FROM agent_memory WHERE id=?", (memory_id,))
     conn.commit()

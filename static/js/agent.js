@@ -17,6 +17,8 @@ function initAgentModule() {
     loadAgentSSHConnections();
     loadAgentDBConnections();
     loadAgentSessions();
+    loadAgentSkills();
+    loadAgentMemory();
 }
 
 // ==================== 连接管理 ====================
@@ -804,4 +806,213 @@ function formatTime(timestamp) {
     if (!timestamp) return '';
     const date = new Date(timestamp);
     return date.toLocaleString('zh-CN');
+}
+
+// ==================== 知识沉淀（技能库 + 长期记忆） ====================
+
+function switchKnowledgeTab(tab) {
+    document.querySelectorAll('.knowledge-tabs .tab-btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    document.querySelector(`.knowledge-tabs .tab-btn[data-tab="${tab}"]`)?.classList.add('active');
+    document.getElementById('agent-skill-panel').style.display = tab === 'skill' ? 'block' : 'none';
+    document.getElementById('agent-memory-panel').style.display = tab === 'memory' ? 'block' : 'none';
+    if (tab === 'skill') {
+        loadAgentSkills();
+    } else {
+        loadAgentMemory();
+    }
+}
+
+// ---- 技能库 ----
+
+async function loadAgentSkills() {
+    const container = document.getElementById('agent-skill-list');
+    if (!container) return;
+    try {
+        const response = await fetch('/api/agent/skills');
+        const data = await response.json();
+        // 只展示 DB 沉淀/维护技能（内置技能无 usage_count 字段，不可删改）
+        const skills = (data.skills || []).filter(s => s.usage_count !== undefined);
+        renderAgentSkills(skills);
+    } catch (error) {
+        container.innerHTML = '<div class="empty-message">技能加载失败</div>';
+    }
+}
+
+function renderAgentSkills(skills) {
+    const container = document.getElementById('agent-skill-list');
+    if (skills.length === 0) {
+        container.innerHTML = '<div class="empty-message">暂无沉淀技能，成功诊断后会自动生成</div>';
+        return;
+    }
+    container.innerHTML = skills.map(s => `
+        <div class="connection-item">
+            <div class="conn-name">${escapeHtml(s.name)}
+                <span class="conn-type">${escapeHtml(s.db_type || '通用')}</span>
+                <span class="tag-badge">${escapeHtml(s.category || 'diagnosis')}</span>
+            </div>
+            <div class="conn-info">
+                <span class="conn-host">${escapeHtml((s.description || '').slice(0, 24))}</span>
+                <span class="conn-type">使用${s.usage_count || 0}次</span>
+                <span class="conn-status">${s.status === 'deprecated' ? '⚪已停用' : '🟢'}</span>
+            </div>
+            <div class="conn-info">
+                <span class="conn-host" style="color:#e74c3c;cursor:pointer" onclick="deleteAgentSkill('${escapeJsAttr(s.name)}')">🗑 删除</span>
+            </div>
+        </div>
+    `).join('');
+}
+
+async function deleteAgentSkill(name) {
+    if (!confirm(`确定删除技能「${name}」？`)) return;
+    try {
+        const response = await fetch(`/api/agent/skills/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        const data = await response.json();
+        if (response.ok) {
+            showToast(data.message || '删除成功', 'success');
+            loadAgentSkills();
+        } else {
+            showToast(data.error || '删除失败', 'error');
+        }
+    } catch (error) {
+        showToast('删除失败', 'error');
+    }
+}
+
+function showAddSkillDialog() {
+    document.getElementById('agent-skill-name').value = '';
+    document.getElementById('agent-skill-dbtype').value = '';
+    document.getElementById('agent-skill-category').value = 'diagnosis';
+    document.getElementById('agent-skill-desc').value = '';
+    document.getElementById('agent-skill-keywords').value = '';
+    document.getElementById('agent-skill-template').value = '';
+    document.getElementById('modal-add-skill').style.display = 'flex';
+}
+
+async function saveAgentSkill() {
+    const name = document.getElementById('agent-skill-name').value.trim();
+    if (!name) {
+        showToast('技能名称不能为空', 'error');
+        return;
+    }
+    const keywords = document.getElementById('agent-skill-keywords').value
+        .split(/[,，]/).map(k => k.trim()).filter(Boolean);
+    const payload = {
+        name,
+        db_type: document.getElementById('agent-skill-dbtype').value.trim() || null,
+        category: document.getElementById('agent-skill-category').value,
+        description: document.getElementById('agent-skill-desc').value.trim(),
+        trigger_keywords: keywords,
+        prompt_template: document.getElementById('agent-skill-template').value.trim(),
+        status: 'active'
+    };
+    try {
+        const response = await fetch('/api/agent/skills', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        if (response.ok) {
+            showToast(data.message || '保存成功', 'success');
+            closeModal('modal-add-skill');
+            loadAgentSkills();
+        } else {
+            showToast(data.error || '保存失败', 'error');
+        }
+    } catch (error) {
+        showToast('保存失败', 'error');
+    }
+}
+
+// ---- 长期记忆 ----
+
+async function loadAgentMemory() {
+    const container = document.getElementById('agent-memory-list');
+    if (!container) return;
+    try {
+        const response = await fetch('/api/agent/memory');
+        const data = await response.json();
+        renderAgentMemory(data.memory || []);
+    } catch (error) {
+        container.innerHTML = '<div class="empty-message">记忆加载失败</div>';
+    }
+}
+
+function renderAgentMemory(memory) {
+    const container = document.getElementById('agent-memory-list');
+    if (memory.length === 0) {
+        container.innerHTML = '<div class="empty-message">暂无长期记忆</div>';
+        return;
+    }
+    container.innerHTML = memory.map(m => `
+        <div class="connection-item">
+            <div class="conn-name">${escapeHtml(m.entity_name || '通用')}
+                <span class="conn-type">${escapeHtml(m.entity_type || 'general')}</span>
+                <span class="tag-badge">${Math.round((m.confidence || 0) * 100)}%</span>
+            </div>
+            <div class="conn-info">
+                <span class="conn-host">${escapeHtml((m.fact || '').slice(0, 30))}</span>
+            </div>
+            <div class="conn-info">
+                <span class="conn-host" style="opacity:0.6">${escapeHtml(m.source || '')}</span>
+                <span class="conn-type">使用${m.usage_count || 0}次</span>
+                <span class="conn-host" style="color:#e74c3c;cursor:pointer" onclick="deleteAgentMemory(${m.id})">🗑 删除</span>
+            </div>
+        </div>
+    `).join('');
+}
+
+async function deleteAgentMemory(id) {
+    if (!confirm('确定删除这条记忆？')) return;
+    try {
+        const response = await fetch(`/api/agent/memory/${id}`, { method: 'DELETE' });
+        const data = await response.json();
+        if (response.ok) {
+            showToast(data.message || '删除成功', 'success');
+            loadAgentMemory();
+        } else {
+            showToast(data.error || '删除失败', 'error');
+        }
+    } catch (error) {
+        showToast('删除失败', 'error');
+    }
+}
+
+function showAddMemoryDialog() {
+    document.getElementById('agent-memory-etype').value = 'db_instance';
+    document.getElementById('agent-memory-ename').value = '';
+    document.getElementById('agent-memory-fact').value = '';
+    document.getElementById('modal-add-memory').style.display = 'flex';
+}
+
+async function saveAgentMemory() {
+    const fact = document.getElementById('agent-memory-fact').value.trim();
+    if (!fact) {
+        showToast('记忆内容不能为空', 'error');
+        return;
+    }
+    const payload = {
+        entity_type: document.getElementById('agent-memory-etype').value,
+        entity_name: document.getElementById('agent-memory-ename').value.trim(),
+        fact
+    };
+    try {
+        const response = await fetch('/api/agent/memory', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        if (response.ok) {
+            showToast(data.message || '记录成功', 'success');
+            closeModal('modal-add-memory');
+            loadAgentMemory();
+        } else {
+            showToast(data.error || '记录失败', 'error');
+        }
+    } catch (error) {
+        showToast('记录失败', 'error');
+    }
 }

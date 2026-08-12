@@ -185,6 +185,89 @@ def get_skill(skill_name):
     })
 
 
+@agent_bp.route('/api/agent/skills', methods=['POST'])
+def create_skill():
+    """新增/更新技能（自动沉淀技能库的人工维护：编辑/停用）"""
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': '技能名不能为空'}), 400
+
+    from db.database import save_skill
+    skill_id = save_skill(
+        name=name,
+        db_type=data.get('db_type'),
+        category=data.get('category') or 'diagnosis',
+        description=data.get('description', ''),
+        prompt_template=data.get('prompt_template', ''),
+        required_tools=data.get('required_tools'),
+        knowledge_tags=data.get('knowledge_tags'),
+        trigger_keywords=data.get('trigger_keywords'),
+        source_session=data.get('source_session', ''),
+        confidence=data.get('confidence', 0.8),
+        status=data.get('status', 'active'),
+        priority=data.get('priority', 0),
+    )
+    add_operation_log('Agent', '保存技能', name)
+    return jsonify({'message': '保存成功', 'id': skill_id})
+
+
+@agent_bp.route('/api/agent/skills/<skill_name>', methods=['DELETE'])
+def remove_skill(skill_name):
+    """删除技能（自动沉淀技能库维护）"""
+    from db.database import delete_skill
+    delete_skill(skill_name)
+    add_operation_log('Agent', '删除技能', skill_name)
+    return jsonify({'message': '删除成功'})
+
+
+# ==================== 长期记忆管理 ====================
+
+@agent_bp.route('/api/agent/memory', methods=['GET'])
+def list_memory_records():
+    """长期记忆列表（支持 keyword/entity_type 过滤）"""
+    keyword = request.args.get('keyword')
+    entity_type = request.args.get('entity_type')
+    from db.database import search_memory_by_keyword, list_memory
+
+    if keyword:
+        records = search_memory_by_keyword(keyword, limit=50)
+    else:
+        records = list_memory(entity_type=entity_type or None, limit=100)
+
+    return jsonify({'memory': records, 'count': len(records)})
+
+
+@agent_bp.route('/api/agent/memory', methods=['POST'])
+def add_memory_record():
+    """显式记录长期记忆（DBA 反馈/拓扑/偏好，高置信度）"""
+    data = request.get_json() or {}
+    fact = (data.get('fact') or '').strip()
+    if not fact:
+        return jsonify({'error': '记忆内容不能为空'}), 400
+
+    from db.database import save_memory
+    mem_id = save_memory(
+        entity_type=data.get('entity_type') or 'general',
+        entity_name=data.get('entity_name', ''),
+        fact=fact,
+        category=data.get('category', 'preference'),
+        confidence=data.get('confidence', 0.9),
+        source='dba_feedback',
+    )
+    add_operation_log('Agent', '记录记忆', fact[:50])
+    return jsonify({'message': '记录成功', 'id': mem_id})
+
+
+@agent_bp.route('/api/agent/memory/<int:memory_id>', methods=['DELETE'])
+def delete_memory_record(memory_id):
+    """删除一条长期记忆"""
+    from db.database import delete_memory
+    delete_memory(memory_id)
+    add_operation_log('Agent', '删除记忆', str(memory_id))
+    return jsonify({'message': '删除成功'})
+
+
 # ==================== 工具Schema ====================
 
 @agent_bp.route('/api/agent/tools', methods=['GET'])

@@ -9,6 +9,20 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v3.0.7 (2026-08-12)
+
+### 🧠 运维 Agent 学习闭环（技能自动沉淀 + 长期记忆）
+
+**目标**：让 Agent "越用越好用"——成功诊断自动沉淀为可复用技能、跨会话记住环境事实（Observe → Execute → Reflect → Crystallize → Reuse）。
+
+- **技能自动沉淀**：Agent 完成一次成功诊断（≥2 次工具调用且无执行出错）后，自动把诊断轨迹提炼为可复用技能写入 `agent_skills` 表（name/db_type/category/prompt_template/trigger_keywords），下次命中同类问题（按 trigger_keywords 意图匹配）优先加载指导诊断。技能生成优先走 LLM 提炼步骤指南，LLM 不可用时离线回退拼接轨迹模板，闭环不依赖模型可用性。
+- **Curator 写时去重**：同 db_type+category 且触发词重叠 ≥50% 视为同技能合并更新（保留原名与使用计数），防止技能库漂移。
+- **Curator 淘汰**：长期未使用（usage_count=0）且创建超 30 天的技能自动标记 deprecated，保留可查可删，防自污染。
+- **长期记忆**：新增 `agent_memory` 表（跨会话环境事实：主机/实例已知问题、DBA 偏好）。诊断成功后自动写入本次结论（低置信度标记），DBA 也可通过接口显式记录（高置信度）；诊断开始时按关键词召回注入 system prompt 的「环境上下文」段。
+- **SkillManager 双层技能池**：内置 6 技能 + DB 自动沉淀技能统一匹配/注入；自动技能全文注入（≤2 个），内置技能 200 字预览；注入时累加使用计数。
+- **接口**：`POST/DELETE /api/agent/skills`（技能人工维护/停用/删除）、`GET/POST /api/agent/memory` 与 `DELETE /api/agent/memory/<id>`（记忆查看/显式记录/删除）。
+- **数据层**：`agent_skills` 表迁移加列（trigger_keywords/source_session/confidence/usage_count/status），新增 `agent_memory` 表；迁移采用 try-SELECT/ALTER 模式，旧库平滑升级不破坏既有数据。
+
 ## v3.0.6 (2026-08-11)
 
 ### 🧩 运维检查项纳入知识图谱 + Agent 能力

@@ -89,10 +89,10 @@ dbsv_admin/
         __init__.py
         harness.py           # 安全约束框架（SQL白名单 + 命令白名单 + 操作级别）
         connectors.py        # 工具连接器（DB/SSH连接加载解密 + 查询执行 + 指标/Schema生成）
-        skills.py            # 领域知识与操作指南（6个内置技能）
+        skills.py            # 领域知识与操作指南（内置6技能 + DB自动沉淀技能 + Curator去重/淘汰）
         state.py             # Agent状态管理（ReAct状态机）
-        tools.py             # MCP风格工具定义（6个真实工具 + ToolContext）
-        engine.py            # Agent核心引擎（ReAct循环 + 知识库/图谱增强 + 状态持久化）
+        tools.py             # MCP风格工具定义（7个工具 + ToolContext）
+        engine.py            # Agent核心引擎（ReAct循环 + 知识库/图谱增强 + 技能沉淀/记忆闭环 + 状态持久化）
 
     kg/                     # 知识图谱模块
         __init__.py
@@ -165,7 +165,8 @@ dbsv_admin/
 | agent_db_connections | 数据库连接配置（用于SQL查询） |
 | agent_sessions | Agent会话 |
 | agent_steps | Agent执行步骤（ReAct过程记录） |
-| agent_skills | Agent Skills（操作指南/领域知识） |
+| agent_skills | Agent Skills（内置 + 自动沉淀技能，含 trigger_keywords/usage_count/status） |
+| agent_memory | Agent长期记忆（跨会话环境事实，诊断自动写 + DBA 显式记录） |
 
 ## 功能模块
 
@@ -225,17 +226,19 @@ dbsv_admin/
 
 ### 9. 智能运维Agent（/api/agent/*）
 - **ReAct 循环引擎**：Thought → Action → Observation → Conclusion 自主决策，观察结果回流对话历史实现链式推理
-- **真实工具执行**：6 个工具均为真实实现
+- **真实工具执行**：7 个工具均为真实实现
   - `query_database` — 按 db_type 连接目标库执行只读 SQL
   - `execute_command` — 通过 paramiko SSH 执行白名单数据库命令
   - `get_schema_info` — 表清单/表结构查询
   - `get_performance_metrics` — 会话/锁/等待/Top SQL/表占用指标
   - `retrieve_knowledge` — 知识库向量检索
+  - `retrieve_check` — 检索运维检查项（专家检查知识库，SQL/命令/建议）
   - `get_monitor_metrics` — 查询外部监控平台落库的监控指标（蓝鲸等，CPU/内存/磁盘）
   - 工具执行双重安全校验（引擎 + 工具自身），表名白名单防注入
 - **Harness 安全约束框架**：SQL 白名单 + 命令白名单（按操作级别），剥离注释校验，禁止危险操作
 - **知识库 + 知识图谱双增强**：执行前检索知识库，并注入图谱实体卡片/关系链上下文
-- **Skills 领域知识**：6 个内置技能（慢查询诊断、Oracle RAC 检查、备份检查等）
+- **Skills 领域知识**：6 个内置技能（慢查询诊断、Oracle RAC 检查、备份检查等）+ 自动沉淀技能
+- **学习闭环（v3.0.7）**：成功诊断后自动沉淀技能（LLM 提炼/离线回退 + Curator 去重淘汰），诊断结论与 DBA 反馈自动写入长期记忆，下次诊断按关键词召回注入环境上下文
 - **SSE 流式输出**：实时展示思考过程、工具执行、观察结果、最终结论
 - **SSH/数据库连接管理**：前端表单配置多个目标服务器和数据库连接（凭据加密存储）
 - **会话持久化**：每步写入 `agent_steps`，会话状态更新到 `agent_sessions`
@@ -350,7 +353,7 @@ waitress-serve --host=0.0.0.0 --port=5000 app:app
 
 ### Agent 接口
 
-`POST /api/agent/sessions` 创建会话，`POST /api/agent/run` 执行任务，`GET /api/agent/sessions/<id>/steps` 会话步骤，`GET /api/agent/tools` 工具列表，`GET /api/agent/skills` 技能列表。
+`POST /api/agent/sessions` 创建会话，`POST /api/agent/run` 执行任务，`GET /api/agent/sessions/<id>/steps` 会话步骤，`GET /api/agent/tools` 工具列表，`GET /api/agent/skills` 技能列表，`POST/DELETE /api/agent/skills[/<name>]` 技能维护，`GET/POST /api/agent/memory` 与 `DELETE /api/agent/memory/<id>` 长期记忆查看/记录/删除。
 
 ## 使用说明
 
@@ -366,13 +369,15 @@ waitress-serve --host=0.0.0.0 --port=5000 app:app
 
 在 Agent 模块中，先配置 SSH 连接（执行命令）和数据库连接（执行 SQL）。创建会话后选择连接并输入运维需求，Agent 自动分析、执行并返回结果，支持查看执行步骤、思考过程和工具调用详情。Agent 也可查询落库的监控指标（`get_monitor_metrics`，需先运行 `tools/monitor_blueking.py` 拉取蓝鲸监控数据）。
 
+每次成功诊断后，Agent 会自动把诊断轨迹沉淀为可复用技能并写入长期记忆（学习闭环），后续同类问题会被技能指导、并注入环境上下文。沉淀的技能可在 Agent 页面查看/停用/删除，也可通过 `POST /api/agent/memory` 显式记录拓扑事实与 DBA 偏好。
+
 ## 开发注意事项
 
 重构后的 JS 采用模块化设计，每个模块职责单一（见目录结构中 `static/js/` 注释）。新增模块需同时：在 `routes/` 建 Blueprint、`routes/__init__.py` 导出并注册、`static/js/` 加模块文件、`templates/index.html` 加导航。
 
 ## 版本
 
-当前版本：v3.0.5。完整更新记录见 `version_update.md`。
+当前版本：v3.0.7。完整更新记录见 `version_update.md`。
 
 ## 贡献者
 
