@@ -618,6 +618,11 @@ def init_db():
         conn.execute("ALTER TABLE agent_memory ADD COLUMN embedding BLOB")
         conn.commit()
 
+    # 数据库迁移：移除遗留空表 nodes / node_connections（旧版拓扑遗留，无任何代码引用）
+    conn.execute("DROP TABLE IF EXISTS nodes")
+    conn.execute("DROP TABLE IF EXISTS node_connections")
+    conn.commit()
+
     # 数据库迁移：删除 servers 表的 cpu 和 memory 字段（数据迁移到 description）
     # 注意：SQLite 不支持直接删除列，这里只是标记，实际删除需要重建表
     # 暂时保留，通过前端不再使用这些字段
