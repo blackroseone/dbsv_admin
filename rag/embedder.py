@@ -189,6 +189,15 @@ def _bytes_to_embedding(data):
     return np.frombuffer(data, dtype=np.float32)
 
 
+def _is_llm_kg_enabled():
+    """检查是否启用了 LLM 辅助知识图谱提取"""
+    try:
+        from db.database import get_config
+        return bool(get_config('kg_llm_extract', False))
+    except Exception:
+        return False
+
+
 class Embedder:
     """向量嵌入管理器"""
 
@@ -304,7 +313,7 @@ class Embedder:
         return count
 
     def _extract_knowledge_graph(self, file_id, db_type, content, chunks, embeddings):
-        """从文件内容中提取知识图谱实体和关系"""
+        """从文件内容中提取知识图谱实体和关系（规则 + 可选 LLM 辅助）"""
         from kg.rules import extract_all_entities, infer_relationships
         from db.kg_database import (
             save_entities_batch, save_relationships_batch,
@@ -314,8 +323,32 @@ class Embedder:
         # 清除该文件旧的知识图谱数据
         clear_entities_by_file(file_id)
 
-        # 1. 从完整文本提取实体（用于推断跨 chunk 关系）
+        # 1. 从完整文本提取实体（规则），用于推断跨 chunk 关系
         all_text_entities = extract_all_entities(content, db_type)
+
+        # 1.5 LLM 辅助提取（如果启用），补充规则遗漏的实体和关系
+        llm_relationships = []
+        if _is_llm_kg_enabled():
+            try:
+                from kg.llm_extractor import (
+                    extract_entities_and_relations_multi_segment,
+                    _merge_entities, _merge_relationships
+                )
+                from db.database import get_config
+                seg_size = int(get_config('kg_llm_segment_size', 3000))
+                max_segs = int(get_config('kg_llm_max_segments', 5))
+                llm_result = extract_entities_and_relations_multi_segment(
+                    content, db_type,
+                    segment_size=seg_size, max_segments=max_segs
+                )
+                llm_entities = llm_result.get('entities', [])
+                llm_relationships = llm_result.get('relationships', [])
+                if llm_entities:
+                    all_text_entities = _merge_entities(all_text_entities, llm_entities)
+                    print(f"[RAG] LLM 辅助提取: +{len(llm_entities)} 实体(合并后), "
+                          f"+{len(llm_relationships)} 关系")
+            except Exception as e:
+                print(f"[RAG] LLM 辅助提取失败: {e}")
 
         # 2. 收集全部待保存实体（全量 + 各 chunk，按 key 去重）
         #    实体按 (type, normalized_name) 去重，一次批量保存，避免逐条事务
@@ -360,7 +393,7 @@ class Embedder:
             if not chunk_db_id:
                 continue
 
-            # 从 chunk 文本提取实体
+            # 从 chunk 文本提取实体（仅规则，chunk 太短不适合 LLM）
             chunk_entities = extract_all_entities(chunk_text, db_type)
             for entity in chunk_entities:
                 key = _key(entity)
@@ -379,16 +412,35 @@ class Embedder:
             if links:
                 link_chunks_entities_batch(links)
 
-        # 5. 推断关系并批量保存
+        # 5. 推断关系（规则）并合并 LLM 关系，批量保存
         relationships = infer_relationships(all_text_entities, content)
+
+        # 合并 LLM 关系（如有）
+        if llm_relationships:
+            from kg.llm_extractor import _merge_relationships
+            relationships = _merge_relationships(relationships, llm_relationships)
+
         rel_payloads = []
         for rel in relationships:
-            from_key = (rel['from_entity'].get('entity_type'),
-                        rel['from_entity'].get('normalized_name',
-                                               rel['from_entity']['name'].lower()))
-            to_key = (rel['to_entity'].get('entity_type'),
-                      rel['to_entity'].get('normalized_name',
-                                           rel['to_entity']['name'].lower()))
+            # LLM 关系的 from_entity/to_entity 为字符串，需转为 key
+            if isinstance(rel.get('from_entity'), dict):
+                from_key = (rel['from_entity'].get('entity_type'),
+                            rel['from_entity'].get('normalized_name',
+                                                   rel['from_entity']['name'].lower()))
+            else:
+                from_type = rel.get('from_type', '')
+                from_name = rel.get('from_entity', '').lower().strip()
+                from_key = (from_type, from_name)
+
+            if isinstance(rel.get('to_entity'), dict):
+                to_key = (rel['to_entity'].get('entity_type'),
+                          rel['to_entity'].get('normalized_name',
+                                               rel['to_entity']['name'].lower()))
+            else:
+                to_type = rel.get('to_type', '')
+                to_name = rel.get('to_entity', '').lower().strip()
+                to_key = (to_type, to_name)
+
             if from_key in entity_id_map and to_key in entity_id_map:
                 rel_payloads.append({
                     'from_entity_id': entity_id_map[from_key],

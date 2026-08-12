@@ -267,6 +267,85 @@ def extract_entities_and_relations(text: str, db_type: str = None) -> Dict:
     }
 
 
+def extract_entities_and_relations_multi_segment(
+    text: str, db_type: str = None,
+    segment_size: int = 3000, max_segments: int = 5
+) -> Dict:
+    """多分段 LLM 提取，均匀采样覆盖长文档
+
+    将长文档分成多个分段，每个分段独立调用 LLM 提取实体和关系，
+    最后跨分段去重合并，避免简单截断遗漏文档后半部分的实体。
+
+    Args:
+        text: 完整的文档文本
+        db_type: 数据库类型
+        segment_size: 每个分段的字符数（默认 3000）
+        max_segments: 最多处理的分段数（默认 5，控制 API 调用上限）
+
+    Returns:
+        {'entities': [...], 'relationships': [...]}
+    """
+    text_len = len(text)
+
+    # 短文档：直接全文提取
+    if text_len <= segment_size:
+        return extract_entities_and_relations(text, db_type)
+
+    # 长文档：计算均匀分布的分段位置
+    # 分段数 = min(覆盖全文需要的段数, 最大段数限制)
+    num_segments = min(
+        (text_len + segment_size - 1) // segment_size,  # 向上取整
+        max_segments
+    )
+
+    # 计算每个分段的起始位置（均匀分布）
+    if num_segments == 1:
+        offsets = [0]
+    else:
+        step = (text_len - segment_size) // (num_segments - 1)
+        offsets = [i * step for i in range(num_segments - 1)]
+        offsets.append(text_len - segment_size)  # 最后一段对齐文档末尾
+
+    all_entities = []
+    all_relationships = []
+
+    for i, offset in enumerate(offsets):
+        segment = text[offset:offset + segment_size]
+
+        # 尽量在自然断句处截断（换行或句号）
+        if offset > 0:
+            # 向前查找最近的换行或句号，使分段从完整句子开始
+            look_back = min(200, offset)
+            prefix = text[offset - look_back:offset]
+            for sep in ['\n\n', '\n', '。', '. ', '；', '; ']:
+                pos = prefix.rfind(sep)
+                if pos != -1:
+                    adjusted = offset - look_back + pos + len(sep)
+                    segment = text[adjusted:adjusted + segment_size]
+                    break
+
+        if not segment.strip():
+            continue
+
+        result = extract_entities_and_relations(segment, db_type)
+        all_entities.append(result.get('entities', []))
+        all_relationships.append(result.get('relationships', []))
+
+    # 跨分段合并去重
+    merged_entities = []
+    for entities in all_entities:
+        merged_entities = _merge_entities(merged_entities, entities)
+
+    merged_relationships = []
+    for relationships in all_relationships:
+        merged_relationships = _merge_relationships(merged_relationships, relationships)
+
+    return {
+        'entities': merged_entities,
+        'relationships': merged_relationships
+    }
+
+
 # ==================== 辅助函数 ====================
 
 def _parse_json_response(response: str) -> Dict:

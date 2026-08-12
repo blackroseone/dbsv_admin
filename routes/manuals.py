@@ -178,9 +178,16 @@ def sync_manuals_to_knowledge():
                             embedder = Embedder()
                             embeddings = embedder.embed_chunks(chunks)
                             save_embeddings(f['id'], embeddings)
+
+                            # 提取知识图谱实体
+                            try:
+                                embedder._extract_knowledge_graph(
+                                    f['id'], '_system', content_text, chunks, embeddings)
+                            except Exception as e:
+                                print(f"[自动同步] 知识图谱提取失败 [{filename}]: {e}")
                         break
             except Exception:
-                pass  # 向量嵌入失败不影响同步
+                pass  # 向量嵌入/知识图谱失败不影响同步
 
         # 删除已不在手册目录中的文件
         for old_filename in existing_files:
