@@ -139,28 +139,27 @@ dbsv_admin/
 
 | 表名 | 用途 |
 |------|------|
-| config | 键值对配置（API 地址、密钥、模型名、多模型配置等） |
-| db_types | 数据库类型定义（MySQL、Oracle 等） |
-| knowledge_files | 知识库文件元数据 + 解析后的文本内容 |
+| sys_config | 键值对配置（API 地址、密钥、模型名、多模型配置等） |
+| sys_db_types | 数据库类型定义（MySQL、Oracle 等） |
+| kb_files | 知识库文件元数据 + 解析后的文本内容 |
 | qa_conversations | 问答会话 |
 | qa_messages | 问答消息（多轮对话） |
-| favorites | 文件收藏 |
+| kb_favorites | 文件收藏 |
 | log_analysis_tasks | 日志分析任务 |
 | log_analysis_files | 日志分析文件 |
-| resource_pools | 资源池信息 |
-| clusters | 集群信息（属于某个资源池） |
-| servers | 物理机（含 CPU、内存、机房等字段） |
-| instances | 实例 |
-| tenants | 租户（实例集群） |
-| tenant_instances | 租户实例关联 |
-| instance_relations | 实例间关系 |
-| embeddings | 文本块向量嵌入（RAG 用） |
+| topo_resource_pools | 资源池信息 |
+| topo_clusters | 集群信息（属于某个资源池） |
+| topo_servers | 物理机（含 CPU、内存、机房等字段） |
+| topo_instances | 实例 |
+| topo_tenants | 租户（实例集群） |
+| topo_instance_relations | 实例间关系 |
+| kb_embeddings | 文本块向量嵌入（RAG 用） |
 | mon_metric_data | 外部监控平台指标落库（蓝鲸等，供 Agent 查询） |
 | kg_entities | 知识图谱实体表 |
 | kg_relationships | 知识图谱关系表 |
 | kg_chunk_entities | chunk-实体关联表 |
-| operation_logs | 操作日志 |
-| feature_config | 功能配置开关 |
+| audit_operation_logs | 操作日志 |
+| sys_feature_config | 功能配置开关 |
 | agent_ssh_connections | SSH连接配置（目标服务器） |
 | agent_db_connections | 数据库连接配置（用于SQL查询） |
 | agent_sessions | Agent会话 |
@@ -386,7 +385,7 @@ waitress-serve --host=0.0.0.0 --port=5000 app:app
 
 ## 版本
 
-当前版本：v3.0.10。完整更新记录见 `version_update.md`。
+当前版本：v3.0.11。完整更新记录见 `version_update.md`。
 
 ## 贡献者
 

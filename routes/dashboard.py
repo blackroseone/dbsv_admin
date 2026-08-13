@@ -63,7 +63,7 @@ def get_stats():
     # 从数据库统计知识库文件
     conn = get_db()
     rows = conn.execute(
-        "SELECT db_type, COUNT(*) as cnt FROM knowledge_files GROUP BY db_type"
+        "SELECT db_type, COUNT(*) as cnt FROM kb_files GROUP BY db_type"
     ).fetchall()
     for row in rows:
         stats['by_db_type'][row['db_type']] = row['cnt']
@@ -72,7 +72,7 @@ def get_stats():
     # 统计向量索引数量（按数据库类型）
     try:
         embedding_rows = conn.execute(
-            "SELECT k.db_type, COUNT(*) as cnt FROM embeddings e JOIN knowledge_files k ON e.file_id = k.id GROUP BY k.db_type"
+            "SELECT k.db_type, COUNT(*) as cnt FROM kb_embeddings e JOIN kb_files k ON e.file_id = k.id GROUP BY k.db_type"
         ).fetchall()
         for row in embedding_rows:
             stats['embeddings_by_db_type'][row['db_type']] = row['cnt']

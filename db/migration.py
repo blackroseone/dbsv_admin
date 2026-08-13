@@ -35,8 +35,8 @@ def migrate_json_to_sqlite():
     if os.path.exists(DB_PATH):
         conn = get_db()
         # 检查是否已有数据
-        count = conn.execute("SELECT COUNT(*) FROM config").fetchone()[0]
-        db_count = conn.execute("SELECT COUNT(*) FROM db_types").fetchone()[0]
+        count = conn.execute("SELECT COUNT(*) FROM sys_config").fetchone()[0]
+        db_count = conn.execute("SELECT COUNT(*) FROM sys_db_types").fetchone()[0]
         if count > 0 or db_count > 0:
             return False  # 已有数据，跳过迁移
 
@@ -55,7 +55,7 @@ def migrate_json_to_sqlite():
         conn = get_db()
         for t in db_types:
             conn.execute(
-                "INSERT OR IGNORE INTO db_types (id, name, icon) VALUES (?, ?, ?)",
+                "INSERT OR IGNORE INTO sys_db_types (id, name, icon) VALUES (?, ?, ?)",
                 (t['id'], t['name'], t.get('icon', '📁'))
             )
         conn.commit()

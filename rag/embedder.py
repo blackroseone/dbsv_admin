@@ -414,7 +414,7 @@ class Embedder:
         conn = get_db()
         chunk_id_map = {}
         for row in conn.execute(
-                "SELECT id, chunk_index FROM embeddings WHERE file_id=?", (file_id,)
+                "SELECT id, chunk_index FROM kb_embeddings WHERE file_id=?", (file_id,)
         ).fetchall():
             chunk_id_map[row['chunk_index']] = row['id']
 

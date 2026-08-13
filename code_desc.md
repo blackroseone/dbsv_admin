@@ -46,7 +46,7 @@ dbsv_admin/
 │
 ├── routes/                 # API 路由（Blueprint）
 │   ├── __init__.py         # Blueprint 统一导出
-│   ├── db_types.py         # 数据库类型管理
+│   ├── sys_db_types.py         # 数据库类型管理
 │   ├── knowledge.py        # 知识库文件管理 + 收藏夹
 │   ├── qa.py               # 知识问答（支持向量检索 RAG）
 │   ├── sql_tools.py        # SQL 审核 / 格式化 / 转换 / 执行计划分析
@@ -242,7 +242,7 @@ dbsv_admin/
 | `_fetch_servers_for_cluster(conn, resource_pool_id)` | `sqlite3.Connection, str` | `list` | 获取指定资源池下的所有物理机及其实例 |
 | `_fetch_tenants_for_cluster(conn, resource_pool_id)` | `sqlite3.Connection, str` | `list` | 获取指定资源池下的所有租户 |
 | `_build_cluster_data(conn, cluster_row)` | `sqlite3.Connection, sqlite3.Row` | `dict` | 构建单个集群的完整数据 |
-| `add_resource_pool(pool_id, name, db_type, environment, description)` | `str, str, str, str, str` | 无 | 添加集群/资源池（GET /api/topology/clusters 的顶级实体） |
+| `add_resource_pool(pool_id, name, db_type, environment, description)` | `str, str, str, str, str` | 无 | 添加集群/资源池（GET /api/topology/topo_clusters 的顶级实体） |
 | `update_resource_pool(pool_id, **kwargs)` | `str, dict` | 无 | 更新集群/资源池信息 |
 | `delete_resource_pool(pool_id)` | `str` | 无 | 删除集群/资源池（级联删除其下服务器、二级集群、租户、实例） |
 | `add_server(server_id, resource_pool_id, name, host, description, datacenter='', node_role='计算节点', hardware_type='非信创物理机', cpu='', memory='', cluster_id='', sn='')` | ... | 无 | 添加物理机 |
@@ -283,10 +283,10 @@ dbsv_admin/
 | 常量 | 说明 |
 |------|------|
 | `CONFIG_FILE` | `config.json` |
-| `DB_TYPES_FILE` | `db_types.json` |
+| `DB_TYPES_FILE` | `sys_db_types.json` |
 | `TOPOLOGY_FILE` | `topology.json` |
 | `HISTORY_FILE` | `qa_history.json` |
-| `FAVORITES_FILE` | `favorites.json` |
+| `FAVORITES_FILE` | `kb_favorites.json` |
 | `KNOWLEDGE_DIR` | `data/knowledge` |
 
 **函数：**
@@ -299,9 +299,9 @@ dbsv_admin/
 
 **迁移内容：**
 1. 配置（config.json）
-2. 数据库类型（db_types.json）
+2. 数据库类型（sys_db_types.json）
 3. 问答历史（qa_history.json）
-4. 收藏夹（favorites.json）
+4. 收藏夹（kb_favorites.json）
 5. 集群拓扑基本信息（topology.json）
 6. 知识库文件元数据（扫描目录）
 
@@ -322,7 +322,7 @@ dbsv_admin/
 
 ---
 
-### routes/db_types.py — 数据库类型管理
+### routes/sys_db_types.py — 数据库类型管理
 
 **Blueprint：** `db_types_bp`
 
@@ -363,8 +363,8 @@ dbsv_admin/
 | `/api/knowledge/reindex/stream` | GET | `reindex_stream()` | 流式重建索引（逐个文件，SSE 实时进度，10分钟超时，**含知识图谱提取**） |
 | `/api/knowledge/reindex/file` | POST | `reindex_single_file()` | 单个文件重建向量索引（**含知识图谱提取**） |
 | `/api/knowledge/reindex/db-type` | POST | `reindex_by_db_type()` | 按数据库类型重建向量索引（**含知识图谱提取**） |
-| `/api/favorites` | GET | `get_fav()` | 获取收藏夹 |
-| `/api/favorites` | POST | `toggle_fav()` | 切换收藏状态 |
+| `/api/kb_favorites` | GET | `get_fav()` | 获取收藏夹 |
+| `/api/kb_favorites` | POST | `toggle_fav()` | 切换收藏状态 |
 | `/api/knowledge/preview/<db_type>/<filename>` | GET | `preview_file(db_type, filename)` | 预览文件内容 |
 | `/api/knowledge/tags/<db_type>/<filename>` | PUT | `update_file_tags(db_type, filename)` | 更新文件标签 |
 
@@ -531,26 +531,26 @@ data: [DONE]
 
 | 路由 | 方法 | 函数 | 说明 |
 |------|------|------|------|
-| `/api/topology/clusters` | GET | `get_clusters_list()` | 获取所有集群 |
+| `/api/topology/topo_clusters` | GET | `get_clusters_list()` | 获取所有集群 |
 | `/api/topology/stats` | GET | `get_topology_stats()` | 获取集群拓扑统计聚合数据 |
-| `/api/topology/clusters` | POST | `create_cluster()` | 添加集群 |
-| `/api/topology/clusters/<cluster_id>` | PUT | `update_cluster_info(cluster_id)` | 更新集群 |
-| `/api/topology/clusters/<cluster_id>` | DELETE | `delete_cluster_info(cluster_id)` | 删除集群 |
-| `/api/topology/clusters/<cluster_id>/servers` | POST | `create_server(cluster_id)` | 添加物理机 |
-| `/api/topology/servers/<server_id>` | DELETE | `delete_server_info(server_id)` | 删除物理机 |
-| `/api/topology/servers/<server_id>` | PUT | `update_server_info(server_id)` | 更新物理机 |
-| `/api/topology/servers/<server_id>/instances` | POST | `create_instance(server_id)` | 添加实例 |
-| `/api/topology/instances/<instance_id>` | DELETE | `delete_instance_info(instance_id)` | 删除实例 |
-| `/api/topology/instances/<instance_id>` | GET | `get_instance_info(instance_id)` | 获取实例详情 |
-| `/api/topology/instances/<instance_id>` | PUT | `update_instance_info(instance_id)` | 更新实例 |
-| `/api/topology/clusters/<cluster_id>/tenants` | POST | `create_tenant(cluster_id)` | 添加租户 |
-| `/api/topology/tenants/<tenant_id>` | DELETE | `delete_tenant_info(tenant_id)` | 删除租户 |
-| `/api/topology/tenants/<tenant_id>` | PUT | `update_tenant_info(tenant_id)` | 更新租户 |
-| `/api/topology/instances/relations` | POST | `create_instance_relation()` | 添加实例关系 |
-| `/api/topology/instances/relations` | DELETE | `delete_instance_relation()` | 删除实例关系 |
+| `/api/topology/topo_clusters` | POST | `create_cluster()` | 添加集群 |
+| `/api/topology/topo_clusters/<cluster_id>` | PUT | `update_cluster_info(cluster_id)` | 更新集群 |
+| `/api/topology/topo_clusters/<cluster_id>` | DELETE | `delete_cluster_info(cluster_id)` | 删除集群 |
+| `/api/topology/topo_clusters/<cluster_id>/topo_servers` | POST | `create_server(cluster_id)` | 添加物理机 |
+| `/api/topology/topo_servers/<server_id>` | DELETE | `delete_server_info(server_id)` | 删除物理机 |
+| `/api/topology/topo_servers/<server_id>` | PUT | `update_server_info(server_id)` | 更新物理机 |
+| `/api/topology/topo_servers/<server_id>/topo_instances` | POST | `create_instance(server_id)` | 添加实例 |
+| `/api/topology/topo_instances/<instance_id>` | DELETE | `delete_instance_info(instance_id)` | 删除实例 |
+| `/api/topology/topo_instances/<instance_id>` | GET | `get_instance_info(instance_id)` | 获取实例详情 |
+| `/api/topology/topo_instances/<instance_id>` | PUT | `update_instance_info(instance_id)` | 更新实例 |
+| `/api/topology/topo_clusters/<cluster_id>/topo_tenants` | POST | `create_tenant(cluster_id)` | 添加租户 |
+| `/api/topology/topo_tenants/<tenant_id>` | DELETE | `delete_tenant_info(tenant_id)` | 删除租户 |
+| `/api/topology/topo_tenants/<tenant_id>` | PUT | `update_tenant_info(tenant_id)` | 更新租户 |
+| `/api/topology/topo_instances/relations` | POST | `create_instance_relation()` | 添加实例关系 |
+| `/api/topology/topo_instances/relations` | DELETE | `delete_instance_relation()` | 删除实例关系 |
 | `/api/topology/export` | GET | `export_topology()` | 导出拓扑配置 |
-| `/api/topology/import/servers` | POST | `import_servers()` | 批量导入服务器清单 |
-| `/api/topology/import/instances` | POST | `import_instances()` | 批量导入实例清单 |
+| `/api/topology/import/topo_servers` | POST | `import_servers()` | 批量导入服务器清单 |
+| `/api/topology/import/topo_instances` | POST | `import_instances()` | 批量导入实例清单 |
 | `/api/topology/import` | POST | `import_topology()` | 一键导入完整拓扑 |
 
 ---
@@ -1022,7 +1022,7 @@ data: [DONE]
 | `renderNodeRoleChart(nodeRoleStats)` | 渲染节点角色分布图 |
 | `renderDatacenterChart(datacenterStats)` | 渲染数据中心分布图 |
 | `renderClusterStatsTable(clusterStats)` | 渲染集群统计表格 |
-| `renderServerTable(servers)` | 渲染服务器列表表格 |
+| `renderServerTable(topo_servers)` | 渲染服务器列表表格 |
 | `updateStatsFilterOptions(data)` | 更新筛选下拉框选项 |
 | `resetStatsFilter()` | 重置筛选条件 |
 | `showAddResourcePoolDialog()` | 显示添加资源池对话框 |
@@ -1163,20 +1163,20 @@ data: [DONE]
 
 | 表名 | 用途 | 关键字段 |
 |------|------|----------|
-| `config` | 键值对配置 | key, value |
-| `db_types` | 数据库类型定义 | id, name, icon |
-| `knowledge_files` | 知识库文件元数据 + 内容 | db_type, filename, file_path, file_size, content_text, tags |
+| `sys_config` | 键值对配置 | key, value |
+| `sys_db_types` | 数据库类型定义 | id, name, icon |
+| `kb_files` | 知识库文件元数据 + 内容 | db_type, filename, file_path, file_size, content_text, tags |
 | `qa_history` | 问答历史记录 | id, db_type, question, answer, created_at |
-| `favorites` | 文件收藏 | db_type, filename |
-| `resource_pools` | 资源池信息 | id, name, db_type, environment, description |
-| `clusters` | 集群信息（属于某个资源池） | id, **resource_pool_id**, name, db_type, environment, description |
-| `servers` | 物理机/节点（含 CPU、内存、机房等） | id, resource_pool_id, cluster_id, name, host, datacenter, node_role, hardware_type, cpu, memory, description |
-| `instances` | 实例 | id, server_id, tenant_id, name, port, cpu, memory, role, tenant_role, description |
-| `tenants` | 租户（实例集群） | id, resource_pool_id, cluster_id, name, topology_type, spec, description |
-| `instance_relations` | 实例间关系 | from_instance_id, to_instance_id, relation_type |
-| `embeddings` | 文本块向量嵌入 | file_id, chunk_index, chunk_text, embedding |
-| `operation_logs` | 操作日志 | id, timestamp, module, action, detail, status, ip |
-| `feature_config` | 功能配置（模块开关） | module_id, module_name, module_icon, is_enabled, sort_order |
+| `kb_favorites` | 文件收藏 | db_type, filename |
+| `topo_resource_pools` | 资源池信息 | id, name, db_type, environment, description |
+| `topo_clusters` | 集群信息（属于某个资源池） | id, **resource_pool_id**, name, db_type, environment, description |
+| `topo_servers` | 物理机/节点（含 CPU、内存、机房等） | id, resource_pool_id, cluster_id, name, host, datacenter, node_role, hardware_type, cpu, memory, description |
+| `topo_instances` | 实例 | id, server_id, tenant_id, name, port, cpu, memory, role, tenant_role, description |
+| `topo_tenants` | 租户（实例集群） | id, resource_pool_id, cluster_id, name, topology_type, spec, description |
+| `topo_instance_relations` | 实例间关系 | from_instance_id, to_instance_id, relation_type |
+| `kb_embeddings` | 文本块向量嵌入 | file_id, chunk_index, chunk_text, embedding |
+| `audit_operation_logs` | 操作日志 | id, timestamp, module, action, detail, status, ip |
+| `sys_feature_config` | 功能配置（模块开关） | module_id, module_name, module_icon, is_enabled, sort_order |
 | `log_analysis_tasks` | 日志分析任务 | id, name, question, db_type, status, current_stage, stages, report, created_at, completed_at |
 | `log_analysis_files` | 日志分析文件 | id, task_id, filename, file_path, file_size, content_text, is_key_log |
 | `agent_ssh_connections` | SSH连接配置 | id, name, host, port, username, auth_type, db_type, os_type, status |
@@ -1204,8 +1204,8 @@ data: [DONE]
 - `PUT /api/knowledge/tags/<db_type>/<filename>` — 更新标签
 
 ### 收藏夹
-- `GET /api/favorites` — 获取收藏
-- `POST /api/favorites` — 切换收藏
+- `GET /api/kb_favorites` — 获取收藏
+- `POST /api/kb_favorites` — 切换收藏
 
 ### 知识问答
 - `GET /api/qa/templates` — 获取模板
@@ -1251,23 +1251,23 @@ data: [DONE]
 - `GET /api/commands/search?keyword=` — 跨库搜索命令
 
 ### 集群拓扑
-- `GET /api/topology/clusters` — 获取集群列表
+- `GET /api/topology/topo_clusters` — 获取集群列表
 - `GET /api/topology/stats` — 获取集群拓扑统计聚合数据（支持 cluster/datacenter/db_type/environment 筛选）
-- `POST /api/topology/clusters` — 添加集群
-- `PUT /api/topology/clusters/<id>` — 更新集群
-- `DELETE /api/topology/clusters/<id>` — 删除集群
-- `POST /api/topology/clusters/<id>/servers` — 添加物理机
-- `DELETE /api/topology/servers/<id>` — 删除物理机
-- `PUT /api/topology/servers/<id>` — 更新物理机
-- `POST /api/topology/servers/<id>/instances` — 添加实例
-- `DELETE /api/topology/instances/<id>` — 删除实例
-- `GET /api/topology/instances/<id>` — 获取实例详情
-- `PUT /api/topology/instances/<id>` — 更新实例
-- `POST /api/topology/clusters/<id>/tenants` — 添加租户
-- `DELETE /api/topology/tenants/<id>` — 删除租户
-- `PUT /api/topology/tenants/<id>` — 更新租户
-- `POST /api/topology/instances/relations` — 添加关系
-- `DELETE /api/topology/instances/relations` — 删除关系
+- `POST /api/topology/topo_clusters` — 添加集群
+- `PUT /api/topology/topo_clusters/<id>` — 更新集群
+- `DELETE /api/topology/topo_clusters/<id>` — 删除集群
+- `POST /api/topology/topo_clusters/<id>/topo_servers` — 添加物理机
+- `DELETE /api/topology/topo_servers/<id>` — 删除物理机
+- `PUT /api/topology/topo_servers/<id>` — 更新物理机
+- `POST /api/topology/topo_servers/<id>/topo_instances` — 添加实例
+- `DELETE /api/topology/topo_instances/<id>` — 删除实例
+- `GET /api/topology/topo_instances/<id>` — 获取实例详情
+- `PUT /api/topology/topo_instances/<id>` — 更新实例
+- `POST /api/topology/topo_clusters/<id>/topo_tenants` — 添加租户
+- `DELETE /api/topology/topo_tenants/<id>` — 删除租户
+- `PUT /api/topology/topo_tenants/<id>` — 更新租户
+- `POST /api/topology/topo_instances/relations` — 添加关系
+- `DELETE /api/topology/topo_instances/relations` — 删除关系
 - `GET /api/topology/export` — 导出拓扑
 
 ### 系统配置（多模型）
@@ -1332,7 +1332,7 @@ data: [DONE]
 1. **路由命名**：使用 RESTful 风格，复数名词
 2. **参数校验**：必填参数必须校验，特别是路径参数（如 `db_type`）需防止路径遍历
 3. **错误处理**：返回标准错误格式，捕获具体异常类型而非 `except Exception`
-4. **日志记录**：重要操作记录到 operation_logs
+4. **日志记录**：重要操作记录到 audit_operation_logs
 5. **流式响应**：使用 `stream_llm_response()` 通用函数生成 SSE 响应
 
 ### 前端开发规范

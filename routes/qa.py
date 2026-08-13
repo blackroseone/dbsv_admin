@@ -287,7 +287,7 @@ def _build_qa_messages(db_type, question, use_rag, conversation_id=None, use_top
                         seen_keyword_chunks = set()
                         for kw in keywords:
                             rows = conn.execute(
-                                "SELECT id, filename, content_text FROM knowledge_files "
+                                "SELECT id, filename, content_text FROM kb_files "
                                 "WHERE db_type='_system' AND content_text LIKE ?",
                                 (f'%{kw}%',)
                             ).fetchall()
@@ -360,8 +360,8 @@ def _build_qa_messages(db_type, question, use_rag, conversation_id=None, use_top
                 for result in all_vector_results[:5]:
                     # 查找 chunk ID
                     row = conn.execute(
-                        """SELECT e.id FROM embeddings e
-                        JOIN knowledge_files k ON e.file_id = k.id
+                        """SELECT e.id FROM kb_embeddings e
+                        JOIN kb_files k ON e.file_id = k.id
                         WHERE k.filename=? AND e.chunk_text=?""",
                         (result['filename'], result['chunk_text'])
                     ).fetchone()

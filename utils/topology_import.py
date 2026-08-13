@@ -105,7 +105,7 @@ def _import_single_server(data, conn):
 
     # 1. 查找或创建资源池
     pool_row = conn.execute(
-        "SELECT id, db_type FROM resource_pools WHERE name=?",
+        "SELECT id, db_type FROM topo_resource_pools WHERE name=?",
         (pool_name,)
     ).fetchone()
 
@@ -114,13 +114,13 @@ def _import_single_server(data, conn):
         # 如果数据库类型有变化，更新资源池
         if pool_db_type and pool_db_type != pool_row['db_type']:
             conn.execute(
-                "UPDATE resource_pools SET db_type=? WHERE id=?",
+                "UPDATE topo_resource_pools SET db_type=? WHERE id=?",
                 (pool_db_type, pool_id)
             )
     else:
         pool_id = str(uuid.uuid4())
         conn.execute(
-            "INSERT INTO resource_pools (id, name, db_type, environment, description) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO topo_resource_pools (id, name, db_type, environment, description) VALUES (?, ?, ?, ?, ?)",
             (pool_id, pool_name, pool_db_type, pool_env, '')
         )
 
@@ -128,7 +128,7 @@ def _import_single_server(data, conn):
     cluster_id = ''
     if cluster_name:
         cluster_row = conn.execute(
-            "SELECT id FROM clusters WHERE name=? AND resource_pool_id=?",
+            "SELECT id FROM topo_clusters WHERE name=? AND resource_pool_id=?",
             (cluster_name, pool_id)
         ).fetchone()
 
@@ -137,20 +137,20 @@ def _import_single_server(data, conn):
         else:
             cluster_id = str(uuid.uuid4())
             conn.execute(
-                "INSERT INTO clusters (id, resource_pool_id, name, description) VALUES (?, ?, ?, ?)",
+                "INSERT INTO topo_clusters (id, resource_pool_id, name, description) VALUES (?, ?, ?, ?)",
                 (cluster_id, pool_id, cluster_name, '')
             )
 
     # 3. 查找或创建服务器（按IP去重）
     server_row = conn.execute(
-        "SELECT id FROM servers WHERE host=?",
+        "SELECT id FROM topo_servers WHERE host=?",
         (ip,)
     ).fetchone()
 
     if server_row:
         # 更新现有服务器
         conn.execute(
-            """UPDATE servers SET
+            """UPDATE topo_servers SET
                 resource_pool_id=?, cluster_id=?, name=?, sn=?, datacenter=?,
                 node_role=?, hardware_type=?, cpu=?, memory=?, description=?
             WHERE host=?""",
@@ -161,7 +161,7 @@ def _import_single_server(data, conn):
         # 创建新服务器
         server_id = str(uuid.uuid4())
         conn.execute(
-            """INSERT INTO servers
+            """INSERT INTO topo_servers
                 (id, resource_pool_id, cluster_id, name, sn, host, datacenter,
                  node_role, hardware_type, cpu, memory, description)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -241,7 +241,7 @@ def _import_single_instance(data, conn):
 
     # 1. 通过IP查找服务器
     server_row = conn.execute(
-        "SELECT id, resource_pool_id FROM servers WHERE host=?",
+        "SELECT id, resource_pool_id FROM topo_servers WHERE host=?",
         (ip,)
     ).fetchone()
 
@@ -253,7 +253,7 @@ def _import_single_instance(data, conn):
 
     # 2. 查找或创建租户（按名称+资源池去重）
     tenant_row = conn.execute(
-        "SELECT id FROM tenants WHERE name=? AND resource_pool_id=?",
+        "SELECT id FROM topo_tenants WHERE name=? AND resource_pool_id=?",
         (tenant_name, resource_pool_id)
     ).fetchone()
 
@@ -262,20 +262,20 @@ def _import_single_instance(data, conn):
     else:
         tenant_id = str(uuid.uuid4())
         conn.execute(
-            "INSERT INTO tenants (id, resource_pool_id, name, topology_type, spec, description) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO topo_tenants (id, resource_pool_id, name, topology_type, spec, description) VALUES (?, ?, ?, ?, ?, ?)",
             (tenant_id, resource_pool_id, tenant_name, tenant_topology, tenant_spec, '')
         )
 
     # 3. 查找或创建实例（按服务器+名称+端口去重）
     instance_row = conn.execute(
-        "SELECT id FROM instances WHERE server_id=? AND name=? AND port=?",
+        "SELECT id FROM topo_instances WHERE server_id=? AND name=? AND port=?",
         (server_id, instance_name, port)
     ).fetchone()
 
     if instance_row:
         # 更新现有实例
         conn.execute(
-            """UPDATE instances SET
+            """UPDATE topo_instances SET
                 tenant_id=?, role=?, cpu=?, memory=?, description=?
             WHERE id=?""",
             (tenant_id, role, cpu, memory, description, instance_row['id'])
@@ -284,7 +284,7 @@ def _import_single_instance(data, conn):
         # 创建新实例
         instance_id = str(uuid.uuid4())
         conn.execute(
-            """INSERT INTO instances
+            """INSERT INTO topo_instances
                 (id, server_id, tenant_id, name, port, cpu, memory, role, tenant_role, description)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (instance_id, server_id, tenant_id, instance_name, port,

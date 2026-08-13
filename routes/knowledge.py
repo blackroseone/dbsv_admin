@@ -561,7 +561,7 @@ def update_file_tags(db_type, filename):
     tags_str = json.dumps(tags, ensure_ascii=False)
 
     conn.execute(
-        "UPDATE knowledge_files SET tags=? WHERE db_type=? AND filename=?",
+        "UPDATE kb_files SET tags=? WHERE db_type=? AND filename=?",
         (tags_str, db_type, filename)
     )
     conn.commit()

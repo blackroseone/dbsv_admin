@@ -195,7 +195,7 @@ def update_server_info(server_id):
     if cluster_name:
         # 根据名称查找集群
         row = conn.execute(
-            "SELECT id FROM clusters WHERE name=?",
+            "SELECT id FROM topo_clusters WHERE name=?",
             (cluster_name,)
         ).fetchone()
 
@@ -207,19 +207,19 @@ def update_server_info(server_id):
             new_cluster_id = str(uuid.uuid4())
             # 获取当前服务器的 resource_pool_id
             server_row = conn.execute(
-                "SELECT resource_pool_id FROM servers WHERE id=?",
+                "SELECT resource_pool_id FROM topo_servers WHERE id=?",
                 (server_id,)
             ).fetchone()
             resource_pool_id = server_row['resource_pool_id'] if server_row else ''
 
             conn.execute(
-                "INSERT INTO clusters (id, resource_pool_id, name, description) VALUES (?, ?, ?, ?)",
+                "INSERT INTO topo_clusters (id, resource_pool_id, name, description) VALUES (?, ?, ?, ?)",
                 (new_cluster_id, resource_pool_id, cluster_name, '')
             )
             cluster_id = new_cluster_id
 
     conn.execute(
-        "UPDATE servers SET name=?, host=?, datacenter=?, cluster_id=?, node_role=?, hardware_type=?, cpu=?, memory=?, description=?, sn=? WHERE id=?",
+        "UPDATE topo_servers SET name=?, host=?, datacenter=?, cluster_id=?, node_role=?, hardware_type=?, cpu=?, memory=?, description=?, sn=? WHERE id=?",
         (data.get('name', ''), data.get('host', ''), data.get('datacenter', ''), cluster_id, data.get('node_role', '计算节点'), data.get('hardware_type', '非信创物理机'), data.get('cpu', ''), data.get('memory', ''), data.get('description', ''), data.get('sn', ''), server_id)
     )
     conn.commit()
@@ -241,13 +241,13 @@ def update_instance_info(instance_id):
     if tenant_id:
         # 关联到租户
         conn.execute(
-            "UPDATE instances SET name=?, port=?, cpu=?, memory=?, role=?, tenant_id=?, tenant_role=?, description=? WHERE id=?",
+            "UPDATE topo_instances SET name=?, port=?, cpu=?, memory=?, role=?, tenant_id=?, tenant_role=?, description=? WHERE id=?",
             (data.get('name', ''), data.get('port', ''), data.get('cpu', ''), data.get('memory', ''), data.get('role', 'slave'), tenant_id, tenant_role, data.get('description', ''), instance_id)
         )
     else:
         # 移除租户关联
         conn.execute(
-            "UPDATE instances SET name=?, port=?, cpu=?, memory=?, role=?, tenant_id=NULL, tenant_role='slave', description=? WHERE id=?",
+            "UPDATE topo_instances SET name=?, port=?, cpu=?, memory=?, role=?, tenant_id=NULL, tenant_role='slave', description=? WHERE id=?",
             (data.get('name', ''), data.get('port', ''), data.get('cpu', ''), data.get('memory', ''), data.get('role', 'slave'), data.get('description', ''), instance_id)
         )
     conn.commit()
@@ -263,7 +263,7 @@ def update_tenant_info(tenant_id):
     from db.database import get_db
     conn = get_db()
     conn.execute(
-        "UPDATE tenants SET name=?, topology_type=?, spec=?, description=? WHERE id=?",
+        "UPDATE topo_tenants SET name=?, topology_type=?, spec=?, description=? WHERE id=?",
         (data.get('name', ''), data.get('topology_type', 'master-slave'), data.get('spec', 'small-8c32g'), data.get('description', ''), tenant_id)
     )
     conn.commit()
@@ -422,55 +422,55 @@ def get_topology_stats():
 
     # 1. 资源池列表（用于筛选）
     resource_pools_rows = conn.execute(
-        "SELECT id, name, db_type, environment FROM resource_pools ORDER BY name"
+        "SELECT id, name, db_type, environment FROM topo_resource_pools ORDER BY name"
     ).fetchall()
     resource_pools = [dict(r) for r in resource_pools_rows]
 
     # 2. 总览数据
     # 物理机/虚拟机总数
     server_sql = f"""
-        SELECT COUNT(*) as count FROM servers s
-        JOIN resource_pools rp ON s.resource_pool_id = rp.id
+        SELECT COUNT(*) as count FROM topo_servers s
+        JOIN topo_resource_pools rp ON s.resource_pool_id = rp.id
         WHERE {where_clause}
     """
     server_count = conn.execute(server_sql, params).fetchone()['count']
 
     # 实例总数
     instance_sql = f"""
-        SELECT COUNT(*) as count FROM instances i
-        JOIN servers s ON i.server_id = s.id
-        JOIN resource_pools rp ON s.resource_pool_id = rp.id
+        SELECT COUNT(*) as count FROM topo_instances i
+        JOIN topo_servers s ON i.server_id = s.id
+        JOIN topo_resource_pools rp ON s.resource_pool_id = rp.id
         WHERE {where_clause}
     """
     instance_count = conn.execute(instance_sql, params).fetchone()['count']
 
     # 租户总数
     tenant_sql = f"""
-        SELECT COUNT(*) as count FROM tenants t
-        JOIN resource_pools rp ON t.resource_pool_id = rp.id
+        SELECT COUNT(*) as count FROM topo_tenants t
+        JOIN topo_resource_pools rp ON t.resource_pool_id = rp.id
         WHERE {where_clause}
     """
     tenant_count = conn.execute(tenant_sql, params).fetchone()['count']
 
     # 资源池总数
     resource_pool_sql = f"""
-        SELECT COUNT(*) as count FROM resource_pools rp
+        SELECT COUNT(*) as count FROM topo_resource_pools rp
         WHERE {where_clause}
     """
     resource_pool_count = conn.execute(resource_pool_sql, params).fetchone()['count']
 
     # 集群总数（基于 clusters 表）
     cluster_sql = f"""
-        SELECT COUNT(DISTINCT c.id) as count FROM clusters c
-        JOIN resource_pools rp ON c.resource_pool_id = rp.id
+        SELECT COUNT(DISTINCT c.id) as count FROM topo_clusters c
+        JOIN topo_resource_pools rp ON c.resource_pool_id = rp.id
         WHERE {where_clause}
     """
     cluster_count = conn.execute(cluster_sql, params).fetchone()['count']
 
     # 3. 按硬件类型统计（区分物理机/虚拟机）
     hardware_sql = f"""
-        SELECT s.hardware_type, COUNT(*) as count FROM servers s
-        JOIN resource_pools rp ON s.resource_pool_id = rp.id
+        SELECT s.hardware_type, COUNT(*) as count FROM topo_servers s
+        JOIN topo_resource_pools rp ON s.resource_pool_id = rp.id
         WHERE {where_clause}
         GROUP BY s.hardware_type
         ORDER BY count DESC
@@ -480,8 +480,8 @@ def get_topology_stats():
 
     # 4. 按节点角色统计
     node_role_sql = f"""
-        SELECT s.node_role, COUNT(*) as count FROM servers s
-        JOIN resource_pools rp ON s.resource_pool_id = rp.id
+        SELECT s.node_role, COUNT(*) as count FROM topo_servers s
+        JOIN topo_resource_pools rp ON s.resource_pool_id = rp.id
         WHERE {where_clause}
         GROUP BY s.node_role
         ORDER BY count DESC
@@ -499,10 +499,10 @@ def get_topology_stats():
             COUNT(DISTINCT s.id) as server_count,
             COUNT(DISTINCT i.id) as instance_count,
             COUNT(DISTINCT t.id) as tenant_count
-        FROM resource_pools rp
-        LEFT JOIN servers s ON rp.id = s.resource_pool_id
-        LEFT JOIN instances i ON s.id = i.server_id
-        LEFT JOIN tenants t ON rp.id = t.resource_pool_id
+        FROM topo_resource_pools rp
+        LEFT JOIN topo_servers s ON rp.id = s.resource_pool_id
+        LEFT JOIN topo_instances i ON s.id = i.server_id
+        LEFT JOIN topo_tenants t ON rp.id = t.resource_pool_id
         WHERE {where_clause}
         GROUP BY rp.id, rp.name, rp.db_type, rp.environment
         ORDER BY rp.name
@@ -512,8 +512,8 @@ def get_topology_stats():
 
     # 6. 按数据中心统计
     datacenter_sql = f"""
-        SELECT s.datacenter, COUNT(*) as count FROM servers s
-        JOIN resource_pools rp ON s.resource_pool_id = rp.id
+        SELECT s.datacenter, COUNT(*) as count FROM topo_servers s
+        JOIN topo_resource_pools rp ON s.resource_pool_id = rp.id
         WHERE {where_clause} AND s.datacenter != ''
         GROUP BY s.datacenter
         ORDER BY count DESC
@@ -534,9 +534,9 @@ def get_topology_stats():
             rp.name as resource_pool_name,
             rp.db_type,
             COALESCE(c.name, s.cluster_id) as cluster_name
-        FROM servers s
-        JOIN resource_pools rp ON s.resource_pool_id = rp.id
-        LEFT JOIN clusters c ON s.cluster_id = c.id
+        FROM topo_servers s
+        JOIN topo_resource_pools rp ON s.resource_pool_id = rp.id
+        LEFT JOIN topo_clusters c ON s.cluster_id = c.id
         WHERE {where_clause}
         ORDER BY rp.name, s.name
     """
@@ -556,9 +556,9 @@ def get_topology_stats():
             s.name as server_name,
             s.host as server_host,
             rp.name as resource_pool_name
-        FROM instances i
-        JOIN servers s ON i.server_id = s.id
-        JOIN resource_pools rp ON s.resource_pool_id = rp.id
+        FROM topo_instances i
+        JOIN topo_servers s ON i.server_id = s.id
+        JOIN topo_resource_pools rp ON s.resource_pool_id = rp.id
         WHERE {where_clause}
         ORDER BY rp.name, s.name, i.name
     """
@@ -570,9 +570,9 @@ def get_topology_stats():
         SELECT
             COALESCE(c.name, '默认集群') as cluster_name,
             COUNT(*) as count
-        FROM servers s
-        JOIN resource_pools rp ON s.resource_pool_id = rp.id
-        LEFT JOIN clusters c ON s.cluster_id = c.id
+        FROM topo_servers s
+        JOIN topo_resource_pools rp ON s.resource_pool_id = rp.id
+        LEFT JOIN topo_clusters c ON s.cluster_id = c.id
         WHERE {where_clause}
         GROUP BY c.name, s.cluster_id
         ORDER BY count DESC
@@ -585,9 +585,9 @@ def get_topology_stats():
         SELECT
             t.name as tenant_name,
             COUNT(i.id) as count
-        FROM tenants t
-        JOIN resource_pools rp ON t.resource_pool_id = rp.id
-        LEFT JOIN instances i ON t.id = i.tenant_id
+        FROM topo_tenants t
+        JOIN topo_resource_pools rp ON t.resource_pool_id = rp.id
+        LEFT JOIN topo_instances i ON t.id = i.tenant_id
         WHERE {where_clause}
         GROUP BY t.id, t.name
         ORDER BY count DESC

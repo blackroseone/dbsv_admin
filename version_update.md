@@ -9,6 +9,16 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v3.0.11 (2026-08-13)
+
+### 🏷️ 表名模块前缀标准化（全量重命名）
+
+- 15 张无前缀表统一加模块前缀：`topo_`（集群拓扑 resource_pools/clusters/servers/instances/tenants/instance_relations）、`kb_`（知识库 knowledge_files/favorites/embeddings）、`sys_`（config/db_types/feature_config）、`audit_`（operation_logs）。
+- **迁移**：init_db 幂等 `ALTER TABLE RENAME`（旧表存在且新表不存在才改名，先于建表脚本执行避免新旧并存冲突），自动更新 FK 引用；旧索引名 DROP 后按新名重建。新库直接按新名建表。
+- **代码**：9 个 py 文件全部 SQL 引用改新名（db/database.py、routes/topology.py、utils/topology_import.py、db/kg_database.py、routes/dashboard.py、routes/qa.py、routes/knowledge.py、rag/embedder.py、db/migration.py）；**API 响应字段名不变**（前端零改动）；Python 函数/模块名不变。
+- **清理**：移除遗留空表 `nodes`/`node_connections`（旧版拓扑遗留，无代码引用）。
+- 文档：tables_desc.md / code_desc.md 表名与索引名同步。
+
 ## v3.0.10 (2026-08-12)
 
 ### 🧾 运维操作两分法 + 变更类审批闭环

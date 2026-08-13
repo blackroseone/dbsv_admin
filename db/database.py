@@ -76,22 +76,74 @@ class transaction:
         return self.conn.execute(sql, parameters).fetchall()
 
 
+# ==================== 表名模块前缀标准化映射 ====================
+# 无前缀表统一加模块前缀：topo_(集群拓扑) / kb_(知识库) / sys_(系统) / audit_(审计)。
+# 用于 init_db 中幂等 RENAME 迁移；新库直接按新名建表。
+TABLE_RENAME_MAP = [
+    ('resource_pools', 'topo_resource_pools'),
+    ('clusters', 'topo_clusters'),
+    ('servers', 'topo_servers'),
+    ('instances', 'topo_instances'),
+    ('tenants', 'topo_tenants'),
+    ('instance_relations', 'topo_instance_relations'),
+    ('knowledge_files', 'kb_files'),
+    ('favorites', 'kb_favorites'),
+    ('embeddings', 'kb_embeddings'),
+    ('config', 'sys_config'),
+    ('db_types', 'sys_db_types'),
+    ('feature_config', 'sys_feature_config'),
+    ('operation_logs', 'audit_operation_logs'),
+]
+# 旧索引名（RENAME 后索引跟随表但名称不变，需 DROP 旧名，由 executescript 按新名重建）
+OLD_INDEX_NAMES = [
+    'idx_knowledge_files_db_type', 'idx_knowledge_files_db_type_created',
+    'idx_servers_cluster', 'idx_instances_server', 'idx_tenants_resource_pool',
+    'idx_embeddings_file', 'idx_operation_logs_timestamp', 'idx_operation_logs_module',
+]
+
+
+def _migrate_table_renames(conn):
+    """表名模块前缀迁移：旧表存在且新表不存在时 RENAME（幂等）。
+
+    必须在 executescript 之前执行，否则 executescript 会先按新名建空表，
+    与 RENAME 目标冲突。RENAME 后旧索引名 DROP，由 executescript 重建新名索引。
+    """
+    for old, new in TABLE_RENAME_MAP:
+        old_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (old,)
+        ).fetchone()
+        if not old_exists:
+            continue
+        new_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (new,)
+        ).fetchone()
+        if new_exists:
+            continue
+        conn.execute(f"ALTER TABLE {old} RENAME TO {new}")
+        conn.commit()
+    for idx in OLD_INDEX_NAMES:
+        conn.execute(f"DROP INDEX IF EXISTS {idx}")
+    conn.commit()
+
+
 def init_db():
     """初始化数据库表结构"""
     conn = get_db()
+    # 表名前缀迁移必须先于建表脚本（见 _migrate_table_renames 注释）
+    _migrate_table_renames(conn)
     conn.executescript('''
-        CREATE TABLE IF NOT EXISTS config (
+        CREATE TABLE IF NOT EXISTS sys_config (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS db_types (
+        CREATE TABLE IF NOT EXISTS sys_db_types (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             icon TEXT DEFAULT '📁'
         );
 
-        CREATE TABLE IF NOT EXISTS knowledge_files (
+        CREATE TABLE IF NOT EXISTS kb_files (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             db_type TEXT NOT NULL,
             filename TEXT NOT NULL,
@@ -124,7 +176,7 @@ def init_db():
 
         CREATE INDEX IF NOT EXISTS idx_qa_messages_conversation ON qa_messages(conversation_id);
 
-        CREATE TABLE IF NOT EXISTS favorites (
+        CREATE TABLE IF NOT EXISTS kb_favorites (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             db_type TEXT NOT NULL,
             filename TEXT NOT NULL,
@@ -132,7 +184,7 @@ def init_db():
             UNIQUE(db_type, filename)
         );
 
-        CREATE TABLE IF NOT EXISTS resource_pools (
+        CREATE TABLE IF NOT EXISTS topo_resource_pools (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             db_type TEXT,
@@ -142,17 +194,17 @@ def init_db():
         );
 
         -- 集群表（属于某个资源池）
-        CREATE TABLE IF NOT EXISTS clusters (
+        CREATE TABLE IF NOT EXISTS topo_clusters (
             id TEXT PRIMARY KEY,
             resource_pool_id TEXT NOT NULL,
             name TEXT NOT NULL,
             description TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (resource_pool_id) REFERENCES resource_pools(id) ON DELETE CASCADE
+            FOREIGN KEY (resource_pool_id) REFERENCES topo_resource_pools(id) ON DELETE CASCADE
         );
 
         -- 物理机表
-        CREATE TABLE IF NOT EXISTS servers (
+        CREATE TABLE IF NOT EXISTS topo_servers (
             id TEXT PRIMARY KEY,
             resource_pool_id TEXT NOT NULL,
             cluster_id TEXT DEFAULT '',
@@ -165,11 +217,11 @@ def init_db():
             cpu TEXT,
             memory TEXT,
             description TEXT,
-            FOREIGN KEY (resource_pool_id) REFERENCES resource_pools(id) ON DELETE CASCADE
+            FOREIGN KEY (resource_pool_id) REFERENCES topo_resource_pools(id) ON DELETE CASCADE
         );
 
         -- 实例表
-        CREATE TABLE IF NOT EXISTS instances (
+        CREATE TABLE IF NOT EXISTS topo_instances (
             id TEXT PRIMARY KEY,
             server_id TEXT NOT NULL,
             tenant_id TEXT,
@@ -180,47 +232,47 @@ def init_db():
             role TEXT DEFAULT 'slave',
             tenant_role TEXT DEFAULT 'slave',
             description TEXT,
-            FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE,
-            FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE SET NULL
+            FOREIGN KEY (server_id) REFERENCES topo_servers(id) ON DELETE CASCADE,
+            FOREIGN KEY (tenant_id) REFERENCES topo_tenants(id) ON DELETE SET NULL
         );
 
         -- 租户（实例集群）表
-        CREATE TABLE IF NOT EXISTS tenants (
+        CREATE TABLE IF NOT EXISTS topo_tenants (
             id TEXT PRIMARY KEY,
             resource_pool_id TEXT NOT NULL,
             name TEXT NOT NULL,
             topology_type TEXT DEFAULT 'master-slave',
             spec TEXT DEFAULT 'small-8c32g',
             description TEXT,
-            FOREIGN KEY (resource_pool_id) REFERENCES resource_pools(id) ON DELETE CASCADE
+            FOREIGN KEY (resource_pool_id) REFERENCES topo_resource_pools(id) ON DELETE CASCADE
         );
 
         -- 实例之间的关系表（主从关系）
-        CREATE TABLE IF NOT EXISTS instance_relations (
+        CREATE TABLE IF NOT EXISTS topo_instance_relations (
             from_instance_id TEXT NOT NULL,
             to_instance_id TEXT NOT NULL,
             relation_type TEXT DEFAULT 'replication',
             PRIMARY KEY (from_instance_id, to_instance_id),
-            FOREIGN KEY (from_instance_id) REFERENCES instances(id) ON DELETE CASCADE,
-            FOREIGN KEY (to_instance_id) REFERENCES instances(id) ON DELETE CASCADE
+            FOREIGN KEY (from_instance_id) REFERENCES topo_instances(id) ON DELETE CASCADE,
+            FOREIGN KEY (to_instance_id) REFERENCES topo_instances(id) ON DELETE CASCADE
         );
 
-        CREATE TABLE IF NOT EXISTS embeddings (
+        CREATE TABLE IF NOT EXISTS kb_embeddings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             file_id INTEGER,
             chunk_index INTEGER,
             chunk_text TEXT,
             embedding BLOB,
-            FOREIGN KEY (file_id) REFERENCES knowledge_files(id) ON DELETE CASCADE
+            FOREIGN KEY (file_id) REFERENCES kb_files(id) ON DELETE CASCADE
         );
 
-        CREATE INDEX IF NOT EXISTS idx_knowledge_files_db_type ON knowledge_files(db_type);
-        CREATE INDEX IF NOT EXISTS idx_knowledge_files_db_type_created ON knowledge_files(db_type, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_kb_files_db_type ON kb_files(db_type);
+        CREATE INDEX IF NOT EXISTS idx_kb_files_db_type_created ON kb_files(db_type, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_qa_messages_conversation ON qa_messages(conversation_id);
-        CREATE INDEX IF NOT EXISTS idx_servers_cluster ON servers(cluster_id);
-        CREATE INDEX IF NOT EXISTS idx_instances_server ON instances(server_id);
-        CREATE INDEX IF NOT EXISTS idx_tenants_resource_pool ON tenants(resource_pool_id);
-        CREATE INDEX IF NOT EXISTS idx_embeddings_file ON embeddings(file_id);
+        CREATE INDEX IF NOT EXISTS idx_topo_servers_cluster ON topo_servers(cluster_id);
+        CREATE INDEX IF NOT EXISTS idx_topo_instances_server ON topo_instances(server_id);
+        CREATE INDEX IF NOT EXISTS idx_topo_tenants_resource_pool ON topo_tenants(resource_pool_id);
+        CREATE INDEX IF NOT EXISTS idx_kb_embeddings_file ON kb_embeddings(file_id);
 
         -- ==================== Agent模块数据表 ====================
 
@@ -354,7 +406,7 @@ def init_db():
 
         -- ==================== 操作日志 ====================
 
-        CREATE TABLE IF NOT EXISTS operation_logs (
+        CREATE TABLE IF NOT EXISTS audit_operation_logs (
             id TEXT PRIMARY KEY,
             timestamp TEXT NOT NULL,
             module TEXT NOT NULL,
@@ -363,8 +415,8 @@ def init_db():
             status TEXT DEFAULT 'success',
             ip TEXT DEFAULT ''
         );
-        CREATE INDEX IF NOT EXISTS idx_operation_logs_timestamp ON operation_logs(timestamp DESC);
-        CREATE INDEX IF NOT EXISTS idx_operation_logs_module ON operation_logs(module);
+        CREATE INDEX IF NOT EXISTS idx_audit_operation_logs_timestamp ON audit_operation_logs(timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_audit_operation_logs_module ON audit_operation_logs(module);
 
         -- 日志分析任务表
         CREATE TABLE IF NOT EXISTS log_analysis_tasks (
@@ -434,7 +486,7 @@ def init_db():
             entity_id INTEGER NOT NULL,
             mention_count INTEGER DEFAULT 1,
             PRIMARY KEY (chunk_id, entity_id),
-            FOREIGN KEY (chunk_id) REFERENCES embeddings(id) ON DELETE CASCADE,
+            FOREIGN KEY (chunk_id) REFERENCES kb_embeddings(id) ON DELETE CASCADE,
             FOREIGN KEY (entity_id) REFERENCES kg_entities(id) ON DELETE CASCADE
         );
 
@@ -452,54 +504,54 @@ def init_db():
     # 初始化功能配置表
     _init_feature_config(conn)
 
-    # 数据库迁移：添加 datacenter 字段到 servers 表
+    # 数据库迁移：添加 datacenter 字段到 topo_servers 表
     try:
-        conn.execute("SELECT datacenter FROM servers LIMIT 1")
+        conn.execute("SELECT datacenter FROM topo_servers LIMIT 1")
     except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE servers ADD COLUMN datacenter TEXT DEFAULT ''")
+        conn.execute("ALTER TABLE topo_servers ADD COLUMN datacenter TEXT DEFAULT ''")
         conn.commit()
 
-    # 数据库迁移：添加 cpu 和 memory 字段到 servers 表
+    # 数据库迁移：添加 cpu 和 memory 字段到 topo_servers 表
     try:
-        conn.execute("SELECT cpu FROM servers LIMIT 1")
+        conn.execute("SELECT cpu FROM topo_servers LIMIT 1")
     except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE servers ADD COLUMN cpu TEXT")
-        conn.commit()
-
-    try:
-        conn.execute("SELECT memory FROM servers LIMIT 1")
-    except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE servers ADD COLUMN memory TEXT")
-        conn.commit()
-
-    # 数据库迁移：添加 role 字段到 instances 表
-    try:
-        conn.execute("SELECT role FROM instances LIMIT 1")
-    except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE instances ADD COLUMN role TEXT DEFAULT 'slave'")
-        conn.commit()
-
-    # 数据库迁移：添加 tenant_id 和 tenant_role 字段到 instances 表
-    try:
-        conn.execute("SELECT tenant_id FROM instances LIMIT 1")
-    except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE instances ADD COLUMN tenant_id TEXT")
+        conn.execute("ALTER TABLE topo_servers ADD COLUMN cpu TEXT")
         conn.commit()
 
     try:
-        conn.execute("SELECT tenant_role FROM instances LIMIT 1")
+        conn.execute("SELECT memory FROM topo_servers LIMIT 1")
     except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE instances ADD COLUMN tenant_role TEXT DEFAULT 'slave'")
+        conn.execute("ALTER TABLE topo_servers ADD COLUMN memory TEXT")
+        conn.commit()
+
+    # 数据库迁移：添加 role 字段到 topo_instances 表
+    try:
+        conn.execute("SELECT role FROM topo_instances LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE topo_instances ADD COLUMN role TEXT DEFAULT 'slave'")
+        conn.commit()
+
+    # 数据库迁移：添加 tenant_id 和 tenant_role 字段到 topo_instances 表
+    try:
+        conn.execute("SELECT tenant_id FROM topo_instances LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE topo_instances ADD COLUMN tenant_id TEXT")
+        conn.commit()
+
+    try:
+        conn.execute("SELECT tenant_role FROM topo_instances LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE topo_instances ADD COLUMN tenant_role TEXT DEFAULT 'slave'")
         conn.commit()
 
     # 数据库迁移：删除 tenant_instances 表（如果存在）
     try:
         conn.execute("SELECT 1 FROM tenant_instances LIMIT 1")
-        # 如果表存在，迁移数据到 instances 表
+        # 如果表存在，迁移数据到 topo_instances 表
         rows = conn.execute("SELECT tenant_id, instance_id, role FROM tenant_instances").fetchall()
         for row in rows:
             conn.execute(
-                "UPDATE instances SET tenant_id=?, tenant_role=? WHERE id=?",
+                "UPDATE topo_instances SET tenant_id=?, tenant_role=? WHERE id=?",
                 (row['tenant_id'], row['role'], row['instance_id'])
             )
         conn.execute("DROP TABLE tenant_instances")
@@ -507,83 +559,83 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # 表不存在，无需处理
 
-    # 数据库迁移：添加 node_role 字段到 servers 表
+    # 数据库迁移：添加 node_role 字段到 topo_servers 表
     try:
-        conn.execute("SELECT node_role FROM servers LIMIT 1")
+        conn.execute("SELECT node_role FROM topo_servers LIMIT 1")
     except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE servers ADD COLUMN node_role TEXT DEFAULT '计算节点'")
+        conn.execute("ALTER TABLE topo_servers ADD COLUMN node_role TEXT DEFAULT '计算节点'")
         conn.commit()
 
-    # 数据库迁移：添加 hardware_type 字段到 servers 表
+    # 数据库迁移：添加 hardware_type 字段到 topo_servers 表
     try:
-        conn.execute("SELECT hardware_type FROM servers LIMIT 1")
+        conn.execute("SELECT hardware_type FROM topo_servers LIMIT 1")
     except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE servers ADD COLUMN hardware_type TEXT DEFAULT '非信创物理机'")
+        conn.execute("ALTER TABLE topo_servers ADD COLUMN hardware_type TEXT DEFAULT '非信创物理机'")
         conn.commit()
 
-    # 数据库迁移：添加 spec 字段到 tenants 表
+    # 数据库迁移：添加 spec 字段到 topo_tenants 表
     try:
-        conn.execute("SELECT spec FROM tenants LIMIT 1")
+        conn.execute("SELECT spec FROM topo_tenants LIMIT 1")
     except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE tenants ADD COLUMN spec TEXT DEFAULT 'small-8c32g'")
+        conn.execute("ALTER TABLE topo_tenants ADD COLUMN spec TEXT DEFAULT 'small-8c32g'")
         conn.commit()
 
-    # 数据库迁移：添加 sn 字段到 servers 表
+    # 数据库迁移：添加 sn 字段到 topo_servers 表
     try:
-        conn.execute("SELECT sn FROM servers LIMIT 1")
+        conn.execute("SELECT sn FROM topo_servers LIMIT 1")
     except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE servers ADD COLUMN sn TEXT DEFAULT ''")
+        conn.execute("ALTER TABLE topo_servers ADD COLUMN sn TEXT DEFAULT ''")
         conn.commit()
 
-    # 数据库迁移：旧版 clusters 表（顶级集群，含 db_type 列、无 resource_pool_id 列）
-    # 的数据迁移到 resource_pools。新版 executescript 已建空 resource_pools 与二级
-    # clusters 表，故仅当 resource_pools 为空且 clusters 为旧版结构时执行。
+    # 数据库迁移：旧版 topo_clusters 表（顶级集群，含 db_type 列、无 resource_pool_id 列）
+    # 的数据迁移到 topo_resource_pools。新版 executescript 已建空 topo_resource_pools 与二级
+    # topo_clusters 表，故仅当 topo_resource_pools 为空且 topo_clusters 为旧版结构时执行。
     try:
-        rp_count = conn.execute("SELECT COUNT(*) FROM resource_pools").fetchone()[0]
+        rp_count = conn.execute("SELECT COUNT(*) FROM topo_resource_pools").fetchone()[0]
     except sqlite3.OperationalError:
-        rp_count = 1  # resource_pools 不存在时跳过迁移（新版应在 executescript 中已创建）
+        rp_count = 1  # topo_resource_pools 不存在时跳过迁移（新版应在 executescript 中已创建）
     if rp_count == 0:
-        cluster_cols = {r[1] for r in conn.execute("PRAGMA table_info(clusters)").fetchall()}
+        cluster_cols = {r[1] for r in conn.execute("PRAGMA table_info(topo_clusters)").fetchall()}
         if 'db_type' in cluster_cols and 'resource_pool_id' not in cluster_cols:
             conn.execute('''
-                INSERT INTO resource_pools (id, name, db_type, environment, description, created_at)
-                SELECT id, name, db_type, environment, description, created_at FROM clusters
+                INSERT INTO topo_resource_pools (id, name, db_type, environment, description, created_at)
+                SELECT id, name, db_type, environment, description, created_at FROM topo_clusters
             ''')
             # 旧表数据已迁空，删除并按二级集群新结构重建
-            conn.execute("DROP TABLE clusters")
+            conn.execute("DROP TABLE topo_clusters")
             conn.commit()
             conn.execute('''
-                CREATE TABLE IF NOT EXISTS clusters (
+                CREATE TABLE IF NOT EXISTS topo_clusters (
                     id TEXT PRIMARY KEY,
                     resource_pool_id TEXT NOT NULL,
                     name TEXT NOT NULL,
                     description TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (resource_pool_id) REFERENCES resource_pools(id) ON DELETE CASCADE
+                    FOREIGN KEY (resource_pool_id) REFERENCES topo_resource_pools(id) ON DELETE CASCADE
                 )
             ''')
             conn.commit()
 
-    # 数据库迁移：为 servers 表添加 resource_pool_id 字段
+    # 数据库迁移：为 topo_servers 表添加 resource_pool_id 字段
     try:
-        conn.execute("SELECT resource_pool_id FROM servers LIMIT 1")
+        conn.execute("SELECT resource_pool_id FROM topo_servers LIMIT 1")
     except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE servers ADD COLUMN resource_pool_id TEXT")
+        conn.execute("ALTER TABLE topo_servers ADD COLUMN resource_pool_id TEXT")
         # 将现有的 cluster_id 迁移到 resource_pool_id
         conn.execute('''
-            UPDATE servers SET resource_pool_id = cluster_id
+            UPDATE topo_servers SET resource_pool_id = cluster_id
         ''')
         conn.commit()
 
-    # 数据库迁移：为 tenants 表添加 resource_pool_id 字段（如果表结构还是旧的）
+    # 数据库迁移：为 topo_tenants 表添加 resource_pool_id 字段（如果表结构还是旧的）
     try:
-        conn.execute("SELECT resource_pool_id FROM tenants LIMIT 1")
+        conn.execute("SELECT resource_pool_id FROM topo_tenants LIMIT 1")
     except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE tenants ADD COLUMN resource_pool_id TEXT")
+        conn.execute("ALTER TABLE topo_tenants ADD COLUMN resource_pool_id TEXT")
         # 尝试将现有的 cluster_id 迁移到 resource_pool_id（仅旧表结构）
         try:
             conn.execute('''
-                UPDATE tenants SET resource_pool_id = cluster_id
+                UPDATE topo_tenants SET resource_pool_id = cluster_id
             ''')
         except sqlite3.OperationalError:
             pass  # cluster_id 不存在，跳过
@@ -623,7 +675,7 @@ def init_db():
     conn.execute("DROP TABLE IF EXISTS node_connections")
     conn.commit()
 
-    # 数据库迁移：删除 servers 表的 cpu 和 memory 字段（数据迁移到 description）
+    # 数据库迁移：删除 topo_servers 表的 cpu 和 memory 字段（数据迁移到 description）
     # 注意：SQLite 不支持直接删除列，这里只是标记，实际删除需要重建表
     # 暂时保留，通过前端不再使用这些字段
 
@@ -632,7 +684,7 @@ def init_db():
 
 def get_config(key, default=None):
     conn = get_db()
-    row = conn.execute("SELECT value FROM config WHERE key=?", (key,)).fetchone()
+    row = conn.execute("SELECT value FROM sys_config WHERE key=?", (key,)).fetchone()
     if row:
         try:
             return json.loads(row['value'])
@@ -646,7 +698,7 @@ def set_config(key, value):
     # 统一使用 JSON 序列化存储，确保字符串也能正确解析
     v = json.dumps(value, ensure_ascii=False)
     conn.execute(
-        "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+        "INSERT OR REPLACE INTO sys_config (key, value) VALUES (?, ?)",
         (key, v)
     )
     conn.commit()
@@ -654,7 +706,7 @@ def set_config(key, value):
 
 def get_all_config():
     conn = get_db()
-    rows = conn.execute("SELECT key, value FROM config").fetchall()
+    rows = conn.execute("SELECT key, value FROM sys_config").fetchall()
     result = {}
     for row in rows:
         try:
@@ -680,37 +732,37 @@ DEFAULT_DB_TYPES = [
 def get_db_types() -> list[dict]:
     """获取所有数据库类型"""
     conn = get_db()
-    rows = conn.execute("SELECT id, name, icon FROM db_types").fetchall()
+    rows = conn.execute("SELECT id, name, icon FROM sys_db_types").fetchall()
     if not rows:
         # 首次初始化默认类型
         for t in DEFAULT_DB_TYPES:
             conn.execute(
-                "INSERT OR IGNORE INTO db_types (id, name, icon) VALUES (?, ?, ?)",
+                "INSERT OR IGNORE INTO sys_db_types (id, name, icon) VALUES (?, ?, ?)",
                 (t['id'], t['name'], t['icon'])
             )
         conn.commit()
-        rows = conn.execute("SELECT id, name, icon FROM db_types").fetchall()
+        rows = conn.execute("SELECT id, name, icon FROM sys_db_types").fetchall()
     else:
         # 同步更新默认类型的图标（如果已更改）
         for t in DEFAULT_DB_TYPES:
             conn.execute(
-                "UPDATE db_types SET icon = ? WHERE id = ? AND icon != ?",
+                "UPDATE sys_db_types SET icon = ? WHERE id = ? AND icon != ?",
                 (t['icon'], t['id'], t['icon'])
             )
         conn.commit()
 
     # 按照 DEFAULT_DB_TYPES 的顺序排序
-    db_types = [dict(r) for r in rows]
+    sys_db_types = [dict(r) for r in rows]
     order_map = {t['id']: i for i, t in enumerate(DEFAULT_DB_TYPES)}
-    db_types.sort(key=lambda x: order_map.get(x['id'], 999))
-    return db_types
+    sys_db_types.sort(key=lambda x: order_map.get(x['id'], 999))
+    return sys_db_types
 
 
 def add_db_type(db_id, name, icon='📁'):
     conn = get_db()
     try:
         conn.execute(
-            "INSERT INTO db_types (id, name, icon) VALUES (?, ?, ?)",
+            "INSERT INTO sys_db_types (id, name, icon) VALUES (?, ?, ?)",
             (db_id, name, icon)
         )
         conn.commit()
@@ -721,7 +773,7 @@ def add_db_type(db_id, name, icon='📁'):
 
 def delete_db_type(db_id):
     conn = get_db()
-    conn.execute("DELETE FROM db_types WHERE id=?", (db_id,))
+    conn.execute("DELETE FROM sys_db_types WHERE id=?", (db_id,))
     conn.commit()
 
 
@@ -744,7 +796,7 @@ def _init_feature_config(conn):
     """初始化功能配置表"""
     # 创建表
     conn.execute('''
-        CREATE TABLE IF NOT EXISTS feature_config (
+        CREATE TABLE IF NOT EXISTS sys_feature_config (
             module_id TEXT PRIMARY KEY,
             module_name TEXT NOT NULL,
             module_icon TEXT DEFAULT '📦',
@@ -758,7 +810,7 @@ def _init_feature_config(conn):
     # 初始化默认数据
     for feature in DEFAULT_FEATURES:
         conn.execute('''
-            INSERT OR IGNORE INTO feature_config (module_id, module_name, module_icon, is_enabled, sort_order)
+            INSERT OR IGNORE INTO sys_feature_config (module_id, module_name, module_icon, is_enabled, sort_order)
             VALUES (?, ?, ?, ?, ?)
         ''', (feature['module_id'], feature['module_name'], feature['module_icon'], 1, feature['sort_order']))
     conn.commit()
@@ -768,7 +820,7 @@ def get_feature_config():
     """获取功能配置列表"""
     conn = get_db()
     rows = conn.execute(
-        "SELECT module_id, module_name, module_icon, is_enabled, sort_order FROM feature_config ORDER BY sort_order"
+        "SELECT module_id, module_name, module_icon, is_enabled, sort_order FROM sys_feature_config ORDER BY sort_order"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -777,7 +829,7 @@ def update_feature_config(module_id, is_enabled):
     """更新功能配置"""
     conn = get_db()
     conn.execute(
-        "UPDATE feature_config SET is_enabled = ? WHERE module_id = ?",
+        "UPDATE sys_feature_config SET is_enabled = ? WHERE module_id = ?",
         (1 if is_enabled else 0, module_id)
     )
     conn.commit()
@@ -790,19 +842,19 @@ def get_knowledge_files(db_type, tag=None, keyword=None):
     if keyword:
         rows = conn.execute(
             "SELECT id, db_type, filename, file_path, file_size, tags, created_at "
-            "FROM knowledge_files WHERE db_type=? AND content_text LIKE ? ORDER BY created_at DESC",
+            "FROM kb_files WHERE db_type=? AND content_text LIKE ? ORDER BY created_at DESC",
             (db_type, f'%{keyword}%')
         ).fetchall()
     elif tag:
         rows = conn.execute(
             "SELECT id, db_type, filename, file_path, file_size, tags, created_at "
-            "FROM knowledge_files WHERE db_type=? AND tags LIKE ? ORDER BY created_at DESC",
+            "FROM kb_files WHERE db_type=? AND tags LIKE ? ORDER BY created_at DESC",
             (db_type, f'%"{tag}"%')
         ).fetchall()
     else:
         rows = conn.execute(
             "SELECT id, db_type, filename, file_path, file_size, tags, created_at "
-            "FROM knowledge_files WHERE db_type=? ORDER BY created_at DESC",
+            "FROM kb_files WHERE db_type=? ORDER BY created_at DESC",
             (db_type,)
         ).fetchall()
     return [dict(r) for r in rows]
@@ -812,7 +864,7 @@ def search_knowledge_content(db_type, keyword):
     """搜索知识库文件内容，返回匹配的上下文"""
     conn = get_db()
     rows = conn.execute(
-        "SELECT filename, content_text, created_at FROM knowledge_files "
+        "SELECT filename, content_text, created_at FROM kb_files "
         "WHERE db_type=? AND content_text LIKE ? ORDER BY created_at DESC",
         (db_type, f'%{keyword}%')
     ).fetchall()
@@ -838,21 +890,21 @@ def add_knowledge_file(db_type, filename, file_path, file_size, content_text='',
     with transaction() as tx:
         # 检查文件是否已存在
         existing = tx.fetchone(
-            "SELECT id FROM knowledge_files WHERE db_type=? AND filename=?",
+            "SELECT id FROM kb_files WHERE db_type=? AND filename=?",
             (db_type, filename)
         )
         if existing:
             # 文件已存在，更新
             file_id = existing['id']
             tx.execute(
-                "UPDATE knowledge_files SET file_path=?, file_size=?, content_text=?, tags=? "
+                "UPDATE kb_files SET file_path=?, file_size=?, content_text=?, tags=? "
                 "WHERE db_type=? AND filename=?",
                 (file_path, file_size, content_text, tags_str, db_type, filename)
             )
         else:
             # 新文件，插入
             cursor = tx.execute(
-                "INSERT INTO knowledge_files (db_type, filename, file_path, file_size, content_text, tags) "
+                "INSERT INTO kb_files (db_type, filename, file_path, file_size, content_text, tags) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (db_type, filename, file_path, file_size, content_text, tags_str)
             )
@@ -863,7 +915,7 @@ def add_knowledge_file(db_type, filename, file_path, file_size, content_text='',
 def delete_knowledge_file(db_type, filename):
     conn = get_db()
     conn.execute(
-        "DELETE FROM knowledge_files WHERE db_type=? AND filename=?",
+        "DELETE FROM kb_files WHERE db_type=? AND filename=?",
         (db_type, filename)
     )
     conn.commit()
@@ -872,7 +924,7 @@ def delete_knowledge_file(db_type, filename):
 def get_knowledge_file_path(db_type, filename):
     conn = get_db()
     row = conn.execute(
-        "SELECT file_path FROM knowledge_files WHERE db_type=? AND filename=?",
+        "SELECT file_path FROM kb_files WHERE db_type=? AND filename=?",
         (db_type, filename)
     ).fetchone()
     return row['file_path'] if row else None
@@ -882,7 +934,7 @@ def get_knowledge_file_by_id(file_id):
     """通过ID获取知识库文件信息"""
     conn = get_db()
     row = conn.execute(
-        "SELECT id, db_type, filename, file_path, file_size, content_text, tags, created_at FROM knowledge_files WHERE id=?",
+        "SELECT id, db_type, filename, file_path, file_size, content_text, tags, created_at FROM kb_files WHERE id=?",
         (file_id,)
     ).fetchone()
     return dict(row) if row else None
@@ -893,12 +945,12 @@ def get_all_knowledge_files(db_type=None):
     conn = get_db()
     if db_type:
         rows = conn.execute(
-            "SELECT id, db_type, filename, file_path FROM knowledge_files WHERE db_type=?",
+            "SELECT id, db_type, filename, file_path FROM kb_files WHERE db_type=?",
             (db_type,)
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT id, db_type, filename, file_path FROM knowledge_files"
+            "SELECT id, db_type, filename, file_path FROM kb_files"
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -906,7 +958,7 @@ def get_all_knowledge_files(db_type=None):
 def update_knowledge_content(file_id, content_text):
     conn = get_db()
     conn.execute(
-        "UPDATE knowledge_files SET content_text=? WHERE id=?",
+        "UPDATE kb_files SET content_text=? WHERE id=?",
         (content_text, file_id)
     )
     conn.commit()
@@ -916,23 +968,23 @@ def update_knowledge_content(file_id, content_text):
 
 def get_favorites():
     conn = get_db()
-    rows = conn.execute("SELECT db_type, filename FROM favorites").fetchall()
+    rows = conn.execute("SELECT db_type, filename FROM kb_favorites").fetchall()
     return {'files': [f"{r['db_type']}/{r['filename']}" for r in rows]}
 
 
 def toggle_favorite(db_type, filename):
     conn = get_db()
     row = conn.execute(
-        "SELECT id FROM favorites WHERE db_type=? AND filename=?",
+        "SELECT id FROM kb_favorites WHERE db_type=? AND filename=?",
         (db_type, filename)
     ).fetchone()
     if row:
-        conn.execute("DELETE FROM favorites WHERE id=?", (row['id'],))
+        conn.execute("DELETE FROM kb_favorites WHERE id=?", (row['id'],))
         conn.commit()
         return '取消收藏'
     else:
         conn.execute(
-            "INSERT INTO favorites (db_type, filename) VALUES (?, ?)",
+            "INSERT INTO kb_favorites (db_type, filename) VALUES (?, ?)",
             (db_type, filename)
         )
         conn.commit()
@@ -1064,38 +1116,38 @@ def get_resource_pools():
             COALESCE(i.instance_count, 0) as instance_count,
             COALESCE(t.tenant_count, 0) as tenant_count,
             COALESCE(c.cluster_count, 0) as cluster_count
-        FROM resource_pools rp
+        FROM topo_resource_pools rp
         LEFT JOIN (
             SELECT resource_pool_id, COUNT(*) as server_count
-            FROM servers
+            FROM topo_servers
             GROUP BY resource_pool_id
         ) s ON rp.id = s.resource_pool_id
         LEFT JOIN (
             SELECT resource_pool_id, COUNT(*) as vm_count
-            FROM servers
+            FROM topo_servers
             WHERE hardware_type LIKE '%虚拟机%'
             GROUP BY resource_pool_id
         ) sv ON rp.id = sv.resource_pool_id
         LEFT JOIN (
             SELECT resource_pool_id, COUNT(*) as pm_count
-            FROM servers
+            FROM topo_servers
             WHERE hardware_type LIKE '%物理机%'
             GROUP BY resource_pool_id
         ) sp ON rp.id = sp.resource_pool_id
         LEFT JOIN (
             SELECT s.resource_pool_id, COUNT(*) as instance_count
-            FROM instances i
-            JOIN servers s ON i.server_id = s.id
+            FROM topo_instances i
+            JOIN topo_servers s ON i.server_id = s.id
             GROUP BY s.resource_pool_id
         ) i ON rp.id = i.resource_pool_id
         LEFT JOIN (
             SELECT resource_pool_id, COUNT(*) as tenant_count
-            FROM tenants
+            FROM topo_tenants
             GROUP BY resource_pool_id
         ) t ON rp.id = t.resource_pool_id
         LEFT JOIN (
             SELECT resource_pool_id, COUNT(DISTINCT cluster_id) as cluster_count
-            FROM servers
+            FROM topo_servers
             WHERE cluster_id != ''
             GROUP BY resource_pool_id
         ) c ON rp.id = c.resource_pool_id
@@ -1110,7 +1162,7 @@ def add_resource_pool(pool_id, name, db_type, environment, description):
     """添加资源池"""
     conn = get_db()
     conn.execute(
-        "INSERT INTO resource_pools (id, name, db_type, environment, description) "
+        "INSERT INTO topo_resource_pools (id, name, db_type, environment, description) "
         "VALUES (?, ?, ?, ?, ?)",
         (pool_id, name, db_type, environment, description)
     )
@@ -1126,7 +1178,7 @@ def update_resource_pool(pool_id, **kwargs):
         return
     set_clause = ', '.join(f"{k}=?" for k in updates)
     values = list(updates.values()) + [pool_id]
-    conn.execute(f"UPDATE resource_pools SET {set_clause} WHERE id=?", values)
+    conn.execute(f"UPDATE topo_resource_pools SET {set_clause} WHERE id=?", values)
     conn.commit()
 
 
@@ -1135,17 +1187,17 @@ def delete_resource_pool(pool_id):
     conn = get_db()
     # 先删除该资源池下的所有实例（通过服务器关联）
     conn.execute("""
-        DELETE FROM instances
-        WHERE server_id IN (SELECT id FROM servers WHERE resource_pool_id=?)
+        DELETE FROM topo_instances
+        WHERE server_id IN (SELECT id FROM topo_servers WHERE resource_pool_id=?)
     """, (pool_id,))
     # 删除该资源池下的所有服务器
-    conn.execute("DELETE FROM servers WHERE resource_pool_id=?", (pool_id,))
+    conn.execute("DELETE FROM topo_servers WHERE resource_pool_id=?", (pool_id,))
     # 删除该资源池下的所有集群
-    conn.execute("DELETE FROM clusters WHERE resource_pool_id=?", (pool_id,))
+    conn.execute("DELETE FROM topo_clusters WHERE resource_pool_id=?", (pool_id,))
     # 删除该资源池下的所有租户
-    conn.execute("DELETE FROM tenants WHERE resource_pool_id=?", (pool_id,))
+    conn.execute("DELETE FROM topo_tenants WHERE resource_pool_id=?", (pool_id,))
     # 最后删除资源池
-    conn.execute("DELETE FROM resource_pools WHERE id=?", (pool_id,))
+    conn.execute("DELETE FROM topo_resource_pools WHERE id=?", (pool_id,))
     conn.commit()
 
 
@@ -1155,54 +1207,54 @@ def _fetch_servers_for_cluster(conn, resource_pool_id):
     """获取指定资源池下的所有物理机及其实例"""
     servers_rows = conn.execute(
         "SELECT id, name, sn, host, datacenter, cluster_id, node_role, hardware_type, cpu, memory, description "
-        "FROM servers WHERE resource_pool_id=?",
+        "FROM topo_servers WHERE resource_pool_id=?",
         (resource_pool_id,)
     ).fetchall()
 
-    servers = []
+    topo_servers = []
     for s in servers_rows:
         server = dict(s)
         # 获取实例
         instances_rows = conn.execute(
             "SELECT id, name, port, cpu, memory, role, tenant_id, tenant_role, description "
-            "FROM instances WHERE server_id=?",
+            "FROM topo_instances WHERE server_id=?",
             (s['id'],)
         ).fetchall()
         server['instances'] = [dict(i) for i in instances_rows]
         # 添加 cluster_name 字段
         if server.get('cluster_id'):
             cluster_row = conn.execute(
-                "SELECT name FROM clusters WHERE id=?",
+                "SELECT name FROM topo_clusters WHERE id=?",
                 (server['cluster_id'],)
             ).fetchone()
             server['cluster_name'] = cluster_row['name'] if cluster_row else server['cluster_id']
-        servers.append(server)
+        topo_servers.append(server)
 
-    return servers
+    return topo_servers
 
 
 def _fetch_tenants_for_cluster(conn, resource_pool_id):
     """获取指定资源池下的所有租户"""
     tenants_rows = conn.execute(
-        "SELECT id, name, topology_type, spec, description FROM tenants WHERE resource_pool_id=?",
+        "SELECT id, name, topology_type, spec, description FROM topo_tenants WHERE resource_pool_id=?",
         (resource_pool_id,)
     ).fetchall()
 
-    tenants = []
+    topo_tenants = []
     for t in tenants_rows:
         tenant = dict(t)
         # 获取租户关联的实例
         ti_rows = conn.execute(
             "SELECT i.id as instance_id, i.tenant_role as role, i.name, i.port, s.host "
-            "FROM instances i "
-            "JOIN servers s ON i.server_id = s.id "
+            "FROM topo_instances i "
+            "JOIN topo_servers s ON i.server_id = s.id "
             "WHERE i.tenant_id=?",
             (t['id'],)
         ).fetchall()
         tenant['instances'] = [dict(r) for r in ti_rows]
-        tenants.append(tenant)
+        topo_tenants.append(tenant)
 
-    return tenants
+    return topo_tenants
 
 
 def _build_cluster_data(conn, cluster_row):
@@ -1211,18 +1263,18 @@ def _build_cluster_data(conn, cluster_row):
     resource_pool_id = cluster['id']
 
     # 获取物理机
-    servers = _fetch_servers_for_cluster(conn, resource_pool_id)
-    cluster['servers'] = servers
+    topo_servers = _fetch_servers_for_cluster(conn, resource_pool_id)
+    cluster['servers'] = topo_servers
 
     # 获取租户
-    tenants = _fetch_tenants_for_cluster(conn, resource_pool_id)
-    cluster['tenants'] = tenants
+    topo_tenants = _fetch_tenants_for_cluster(conn, resource_pool_id)
+    cluster['tenants'] = topo_tenants
 
     # 建立 tenant_id -> name 映射
-    tenant_map = {t['id']: t['name'] for t in tenants}
+    tenant_map = {t['id']: t['name'] for t in topo_tenants}
 
     # 为实例添加租户名称
-    for server in servers:
+    for server in topo_servers:
         for instance in server['instances']:
             tenant_id = instance.get('tenant_id')
             instance['tenant_name'] = tenant_map.get(tenant_id, '')
@@ -1230,9 +1282,9 @@ def _build_cluster_data(conn, cluster_row):
     # 获取实例关系
     relations_rows = conn.execute(
         "SELECT ir.from_instance_id, ir.to_instance_id, ir.relation_type "
-        "FROM instance_relations ir "
-        "JOIN instances i ON ir.from_instance_id = i.id "
-        "JOIN servers s ON i.server_id = s.id "
+        "FROM topo_instance_relations ir "
+        "JOIN topo_instances i ON ir.from_instance_id = i.id "
+        "JOIN topo_servers s ON i.server_id = s.id "
         "WHERE s.cluster_id=?",
         (resource_pool_id,)
     ).fetchall()
@@ -1244,20 +1296,20 @@ def _build_cluster_data(conn, cluster_row):
 def get_clusters():
     """获取所有集群（包含物理机、实例、租户）
 
-    注意：该函数实际查询 resource_pools 表，返回资源池拓扑数据。
+    注意：该函数实际查询 topo_resource_pools 表，返回资源池拓扑数据。
     保留此名称是为了向后兼容，新代码建议使用 get_topology_data() 别名。
     """
     conn = get_db()
     clusters_rows = conn.execute(
-        "SELECT id, name, db_type, environment, description, created_at FROM resource_pools"
+        "SELECT id, name, db_type, environment, description, created_at FROM topo_resource_pools"
     ).fetchall()
 
-    clusters = []
+    topo_clusters = []
     for c in clusters_rows:
         cluster = _build_cluster_data(conn, c)
-        clusters.append(cluster)
+        topo_clusters.append(cluster)
 
-    return {'clusters': clusters}
+    return {'clusters': topo_clusters}
 
 
 # 别名：更准确的函数名
@@ -1267,9 +1319,9 @@ get_topology_data = get_clusters
 def get_topology_text():
     """将集群拓扑数据格式化为结构化文本"""
     data = get_topology_data()
-    clusters = data.get('clusters', [])
+    topo_clusters = data.get('topo_clusters', [])
 
-    if not clusters:
+    if not topo_clusters:
         return ""
 
     lines = []
@@ -1278,7 +1330,7 @@ def get_topology_text():
     lines.append("=" * 60)
     lines.append("")
 
-    for cluster in clusters:
+    for cluster in topo_clusters:
         lines.append(f"集群名称：{cluster.get('name', '未命名')}")
         lines.append(f"环境：{cluster.get('environment', 'production')}")
         lines.append(f"数据库类型：{cluster.get('db_type', '未知')}")
@@ -1287,10 +1339,10 @@ def get_topology_text():
         lines.append("")
 
         # 物理机
-        servers = cluster.get('servers', [])
-        if servers:
+        topo_servers = cluster.get('topo_servers', [])
+        if topo_servers:
             lines.append("物理机列表：")
-            for server in servers:
+            for server in topo_servers:
                 host = server.get('host', '')
                 host_str = f" ({host})" if host else ""
                 lines.append(f"  - {server.get('name', '未命名')}{host_str}")
@@ -1303,10 +1355,10 @@ def get_topology_text():
                     lines.append(f"    内存：{server['memory']}")
 
                 # 实例
-                instances = server.get('instances', [])
-                if instances:
+                topo_instances = server.get('topo_instances', [])
+                if topo_instances:
                     lines.append("    实例：")
-                    for inst in instances:
+                    for inst in topo_instances:
                         lines.append(f"      - {inst.get('name', '未命名')} (端口：{inst.get('port', '3306')})")
                         if inst.get('cpu') or inst.get('memory'):
                             specs = []
@@ -1318,18 +1370,18 @@ def get_topology_text():
             lines.append("")
 
         # 租户
-        tenants = cluster.get('tenants', [])
-        if tenants:
+        topo_tenants = cluster.get('topo_tenants', [])
+        if topo_tenants:
             lines.append("租户列表：")
-            for tenant in tenants:
+            for tenant in topo_tenants:
                 lines.append(f"  - {tenant.get('name', '未命名')} ({tenant.get('topology_type', '未知架构')})")
                 if tenant.get('description'):
                     lines.append(f"    描述：{tenant['description']}")
 
-                instances = tenant.get('instances', [])
-                if instances:
+                topo_instances = tenant.get('topo_instances', [])
+                if topo_instances:
                     lines.append("    实例：")
-                    for inst in instances:
+                    for inst in topo_instances:
                         role = inst.get('role', 'slave')
                         lines.append(f"      - {inst.get('name', '未命名')} ({inst.get('host', '未知IP')}) - {role}")
             lines.append("")
@@ -1345,7 +1397,7 @@ def get_system_knowledge_files():
     conn = get_db()
     rows = conn.execute(
         "SELECT id, db_type, filename, file_path, file_size, tags, created_at "
-        "FROM knowledge_files WHERE db_type='_system' ORDER BY created_at DESC"
+        "FROM kb_files WHERE db_type='_system' ORDER BY created_at DESC"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -1353,7 +1405,7 @@ def get_system_knowledge_files():
 def delete_system_knowledge_files():
     """删除所有 _system 类型的知识库文件记录"""
     conn = get_db()
-    conn.execute("DELETE FROM knowledge_files WHERE db_type='_system'")
+    conn.execute("DELETE FROM kb_files WHERE db_type='_system'")
     conn.commit()
 
 
@@ -1361,7 +1413,7 @@ def add_server(server_id, resource_pool_id, name, host, description, datacenter=
     """添加物理机"""
     conn = get_db()
     conn.execute(
-        "INSERT INTO servers (id, resource_pool_id, cluster_id, name, sn, host, datacenter, node_role, hardware_type, cpu, memory, description) "
+        "INSERT INTO topo_servers (id, resource_pool_id, cluster_id, name, sn, host, datacenter, node_role, hardware_type, cpu, memory, description) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (server_id, resource_pool_id, cluster_id, name, sn, host, datacenter, node_role, hardware_type, cpu, memory, description)
     )
@@ -1371,7 +1423,7 @@ def add_server(server_id, resource_pool_id, name, host, description, datacenter=
 def delete_server(server_id):
     """删除物理机"""
     conn = get_db()
-    conn.execute("DELETE FROM servers WHERE id=?", (server_id,))
+    conn.execute("DELETE FROM topo_servers WHERE id=?", (server_id,))
     conn.commit()
 
 
@@ -1379,7 +1431,7 @@ def add_instance(instance_id, server_id, name, port, cpu, memory, role, tenant_i
     """添加实例"""
     conn = get_db()
     conn.execute(
-        "INSERT INTO instances (id, server_id, name, port, cpu, memory, role, tenant_id, tenant_role, description) "
+        "INSERT INTO topo_instances (id, server_id, name, port, cpu, memory, role, tenant_id, tenant_role, description) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (instance_id, server_id, name, port, cpu, memory, role, tenant_id, tenant_role, description)
     )
@@ -1389,7 +1441,7 @@ def add_instance(instance_id, server_id, name, port, cpu, memory, role, tenant_i
 def delete_instance(instance_id):
     """删除实例"""
     conn = get_db()
-    conn.execute("DELETE FROM instances WHERE id=?", (instance_id,))
+    conn.execute("DELETE FROM topo_instances WHERE id=?", (instance_id,))
     conn.commit()
 
 
@@ -1400,9 +1452,9 @@ def get_instance_detail(instance_id):
         "SELECT i.id, i.name, i.port, i.cpu, i.memory, i.role, i.tenant_id, i.tenant_role, i.description, "
         "s.id as server_id, s.name as server_name, s.host as server_host, "
         "c.id as cluster_id, c.name as cluster_name "
-        "FROM instances i "
-        "JOIN servers s ON i.server_id = s.id "
-        "JOIN clusters c ON s.cluster_id = c.id "
+        "FROM topo_instances i "
+        "JOIN topo_servers s ON i.server_id = s.id "
+        "JOIN topo_clusters c ON s.cluster_id = c.id "
         "WHERE i.id=?",
         (instance_id,)
     ).fetchone()
@@ -1412,10 +1464,10 @@ def get_instance_detail(instance_id):
 
     detail = dict(row)
 
-    # 获取所属租户（直接从 instances 表的 tenant_id 字段）
+    # 获取所属租户（直接从 topo_instances 表的 tenant_id 字段）
     if detail.get('tenant_id'):
         tenant_row = conn.execute(
-            "SELECT id, name, ? as role FROM tenants WHERE id=?",
+            "SELECT id, name, ? as role FROM topo_tenants WHERE id=?",
             (detail.get('tenant_role', 'slave'), detail['tenant_id'])
         ).fetchone()
         if tenant_row:
@@ -1432,7 +1484,7 @@ def add_tenant(tenant_id, resource_pool_id, name, topology_type, spec, descripti
     """添加租户"""
     conn = get_db()
     conn.execute(
-        "INSERT INTO tenants (id, resource_pool_id, name, topology_type, spec, description) "
+        "INSERT INTO topo_tenants (id, resource_pool_id, name, topology_type, spec, description) "
         "VALUES (?, ?, ?, ?, ?, ?)",
         (tenant_id, resource_pool_id, name, topology_type, spec, description)
     )
@@ -1442,7 +1494,7 @@ def add_tenant(tenant_id, resource_pool_id, name, topology_type, spec, descripti
 def delete_tenant(tenant_id):
     """删除租户"""
     conn = get_db()
-    conn.execute("DELETE FROM tenants WHERE id=?", (tenant_id,))
+    conn.execute("DELETE FROM topo_tenants WHERE id=?", (tenant_id,))
     conn.commit()
 
 
@@ -1450,7 +1502,7 @@ def update_instance_tenant(instance_id, tenant_id, tenant_role):
     """更新实例的租户关联"""
     conn = get_db()
     conn.execute(
-        "UPDATE instances SET tenant_id=?, tenant_role=? WHERE id=?",
+        "UPDATE topo_instances SET tenant_id=?, tenant_role=? WHERE id=?",
         (tenant_id, tenant_role, instance_id)
     )
     conn.commit()
@@ -1460,7 +1512,7 @@ def remove_instance_tenant(instance_id):
     """移除实例的租户关联"""
     conn = get_db()
     conn.execute(
-        "UPDATE instances SET tenant_id=NULL, tenant_role='slave' WHERE id=?",
+        "UPDATE topo_instances SET tenant_id=NULL, tenant_role='slave' WHERE id=?",
         (instance_id,)
     )
     conn.commit()
@@ -1470,7 +1522,7 @@ def add_instance_relation(from_id, to_id, relation_type='replication'):
     """添加实例关系"""
     conn = get_db()
     conn.execute(
-        "INSERT OR IGNORE INTO instance_relations (from_instance_id, to_instance_id, relation_type) "
+        "INSERT OR IGNORE INTO topo_instance_relations (from_instance_id, to_instance_id, relation_type) "
         "VALUES (?, ?, ?)",
         (from_id, to_id, relation_type)
     )
@@ -1481,7 +1533,7 @@ def remove_instance_relation(from_id, to_id):
     """移除实例关系"""
     conn = get_db()
     conn.execute(
-        "DELETE FROM instance_relations WHERE from_instance_id=? AND to_instance_id=?",
+        "DELETE FROM topo_instance_relations WHERE from_instance_id=? AND to_instance_id=?",
         (from_id, to_id)
     )
     conn.commit()
@@ -1492,9 +1544,9 @@ def remove_instance_relation(from_id, to_id):
 def save_embeddings(file_id, chunks_with_embeddings):
     """保存文件的嵌入向量，chunks_with_embeddings: [(chunk_index, chunk_text, embedding_bytes), ...]"""
     with transaction() as tx:
-        tx.execute("DELETE FROM embeddings WHERE file_id=?", (file_id,))
+        tx.execute("DELETE FROM kb_embeddings WHERE file_id=?", (file_id,))
         tx.executemany(
-            "INSERT INTO embeddings (file_id, chunk_index, chunk_text, embedding) VALUES (?, ?, ?, ?)",
+            "INSERT INTO kb_embeddings (file_id, chunk_index, chunk_text, embedding) VALUES (?, ?, ?, ?)",
             [(file_id, idx, text, emb) for idx, text, emb in chunks_with_embeddings]
         )
 
@@ -1504,7 +1556,7 @@ def get_all_embeddings():
     conn = get_db()
     rows = conn.execute(
         "SELECT e.id, e.file_id, e.chunk_index, e.chunk_text, e.embedding, k.db_type, k.filename "
-        "FROM embeddings e JOIN knowledge_files k ON e.file_id = k.id"
+        "FROM kb_embeddings e JOIN kb_files k ON e.file_id = k.id"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -1518,13 +1570,13 @@ def get_embeddings_stats(db_type=None):
     if db_type:
         row = conn.execute(
             "SELECT COUNT(*) AS c, COALESCE(MAX(e.id), 0) AS m "
-            "FROM embeddings e JOIN knowledge_files k ON e.file_id = k.id "
+            "FROM kb_embeddings e JOIN kb_files k ON e.file_id = k.id "
             "WHERE k.db_type=?",
             (db_type,)
         ).fetchone()
     else:
         row = conn.execute(
-            "SELECT COUNT(*) AS c, COALESCE(MAX(id), 0) AS m FROM embeddings"
+            "SELECT COUNT(*) AS c, COALESCE(MAX(id), 0) AS m FROM kb_embeddings"
         ).fetchone()
     return {'count': row['c'], 'max_id': row['m']}
 
@@ -1542,14 +1594,14 @@ def get_embeddings_matrix(db_type=None):
     if db_type:
         rows = conn.execute(
             "SELECT e.id, e.chunk_text, e.embedding, k.filename "
-            "FROM embeddings e JOIN knowledge_files k ON e.file_id = k.id "
+            "FROM kb_embeddings e JOIN kb_files k ON e.file_id = k.id "
             "WHERE k.db_type=?",
             (db_type,)
         ).fetchall()
     else:
         rows = conn.execute(
             "SELECT e.id, e.chunk_text, e.embedding, k.filename "
-            "FROM embeddings e JOIN knowledge_files k ON e.file_id = k.id"
+            "FROM kb_embeddings e JOIN kb_files k ON e.file_id = k.id"
         ).fetchall()
     if not rows:
         return None
@@ -1588,7 +1640,7 @@ def get_embeddings_by_db_type(db_type):
     conn = get_db()
     rows = conn.execute(
         "SELECT e.id, e.file_id, e.chunk_index, e.chunk_text, e.embedding, k.filename "
-        "FROM embeddings e JOIN knowledge_files k ON e.file_id = k.id "
+        "FROM kb_embeddings e JOIN kb_files k ON e.file_id = k.id "
         "WHERE k.db_type=?",
         (db_type,)
     ).fetchall()
@@ -1688,7 +1740,7 @@ def add_operation_log(module, action, detail='', status='success', ip=''):
     log_id = str(uuid.uuid4())
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     conn.execute(
-        "INSERT INTO operation_logs (id, timestamp, module, action, detail, status, ip) "
+        "INSERT INTO audit_operation_logs (id, timestamp, module, action, detail, status, ip) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         (log_id, timestamp, module, action, detail, status, ip)
     )
@@ -1696,8 +1748,8 @@ def add_operation_log(module, action, detail='', status='success', ip=''):
 
     # 只保留最近500条日志
     conn.execute(
-        "DELETE FROM operation_logs WHERE id NOT IN "
-        "(SELECT id FROM operation_logs ORDER BY timestamp DESC LIMIT 500)"
+        "DELETE FROM audit_operation_logs WHERE id NOT IN "
+        "(SELECT id FROM audit_operation_logs ORDER BY timestamp DESC LIMIT 500)"
     )
     conn.commit()
 
@@ -1708,13 +1760,13 @@ def get_operation_logs(limit=50, module=None):
     if module:
         rows = conn.execute(
             "SELECT id, timestamp, module, action, detail, status, ip "
-            "FROM operation_logs WHERE module=? ORDER BY timestamp DESC LIMIT ?",
+            "FROM audit_operation_logs WHERE module=? ORDER BY timestamp DESC LIMIT ?",
             (module, limit)
         ).fetchall()
     else:
         rows = conn.execute(
             "SELECT id, timestamp, module, action, detail, status, ip "
-            "FROM operation_logs ORDER BY timestamp DESC LIMIT ?",
+            "FROM audit_operation_logs ORDER BY timestamp DESC LIMIT ?",
             (limit,)
         ).fetchall()
     return [dict(r) for r in rows]
@@ -1723,7 +1775,7 @@ def get_operation_logs(limit=50, module=None):
 def clear_operation_logs():
     """清空操作日志"""
     conn = get_db()
-    conn.execute("DELETE FROM operation_logs")
+    conn.execute("DELETE FROM audit_operation_logs")
     conn.commit()
 
 
@@ -1731,7 +1783,7 @@ def get_log_modules():
     """获取日志模块列表"""
     conn = get_db()
     rows = conn.execute(
-        "SELECT DISTINCT module FROM operation_logs ORDER BY module"
+        "SELECT DISTINCT module FROM audit_operation_logs ORDER BY module"
     ).fetchall()
     return [r['module'] for r in rows]
 

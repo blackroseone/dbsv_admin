@@ -450,8 +450,8 @@ def get_chunks_by_entity(entity_id):
     rows = conn.execute(
         """SELECT e.id, e.file_id, e.chunk_index, e.chunk_text,
                k.filename, k.db_type, ce.mention_count
-        FROM embeddings e
-        JOIN knowledge_files k ON e.file_id = k.id
+        FROM kb_embeddings e
+        JOIN kb_files k ON e.file_id = k.id
         JOIN kg_chunk_entities ce ON e.id = ce.chunk_id
         WHERE ce.entity_id=?""",
         (entity_id,)
@@ -543,7 +543,7 @@ def clear_entities_by_file(file_id):
     # 先删除关联
     conn.execute(
         """DELETE FROM kg_chunk_entities
-        WHERE chunk_id IN (SELECT id FROM embeddings WHERE file_id=?)""",
+        WHERE chunk_id IN (SELECT id FROM kb_embeddings WHERE file_id=?)""",
         (file_id,)
     )
     # 删除关系
