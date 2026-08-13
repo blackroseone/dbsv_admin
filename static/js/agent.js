@@ -27,7 +27,12 @@ async function loadAgentSSHConnections() {
         const response = await fetch('/api/agent/ssh-connections');
         const data = await response.json();
         agentSSHConnections = data.connections || [];
+        // 未选中时自动选中第一个，避免配置后还需手动点选才能开会话
+        if (!agentCurrentSSHConn && agentSSHConnections.length > 0) {
+            agentCurrentSSHConn = agentSSHConnections[0].id;
+        }
         renderAgentSSHConnections();
+        updateAgentConnectionStatus();
     } catch (error) {
         console.error('加载SSH连接失败:', error);
     }
@@ -38,7 +43,12 @@ async function loadAgentDBConnections() {
         const response = await fetch('/api/agent/db-connections');
         const data = await response.json();
         agentDBConnections = data.connections || [];
+        // 未选中时自动选中第一个
+        if (!agentCurrentDBConn && agentDBConnections.length > 0) {
+            agentCurrentDBConn = agentDBConnections[0].id;
+        }
         renderAgentDBConnections();
+        updateAgentConnectionStatus();
     } catch (error) {
         console.error('加载DB连接失败:', error);
     }
@@ -172,8 +182,9 @@ function getStatusIcon(status) {
 
 async function newAgentSession() {
     if (!agentCurrentSSHConn && !agentCurrentDBConn) {
-        showToast('请先选择SSH或数据库连接', 'warning');
-        return;
+        // 无连接也允许建会话：知识问答/检查项检索等无需连接的能力可先用；
+        // 需要查询/执行时 Agent 会提示缺少对应连接
+        showToast('未选连接：知识问答可用，查询/执行类操作需先配置连接', 'info');
     }
 
     try {
@@ -210,10 +221,13 @@ async function loadAgentSession(sessionId) {
 
         // 渲染历史消息
         clearAgentChat();
-        if (data.steps) {
+        if (data.steps && data.steps.length > 0) {
             data.steps.forEach(step => {
                 renderAgentStep(step);
             });
+            // 有历史消息则不展示欢迎语（与知识问答模块一致）
+            const welcome = document.querySelector('#agent-chat .agent-welcome');
+            if (welcome) welcome.remove();
         }
     } catch (error) {
         console.error('加载会话失败:', error);
@@ -234,6 +248,10 @@ async function sendAgentQuestion() {
         showToast('Agent正在执行中，请等待', 'warning');
         return;
     }
+
+    // 开始对话后移除欢迎语（参考知识问答模块：有消息即不再展示欢迎页）
+    const agentWelcome = document.querySelector('#agent-chat .agent-welcome');
+    if (agentWelcome) agentWelcome.remove();
 
     // 添加用户消息
     addAgentMessage('user', question);

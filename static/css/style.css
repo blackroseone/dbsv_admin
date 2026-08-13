@@ -5310,6 +5310,7 @@ body {
     border: 1px solid var(--border-color);
     border-radius: 8px;
     overflow: hidden;
+    min-height: 0; /* flex 子项允许收缩，避免内容把容器撑高 */
 }
 
 .agent-toolbar {
@@ -5341,6 +5342,13 @@ body {
     display: flex;
     flex-direction: column;
     gap: 10px;
+    min-height: 0; /* flex 滚动容器必须允许收缩，否则内容多了会撑高而不是滚动 */
+}
+
+/* 关键：消息/欢迎语保持自然高度，禁止被 flex 压缩变扁；
+   否则内容一多消息会被挤扁、文字消失，滚动高度≈容器高度导致无法滚动 */
+.agent-chat > * {
+    flex-shrink: 0;
 }
 
 .agent-welcome {
