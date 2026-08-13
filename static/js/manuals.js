@@ -22,10 +22,6 @@ async function loadManuals() {
             <div class="manual-item ${ManualsModule.currentManual === file.name ? 'active' : ''}" onclick="viewManual('${escapeJsAttr(file.name)}')">
                 <div class="manual-name">${escapeHtml(file.name)}</div>
                 <div class="manual-size">${formatFileSize(file.size)}</div>
-                <div class="manual-actions">
-                    <span class="manual-skill-btn" title="从该手册生成运维技能"
-                          onclick="event.stopPropagation();genSkillFromManual('${escapeJsAttr(file.name)}', this)">📄 生成技能</span>
-                </div>
             </div>
         `).join('');
     } catch (error) {
@@ -33,12 +29,20 @@ async function loadManuals() {
     }
 }
 
-// 从已有手册生成运维技能
-async function genSkillFromManual(filename, btn) {
+// 从当前手册生成运维技能（工具栏按钮）
+async function genSkillFromManual() {
+    const filename = ManualsModule.currentManual;
+    if (!filename) {
+        showToast('请先选择一篇手册', 'error');
+        return;
+    }
     if (!confirm(`从手册「${filename}」生成运维技能？`)) return;
-    const oldText = btn.textContent;
-    btn.textContent = '⏳ 生成中...';
-    btn.disabled = true;
+    const btn = document.querySelector('.gen-skill-btn');
+    const oldText = btn ? btn.textContent : '';
+    if (btn) {
+        btn.textContent = '⏳ 生成中...';
+        btn.disabled = true;
+    }
     try {
         const formData = new FormData();
         formData.append('filename', filename);
@@ -56,8 +60,10 @@ async function genSkillFromManual(filename, btn) {
     } catch (error) {
         showToast('生成失败', 'error');
     } finally {
-        btn.textContent = oldText;
-        btn.disabled = false;
+        if (btn) {
+            btn.textContent = oldText;
+            btn.disabled = false;
+        }
     }
 }
 

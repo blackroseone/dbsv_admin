@@ -1305,30 +1305,6 @@ body {
     transition: color 0.3s ease;
 }
 
-.manual-item .manual-actions {
-    margin-top: 6px;
-}
-
-.manual-item .manual-skill-btn {
-    display: inline-block;
-    padding: 2px 8px;
-    font-size: 0.75rem;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    color: var(--text-secondary);
-    cursor: pointer;
-}
-
-.manual-item .manual-skill-btn:hover {
-    border-color: var(--primary-color);
-    color: var(--primary-color);
-}
-
-.manual-item .manual-skill-btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-}
-
 .manual-main {
     flex: 1;
     display: flex;
@@ -3326,6 +3302,20 @@ body {
     font-size: 0.9rem;
     border-radius: 3px;
     transition: background-color 0.2s ease;
+}
+
+/* 节点/实例操作区：添加按钮与编辑/删除按钮保持齐平。
+   .btn-add 的通用样式（width:100%/margin-bottom/dashed 边框）会泄漏到图标按钮上，
+   这里按 .server-actions/.instance-actions .btn-icon 的尺寸与无边框样式覆盖，
+   避免添加按钮偏高、偏移或带出灰框。 */
+.server-actions .btn-icon.btn-add,
+.instance-actions .btn-icon.btn-add {
+    width: 26px;
+    height: 26px;
+    padding: 2px 4px;
+    margin-bottom: 0;
+    border: none;
+    font-size: 0.9rem;
 }
 
 .server-actions .btn-icon:hover {
