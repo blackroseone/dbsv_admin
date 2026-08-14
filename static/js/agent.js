@@ -694,8 +694,14 @@ function renderAgentApproval(event) {
             <div class="plan-ops">${opsHtml || '<div class="empty-message">计划无操作项</div>'}</div>
             ${plan.rollback ? `<div class="plan-rollback">↩️ 回滚：${escapeHtml(plan.rollback)}</div>` : ''}
             <div class="plan-actions">
-                <button class="btn btn-primary" onclick="approvePlan(${event.plan_id}, 'approve')">✅ 批准</button>
-                <button class="btn btn-danger" onclick="approvePlan(${event.plan_id}, 'reject')">❌ 拒绝</button>
+                <button class="btn btn-primary" onclick="approvePlan(${event.plan_id})">✅ 批准</button>
+                <button class="btn btn-danger" onclick="toggleRejectPanel(${event.plan_id})">❌ 拒绝</button>
+            </div>
+            <div class="plan-reject-panel" id="reject-panel-${event.plan_id}" style="display:none;">
+                <input type="text" id="reject-reason-${event.plan_id}" placeholder="拒绝原因（可选，将反馈给 Agent）"
+                       onkeypress="if(event.key==='Enter')confirmRejectPlan(${event.plan_id})">
+                <button class="btn btn-danger" onclick="confirmRejectPlan(${event.plan_id})">确认拒绝</button>
+                <button class="btn btn-secondary" onclick="toggleRejectPanel(${event.plan_id})">取消</button>
             </div>
         </div>
     `;
@@ -703,11 +709,28 @@ function renderAgentApproval(event) {
     chat.scrollTop = chat.scrollHeight;
 }
 
-async function approvePlan(planId, action) {
-    let comment = '';
-    if (action === 'reject') {
-        comment = prompt('请输入拒绝原因（可选）：') || '';
+function toggleRejectPanel(planId) {
+    const panel = document.getElementById(`reject-panel-${planId}`);
+    if (!panel) return;
+    const show = panel.style.display === 'none';
+    panel.style.display = show ? 'flex' : 'none';
+    if (show) {
+        const input = document.getElementById(`reject-reason-${planId}`);
+        if (input) input.focus();
     }
+}
+
+async function approvePlan(planId) {
+    await submitPlanDecision(planId, 'approve', '');
+}
+
+async function confirmRejectPlan(planId) {
+    const input = document.getElementById(`reject-reason-${planId}`);
+    const comment = input ? input.value.trim() : '';
+    await submitPlanDecision(planId, 'reject', comment);
+}
+
+async function submitPlanDecision(planId, action, comment) {
     const box = document.getElementById(`agent-approval-${planId}`);
     try {
         const response = await fetch('/api/agent/approve', {
@@ -726,6 +749,8 @@ async function approvePlan(planId, action) {
             const actions = box.querySelector('.plan-actions');
             if (actions) actions.innerHTML = '<span class="approval-waiting">⏳ 等待执行...</span>';
             if (header) header.textContent = action === 'approve' ? '✅ 已批准，执行中' : '❌ 已拒绝';
+            const panel = box.querySelector('.plan-reject-panel');
+            if (panel) panel.remove();
         }
     } catch (error) {
         showToast('审批提交失败', 'error');

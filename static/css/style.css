@@ -5608,6 +5608,28 @@ body {
     font-size: 0.82rem;
 }
 
+.plan-reject-panel {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+    align-items: center;
+}
+
+.plan-reject-panel input {
+    flex: 1;
+    padding: 6px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 0.82rem;
+}
+
+.plan-reject-panel .btn {
+    font-size: 0.82rem;
+    flex-shrink: 0;
+}
+
 .plan-reject-comment {
     margin-top: 8px;
     padding: 6px 8px;

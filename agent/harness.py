@@ -53,16 +53,39 @@ class Harness:
                                             'stop': OperationLevel.MAINTENANCE}},
             'rman': {'level': OperationLevel.MAINTENANCE},
             'expdp': {'level': OperationLevel.MAINTENANCE},
+            # 实例创建（安装类，本身即变更，is_change=True 走审批）
+            'dbca': {'level': OperationLevel.MAINTENANCE, 'is_change': True},
         },
         'mysql': {
             'mysqladmin': {'level': OperationLevel.READONLY,
                            'actions': ['status', 'processlist', 'extended-status', 'ping']},
             'mysqldump': {'level': OperationLevel.MAINTENANCE},
+            # 实例初始化/启动
+            'mysqld': {'level': OperationLevel.MAINTENANCE, 'is_change': True},
+            'mysql_install_db': {'level': OperationLevel.MAINTENANCE, 'is_change': True},
         },
         'dm': {
             'dexp': {'level': OperationLevel.MAINTENANCE},
             'dimp': {'level': OperationLevel.MAINTENANCE},
+            # 实例创建/启动/服务注册
+            'dminit': {'level': OperationLevel.MAINTENANCE, 'is_change': True},
+            'dmserver': {'level': OperationLevel.MAINTENANCE, 'is_change': True},
+            'dm_service_installer': {'level': OperationLevel.MAINTENANCE, 'is_change': True},
         },
+        'gaussdb': {
+            # 实例初始化/启动（GaussDB/PostgreSQL）
+            'gs_initdb': {'level': OperationLevel.MAINTENANCE, 'is_change': True},
+            'gs_ctl': {'level': OperationLevel.MAINTENANCE, 'is_change': True},
+            'initdb': {'level': OperationLevel.MAINTENANCE, 'is_change': True},
+            'pg_ctl': {'level': OperationLevel.MAINTENANCE, 'is_change': True},
+        },
+    }
+
+    # 数据库类型别名归并：国产库复用同族策略（与 connectors.run_sql 一致）
+    # tdsql/oceanbase/goldendb → mysql，便于 COMMAND_POLICY 按族查找。
+    DB_TYPE_ALIASES = {
+        'tdsql': 'mysql', 'oceanbase': 'mysql', 'goldendb': 'mysql',
+        'postgresql': 'gaussdb',
     }
 
     # 通用 Linux 只读诊断命令（跨数据库类型，服务器 OS 层面巡检）。
@@ -174,6 +197,13 @@ class Harness:
         return False
 
     @classmethod
+    def _normalize_db_type(cls, db_type: str) -> str:
+        """归一化数据库类型（国产库归并到同族，与 connectors.run_sql 一致）"""
+        if not db_type:
+            return db_type
+        return cls.DB_TYPE_ALIASES.get(db_type.lower(), db_type.lower())
+
+    @classmethod
     def validate_command(cls, command: str, db_type: str,
                          level: OperationLevel = OperationLevel.READONLY) -> Tuple[bool, str]:
         """验证命令安全性
@@ -221,7 +251,7 @@ class Harness:
         cmd_name = cmd_parts[0]
 
         # 1. 数据库专用命令（按 db_type 策略）
-        policy = cls.COMMAND_POLICY.get(db_type, {}).get(cmd_name)
+        policy = cls.COMMAND_POLICY.get(cls._normalize_db_type(db_type), {}).get(cmd_name)
         if policy is not None:
             return cls._validate_policy_command(cmd_name, cmd_parts, policy, level)
 
@@ -327,9 +357,10 @@ class Harness:
 
     @classmethod
     def validate_change_command(cls, command: str, db_type: str) -> Tuple[bool, str]:
-        """校验变更命令：必须在 COMMAND_POLICY 白名单内、级别 ≥ MAINTENANCE、
-        且含需审批的变更类动作（blocked_actions 中的 start/stop 等），
-        而非只读 check/status。独立校验全局危险特征。
+        """校验变更命令：必须在 COMMAND_POLICY 白名单内、级别 ≥ MAINTENANCE，
+        且为变更类操作——即命中 blocked_actions 中的 start/stop 等动作词，
+        或命令本身标记 is_change=True（如 dminit 创建实例，无只读用法）。
+        独立校验全局危险特征。
 
         注意：不依赖 validate_command 的只读 actions 检查（该检查会把
         start/stop 等变更动作一并拒绝）；变更命令走本方法独立语义。
@@ -343,7 +374,7 @@ class Harness:
         if not cmd_parts:
             return False, "空命令"
         cmd_name = cmd_parts[0]
-        policy = cls.COMMAND_POLICY.get(db_type, {}).get(cmd_name)
+        policy = cls.COMMAND_POLICY.get(cls._normalize_db_type(db_type), {}).get(cmd_name)
         if policy is None:
             return False, f"命令 {cmd_name} 不在白名单中（数据库类型: {db_type}）"
 
@@ -351,8 +382,10 @@ class Harness:
         if cls.LEVEL_ORDER[OperationLevel.MAINTENANCE] < cls.LEVEL_ORDER[min_level]:
             return False, f"命令 {cmd_name} 需要级别 {min_level.value}"
 
+        # 变更类判定：命令本身标记 is_change，或命中 blocked_actions 变更动作词
         blocked = policy.get('blocked_actions', {})
-        if not any(arg in blocked for arg in cmd_parts[1:]):
+        is_change = policy.get('is_change', False)
+        if not is_change and not any(arg in blocked for arg in cmd_parts[1:]):
             return False, "命令不含需审批的变更类动作（start/stop/…）"
 
         for arg in cmd_parts[1:]:
@@ -373,3 +406,57 @@ class Harness:
     def get_allowed_sql_types(cls, level: OperationLevel = OperationLevel.READONLY) -> set:
         """获取允许的SQL类型"""
         return cls.SQL_WHITELIST.get(level, set())
+
+    # ==================== 三态分类（供引擎决定执行/审批/拒绝） ====================
+
+    @classmethod
+    def classify_command(cls, command: str, db_type: str) -> Tuple[str, Optional[str]]:
+        """命令三态分类
+
+        - safe：只读白名单（含只读诊断命令管道），直接执行免审批
+        - approval：变更类命令（is_change/start/stop）或非注入的未知命令，走审批
+        - reject：命令注入特征（; && || 重定向 命令替换等），硬拒绝
+
+        Returns:
+            (classification, reason)；reason 为 None 表示无需说明
+        """
+        if not command or not command.strip():
+            return 'reject', "命令为空"
+        if re.search(r'[\n\r\t\x00-\x08\x0b\x0c\x0e-\x1f]', command):
+            return 'reject', "检测到危险控制字符"
+
+        # 硬注入特征（不含单管道 |）
+        for m in (';', '&', '>', '<', '`', '$(', '${', '||'):
+            if m in command:
+                return 'reject', f"检测到危险注入特征: {m}"
+
+        # 只读白名单（含 ps|grep 等只读诊断管道）→ 直接执行
+        is_safe, _ = cls.validate_command(command, db_type, OperationLevel.READONLY)
+        if is_safe:
+            return 'safe', None
+
+        # 含管道的非只读命令 → 拒绝（管道在变更/未知场景是注入风险）
+        if '|' in command:
+            return 'reject', "检测到危险管道注入"
+
+        # 变更白名单 → 审批
+        is_change, _ = cls.validate_change_command(command, db_type)
+        if is_change:
+            return 'approval', None
+
+        # 非注入的未知命令 → 审批（审批权交给用户，而非硬拒绝）
+        cmd_name = command.strip().split()[0]
+        return 'approval', f"命令 {cmd_name} 不在白名单，需审批后执行"
+
+    @classmethod
+    def classify_sql(cls, sql: str) -> Tuple[str, Optional[str]]:
+        """SQL 三态分类：safe（只读直接执行）/ approval（变更走审批）/ reject（危险拒绝）"""
+        if not sql or not sql.strip():
+            return 'reject', "SQL为空"
+        is_safe, _ = cls.validate_sql(sql, OperationLevel.READONLY)
+        if is_safe:
+            return 'safe', None
+        is_change, _ = cls.validate_change_sql(sql)
+        if is_change:
+            return 'approval', None
+        return 'reject', "SQL 既非只读也非可审批的变更语句"

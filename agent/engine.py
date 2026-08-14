@@ -153,26 +153,61 @@ class SmartOpsAgent:
                 yield {"type": "planning", "action": {"tool": "parallel",
                                                       "actions": actions}}
 
-            # Execution（安全验证 + 并行/串行）
-            results = self._execute_actions(actions, knowledge_refs)
-            for item in results:
-                action = item['action']
-                if not item['is_safe']:
-                    yield {"type": "executing_error", "error": item['observation']}
+            # Execution：按三态分类处理（safe 直接执行 / approval 转审批 / reject 拒绝）
+            safe_actions = []
+            approval_actions = []
+            rejected_actions = []
+            for action in actions:
+                cls, reason = self._classify_action(action)
+                if cls == 'safe':
+                    safe_actions.append(action)
+                elif cls == 'approval':
+                    approval_actions.append((action, reason))
                 else:
-                    if item['warning']:
-                        yield {"type": "executing_warning", "warning": item['warning']}
-                    yield {"type": "executing_end", "result": item['result']}
+                    rejected_actions.append((action, reason))
 
+            # 1) reject：命令注入等硬拒绝（安全底线）
+            for action, reason in rejected_actions:
+                observation = f"❌ 安全校验拒绝: {reason}"
+                yield {"type": "executing_error", "error": observation}
                 step = self.state.add_step(AgentPhase.EXECUTING, action=action,
-                                           observation=item['observation'])
+                                           observation=observation)
                 self._persist_step(step)
+                yield {"type": "observing", "observation": observation}
+                self.state.add_message('user', f"观察结果:\n{observation}")
 
-                # Observation
-                yield {"type": "observing", "observation": item['observation']}
+            # 2) approval：自动生成审批计划，等待 DBA 决定（不再硬拒绝）
+            expired = False
+            for action, reason in approval_actions:
+                plan = self._build_approval_plan(action, reason)
+                plan_result = yield from self._handle_plan_approval(plan)
+                if plan_result == 'expired':
+                    expired = True
+                    break
+            if expired:
+                break
 
-                # 观察结果回流对话历史
-                self.state.add_message('user', f"观察结果:\n{item['observation']}")
+            # 3) safe：只读操作直接执行
+            if safe_actions:
+                results = self._execute_actions(safe_actions, knowledge_refs)
+                for item in results:
+                    action = item['action']
+                    if not item['is_safe']:
+                        yield {"type": "executing_error", "error": item['observation']}
+                    else:
+                        if item['warning']:
+                            yield {"type": "executing_warning", "warning": item['warning']}
+                        yield {"type": "executing_end", "result": item['result']}
+
+                    step = self.state.add_step(AgentPhase.EXECUTING, action=action,
+                                               observation=item['observation'])
+                    self._persist_step(step)
+
+                    # Observation
+                    yield {"type": "observing", "observation": item['observation']}
+
+                    # 观察结果回流对话历史
+                    self.state.add_message('user', f"观察结果:\n{item['observation']}")
 
             self.state.next_step()
 
@@ -581,13 +616,13 @@ class SmartOpsAgent:
             tool = op.get('tool')
             params = op.get('parameters') or {}
             if tool == 'query_database':
-                is_safe, err = Harness.validate_change_sql(params.get('sql', ''))
+                cls, err = Harness.classify_sql(params.get('sql', ''))
             elif tool == 'execute_command':
-                is_safe, err = Harness.validate_change_command(params.get('command', ''), db_type)
+                cls, err = Harness.classify_command(params.get('command', ''), db_type)
             else:
-                is_safe, err = False, f'计划操作不支持的工具: {tool}'
+                cls, err = 'reject', f'计划操作不支持的工具: {tool}'
 
-            if not is_safe:
+            if cls == 'reject':
                 observation = f"❌ 计划操作 {i} 校验失败: {err}"
                 yield {"type": "plan_operation_result", "index": i, "tool": tool,
                        "parameters": params, "status": "rejected", "error": err}
@@ -629,6 +664,41 @@ class SmartOpsAgent:
         )
         self._persist_step(step)
         self.state.current_step += 1
+
+    def _classify_action(self, action: Dict) -> Tuple[str, Optional[str]]:
+        """三态分类动作：safe（只读直接执行）/ approval（变更或未知走审批）/ reject（注入拒绝）"""
+        tool = action.get("tool")
+        params = action.get("parameters", {})
+
+        if tool == "query_database":
+            return self.harness.classify_sql(params.get("sql", ""))
+        elif tool == "execute_command":
+            return self.harness.classify_command(params.get("command", ""),
+                                                 self._get_db_type())
+        # 其余工具（schema/性能/监控/检查项/知识检索）均为只读
+        return 'safe', None
+
+    def _build_approval_plan(self, action: Dict, reason: str = '') -> Dict:
+        """把单个待审批动作包装成操作计划，走审批流"""
+        tool = action.get("tool")
+        params = action.get("parameters", {})
+        if tool == 'execute_command':
+            title = f"执行命令: {params.get('command', '')[:40]}"
+        elif tool == 'query_database':
+            title = f"执行SQL: {params.get('sql', '')[:40]}"
+        else:
+            title = f"调用工具: {tool}"
+        return {
+            'title': title,
+            'scope': reason or '变更类/未授权操作，需 DBA 审批',
+            'operations': [{
+                'tool': tool,
+                'parameters': params,
+                'impact': '',
+                'risk': 'medium',
+            }],
+            'rollback': '未提供（请 DBA 评估）',
+        }
 
     def _validate_action(self, action: Dict) -> Tuple[bool, str]:
         """验证动作安全性"""
