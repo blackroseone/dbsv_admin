@@ -882,7 +882,7 @@ async function addServer() {
     }
 
     try {
-        const response = await fetch(`/api/topology/clusters/${currentClusterId}/servers`, {
+        const response = await fetch(`/api/topology/resource-pools/${currentClusterId}/servers`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
