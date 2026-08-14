@@ -45,6 +45,14 @@ class SmartOpsAgent:
         self.embedder = Embedder()
         self.skill_manager = SkillManager()
         self.harness = Harness()
+        # 命令安全融合判定：静态判拒绝/未知的命令挂载独立 LLM 审查钩子（第二意见）。
+        # 钩子在 harness 内部，引擎 _validate_action 与 tools.py 双重校验共用同一目标
+        # + 同一 TTL 缓存，保证不会出现"引擎放行、工具层拦截"。
+        from config import COMMAND_LLM_JUDGE
+        if COMMAND_LLM_JUDGE:
+            from functools import partial
+            from agent.command_judge import judge_command
+            Harness.command_judge_fn = partial(judge_command, model_id=self.model_id)
         from config import AGENT_MAX_STEPS, AGENT_MAX_HISTORY_CHARS
         self.state = AgentState(session_id, max_steps=int(AGENT_MAX_STEPS))
         self.max_history_chars = int(AGENT_MAX_HISTORY_CHARS)

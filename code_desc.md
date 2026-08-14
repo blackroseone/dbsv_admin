@@ -605,9 +605,16 @@ data: [DONE]
 | 方法 | 参数 | 返回值 | 说明 |
 |------|------|--------|------|
 | `validate_sql(sql, level)` | `str, OperationLevel` | `(bool, str)` | 验证SQL安全性（剥离注释后逐语句白名单+危险关键字扫描） |
-| `validate_command(command, db_type, level)` | `str, str, OperationLevel` | `(bool, str)` | 验证命令安全性（级别门槛+动作词+危险特征） |
+| `validate_command(command, db_type, level)` | `str, str, OperationLevel` | `(bool, str)` | 验证命令可否只读执行（分级目录 T1硬拒/T2纯只读/T3参数门控 + 未知段可挂 LLM 审查） |
+| `classify_command(command, db_type)` | `str, str` | `(str, Optional[str])` | 命令三态分类（safe/approval/reject）；静态判定 + 融合矩阵（静态拒绝/未知时发起独立 LLM 审查作第二意见） |
 | `get_allowed_commands(db_type)` | `str` | `Dict` | 获取命令策略（命令名 → 级别/动作词） |
 | `get_allowed_sql_types(level)` | `OperationLevel` | `set` | 获取允许的SQL类型 |
+
+**命令安全目录（分级）：**
+- **T1 硬拒绝**：不可逆破坏/系统关停/磁盘分区/代码执行/提权/外联（rm、dd、mkfs.*、shutdown、sudo/su、sh/bash/python、nc/wget/curl 等），即使经 LLM 审查也只降级到审批。
+- **T2 纯只读**：ps/grep/cat/ls/date/top/ss/df/du/lsof 等，参数视为数据，仅路径穿越检查。
+- **T3 参数门控**：按参数甄别只读/变更/硬拒（sed 无 `-i` 只读、`-i` 审批；find `-delete` 硬拒；tar/gzip/unzip `-t/-l/-c` 只读、其余审批；systemctl status 只读、restart 审批；ip show 只读、add/set 审批）；变更写操作（cp/mv/mkdir/chmod/包管理）一律审批。
+- **融合判定矩阵**：`classify_command` 静态判 safe/approval 直接返回；静态判 reject/unknown 时挂载可插拔 LLM 审查钩子（`Harness.command_judge_fn`，默认 None 纯静态），脚本拒绝+LLM放行→审批、未知+LLM只读→执行，LLM 不可用保持静态判定。
 
 **安全级别：**
 - `READONLY`: 只读查询（SELECT, EXPLAIN, DESCRIBE, SHOW）

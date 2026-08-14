@@ -9,6 +9,24 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v3.0.13 (2026-08-14)
+
+### 🛡️ 命令安全校验重构：参数级甄别 + 融合判定矩阵（脚本 + LLM 双意见）
+
+**静态命令目录分级**（替代原扁平白名单）：
+- **T1 硬拒绝**：不可逆破坏（rm/dd/mkfs.*/mkfifo/mknod/truncate/unlink）、磁盘分区（fdisk/parted/LVM 等）、系统关停（shutdown/reboot/init 等）、代码执行与提权外联（sh/bash/python/perl/gcc/nc/wget/curl/sudo/su/scp/rsync 等）。
+- **T2 纯只读**：ps/grep/cat/ls/top/ss/df/du/lsof 等（参数视为数据，仅路径穿越检查）。
+- **T3 参数门控**：按参数甄别只读/变更/硬拒——sed（无 `-i` 只读，`-i` 审批）、find（`-delete/-exec` 硬拒）、tar/gzip/unzip（`-t/-l/-c` 列出/解压到 stdout 只读，其余审批）、systemctl/service（status/show 只读，start/stop 审批）、ip（show/裸子命令只读，add/del/set 审批）、sysctl/dmesg（`-w`/`-c` 变更，其余只读）、kill 族（审批）。
+- **变更写操作**：cp/mv/mkdir/chmod 及包管理命令一律审批。
+
+**融合判定矩阵**：脚本判 `safe` → 直接执行（不调 LLM）；脚本判 `approval`（变更）→ 审批；脚本判 `reject`/`unknown` → 发起一次独立 LLM 审查（temperature=0、短超时、TTL 缓存）：
+- 脚本拒绝 + LLM 拒绝 → 拒绝；脚本拒绝 + LLM 放行 → **审批**（DBA 决策，避免安全命令被脚本误拒）
+- 未知 + LLM 只读 → 执行；未知 + LLM 危险 → 拒绝；未知 + 无法判断 → 审批
+
+**通用语义收紧**：路径穿越检查改为"像路径才查"（`/`/`.`/`~` 开头或含 `/`），避免 `grep -E 'a..b'` 正则误伤；`$(date +%Y%m)` 只读命令替换、引号感知管道切分、`/dev/null` 重定向保留。
+- LLM 审查钩子在 Harness 内部可插拔（默认关闭=纯静态离线可用），引擎与工具双重校验共用同一目标与缓存。
+- 配置：`COMMAND_LLM_JUDGE`（env `DB_TOOL_LLM_COMMAND_JUDGE`）、`COMMAND_JUDGE_TIMEOUT`、`COMMAND_JUDGE_CACHE_TTL`。
+
 ## v3.0.12 (2026-08-14)
 
 ### 🛡️ 命令校验：只读诊断命令链放行

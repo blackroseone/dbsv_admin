@@ -342,12 +342,14 @@ def _check_llm_config(config):
     return True, None
 
 
-def call_llm(messages, model_id=None):
+def call_llm(messages, model_id=None, temperature=None, timeout=120):
     """调用大模型API（兼容OpenAI格式）
 
     Args:
         messages: 消息列表
         model_id: 指定模型ID，如果不指定则使用默认模型
+        temperature: 覆盖配置温度；None 表示使用配置值（默认可变）
+        timeout: 请求超时秒数（默认 120）
     """
     config = load_llm_config(model_id)
 
@@ -358,13 +360,15 @@ def call_llm(messages, model_id=None):
     api_url = _build_api_url(config)
     headers = _build_api_headers(config)
     data = _build_api_data(config, messages)
+    if temperature is not None:
+        data['temperature'] = temperature
 
     try:
         response = requests.post(
             api_url,
             json=data,
             headers=headers,
-            timeout=120
+            timeout=timeout
         )
         response.raise_for_status()
         result = response.json()

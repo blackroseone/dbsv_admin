@@ -16,7 +16,7 @@ COMMANDS_DIR = os.path.join(DATA_DIR, 'commands')
 # ==================== 应用配置 ====================
 
 # 版本号
-APP_VERSION = '3.0.12'
+APP_VERSION = '3.0.13'
 
 # Secret Key（生产环境应从环境变量读取）
 SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dbsv-admin-dev-secret-key-change-in-production')
@@ -50,6 +50,14 @@ AGENT_MAX_HISTORY_CHARS = int(os.environ.get('DB_TOOL_AGENT_MAX_HISTORY_CHARS', 
 
 # 变更类操作计划审批超时（分钟）：DBA 未在时限内审批则计划置 expired
 AGENT_PLAN_TIMEOUT_MINUTES = int(os.environ.get('DB_TOOL_AGENT_PLAN_TIMEOUT_MINUTES', '15'))
+
+# 命令安全融合判定：静态脚本判拒绝/未知的命令，是否额外发起独立 LLM 审查作第二意见。
+# 关闭时命令校验退化为纯静态（离线可用，未知命令走审批）。
+COMMAND_LLM_JUDGE = os.environ.get('DB_TOOL_LLM_COMMAND_JUDGE', '1') == '1'
+# 命令 LLM 审查超时（秒）：判读是执行路径上的同步闸门，超时即放弃审查、保持静态判定
+COMMAND_JUDGE_TIMEOUT = int(os.environ.get('DB_TOOL_COMMAND_JUDGE_TIMEOUT', '20'))
+# 命令 LLM 审查结果缓存时长（秒）：同一命令复用判读，避免重复调用
+COMMAND_JUDGE_CACHE_TTL = int(os.environ.get('DB_TOOL_COMMAND_JUDGE_CACHE_TTL', '600'))
 
 # ==================== RAG 配置 ====================
 

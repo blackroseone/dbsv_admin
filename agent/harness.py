@@ -35,8 +35,9 @@ class Harness:
 
     # 命令策略（按数据库类型）：
     #   level: 命令要求的最低操作级别
-    #   actions: 允许的动作词（必须至少出现一个）
-    #   blocked_actions: 需要更高级别的动作词 {动作词: 要求级别}
+    #   actions: 允许的只读动作词（必须至少出现一个）
+    #   blocked_actions: 需更高权限的变更动作词 {动作词: 要求级别}
+    #   is_change: 命令本身即变更（如 dminit 创建实例）
     # SQL 客户端命令（mysql/sqlplus/disql）有意不在白名单中，SQL 统一走
     # query_database 工具（受 validate_sql 保护），避免 -e/@脚本 绕过校验。
     COMMAND_POLICY = {
@@ -88,37 +89,170 @@ class Harness:
         'postgresql': 'gaussdb',
     }
 
-    # 通用 Linux 只读诊断命令（跨数据库类型，服务器 OS 层面巡检）。
-    # 这些命令无副作用、不依赖 db_type；参数视为数据而非可执行对象，
-    # 因此只做路径穿越检查、不扫危险 token（避免误伤 grep sudo 等 pattern）。
-    READONLY_DIAGNOSTIC_COMMANDS = {
-        'ps', 'grep', 'pgrep', 'df', 'free', 'top', 'netstat', 'ss',
-        'cat', 'ls', 'uptime', 'who', 'w', 'uname', 'lscpu', 'lsmem',
-        'du', 'wc', 'head', 'tail', 'sort', 'uniq', 'ip', 'hostname',
-        'date', 'id', 'last', 'dmesg', 'lsof', 'vmstat', 'iostat',
-        'sar', 'mpstat', 'pidstat', 'lsblk', 'blkid', 'mount', 'findmnt',
-        'ethtool', 'ipcs', 'which', 'find', 'echo',
-        # 管道内纯文本处理（字段提取/替换/切片等）
-        'awk', 'sed', 'cut', 'tr', 'expr', 'printf', 'basename', 'dirname',
-        'rev', 'paste', 'join', 'nl', 'od', 'hexdump',
+    # ==================== 命令安全目录（分级） ====================
+
+    # T1 硬拒绝命令：不可逆破坏 / 系统关停 / 磁盘分区 / 代码执行 / 提权 / 外联。
+    # 即使经 LLM 审查也只降级到审批（DBA 决策），绝不直接执行。
+    REJECT_COMMANDS = {
+        # 文件/数据不可逆破坏
+        'rm', 'shred', 'dd', 'mkfs', 'mkfifo', 'mknod', 'truncate', 'unlink',
+        # 文件系统/磁盘分区
+        'mkswap', 'swapon', 'swapoff', 'fdisk', 'parted', 'sfdisk', 'gdisk',
+        'mdadm', 'pvcreate', 'vgcreate', 'lvcreate', 'pvremove', 'vgremove', 'lvremove',
+        # 系统关停
+        'shutdown', 'reboot', 'halt', 'poweroff', 'init', 'telinit',
+        # 代码执行 / 提权 / 外联
+        'sh', 'bash', 'zsh', 'dash', 'python', 'python2', 'python3', 'perl',
+        'ruby', 'php', 'lua', 'node', 'gcc', 'cc', 'g++', 'make',
+        'nc', 'ncat', 'socat', 'wget', 'curl', 'sudo', 'su', 'scp', 'sftp', 'rsync',
     }
-    # 只读诊断命令中禁止出现的破坏性参数（如 find -delete/-exec/-ok，精确匹配）
-    DIAGNOSTIC_FORBIDDEN_ARGS = {
-        'find': {'-delete', '-exec', '-ok', '-execdir', '-okdir'},
-        'sed': {'-i', '--in-place'},  # sed 就地改写文件是写操作，非只读诊断
-    }
-    # 只读诊断命令中禁止的参数子串（awk/sed 的代码执行/注入向量）
-    DIAGNOSTIC_FORBIDDEN_SUBSTR = {
-        'awk': ['system(', 'popen(', 'getline'],
-        'sed': ['system(', 'popen('],
+    # 前缀匹配的硬拒绝（如 mkfs.ext4）
+    REJECT_COMMAND_PREFIXES = ('mkfs.',)
+
+    # T2 纯只读命令：参数视为数据，仅做路径穿越检查（不扫危险 token，避免误伤
+    # grep/awk 等 pattern）。含命令自身无写语义、无参数级写向量的命令。
+    ALWAYS_READONLY_COMMANDS = {
+        # 进程/资源状态
+        'ps', 'pstree', 'pgrep', 'pidof', 'top', 'htop', 'free', 'vmstat',
+        'iostat', 'mpstat', 'sar', 'pidstat', 'uptime', 'w', 'who', 'last', 'id',
+        'nproc', 'getconf', 'hostid',
+        # 系统信息/时间
+        'uname', 'hostname', 'date', 'cal', 'lsmod', 'lsof', 'ss', 'netstat',
+        'ipcs', 'lspci', 'lsusb', 'lsblk', 'blkid', 'findmnt', 'lscpu',
+        'lsmem', 'lshw', 'dmidecode', 'sensors',
+        # 文件查看/文本处理（无就地写语义）
+        'cat', 'ls', 'head', 'tail', 'sort', 'uniq', 'wc', 'cut', 'tr', 'expr',
+        'printf', 'basename', 'dirname', 'rev', 'paste', 'join', 'nl', 'od',
+        'hexdump', 'strings', 'stat', 'file', 'readlink', 'realpath', 'pwd',
+        'which', 'whereis', 'type', 'tree', 'df', 'du', 'locate',
+        'md5sum', 'sha1sum', 'sha256sum', 'cksum', 'cmp', 'diff', 'comm', 'fold',
+        'fmt', 'column', 'expand', 'unexpand', 'tac', 'seq', 'echo',
+        # 搜索/过滤
+        'grep', 'egrep', 'fgrep', 'rg',
+        # 解压到 stdout / 归档列表
+        'zcat', 'bzcat', 'xzcat', 'lz4cat', 'zipinfo',
+        # 网络只读查询
+        'host', 'dig', 'nslookup', 'getent',
+        # 环境只读查询
+        'printenv',
     }
 
-    # 需限制动作词的系统服务命令（仅放行只读动作）
-    READONLY_SERVICE_COMMANDS = {
-        'systemctl': {'actions': ['status', 'list-units', 'is-active', 'show']},
-        'service': {'actions': ['status']},
-        'chkconfig': {'actions': ['--list']},
+    # 短参数簇匹配（-dc/-tzc/-lv 等组合短参数按簇内字母判断，无法用 `-c\b` 精确锚定）
+    _ARCHIVE_READONLY = [r'^-{1,2}[a-zA-Z]*[ctl][a-zA-Z]*$',
+                         r'--stdout', r'--to-stdout', r'--test', r'--list']
+    _ARCHIVE_DECOMPRESS = [r'^-{1,2}[a-zA-Z]*d[a-zA-Z]*$',
+                           r'--decompress', r'--compress']
+
+    # T3 参数门控命令：readonly（命中任一即只读放行，优先）/ change（命中任一即审批）
+    # / reject（命中任一即硬拒）；无命中走 default。
+    # 注：default 用 'safe'/'approval'/'reject' 三态（'readonly' 为 'safe' 的兼容别名）。
+    PARAM_GATED_COMMANDS = {
+        # 文本处理：无 -i 就地改写即只读；system(/popen( 是代码执行向量
+        'sed': {'change': [r'^-{1,2}[a-zA-Z]*i[a-zA-Z]*$', r'--in-place'],
+                'reject': [r'system\s*\(', r'popen\s*\('],
+                'default': 'safe'},
+        'awk': {'reject': [r'system\s*\(', r'popen\s*\(', r'getline'],
+                'default': 'safe'},
+        # find：-delete/-exec 等是破坏/任意执行向量
+        'find': {'reject': [r'-delete\b', r'-exec\b', r'-ok\b', r'-execdir\b', r'-okdir\b'],
+                 'change': [r'-fprint', r'-fprintf', r'-fls'],
+                 'default': 'safe'},
+        # 归档：仅列出/测试只读
+        'tar': {'readonly': [r'^-t', r'^--list'],
+                'change': [r'^-x', r'^-c', r'^-A', r'^-r', r'^-u', r'^-d',
+                           r'--extract', r'--create', r'--delete', r'--remove-files'],
+                'default': 'approval'},
+        # 解压/压缩族：-c/-t/-l（组合簇）输出到 stdout / 测试 / 列表 → 只读；-d 就地解压 → 变更
+        'gzip': {'readonly': list(_ARCHIVE_READONLY),
+                 'change': list(_ARCHIVE_DECOMPRESS),
+                 'default': 'approval'},
+        'gunzip': {'readonly': list(_ARCHIVE_READONLY),
+                   'change': list(_ARCHIVE_DECOMPRESS),
+                   'default': 'approval'},
+        'bzip2': {'readonly': list(_ARCHIVE_READONLY),
+                  'change': list(_ARCHIVE_DECOMPRESS),
+                  'default': 'approval'},
+        'bunzip2': {'readonly': list(_ARCHIVE_READONLY),
+                    'change': list(_ARCHIVE_DECOMPRESS),
+                    'default': 'approval'},
+        'xz': {'readonly': list(_ARCHIVE_READONLY),
+               'change': list(_ARCHIVE_DECOMPRESS),
+               'default': 'approval'},
+        'unxz': {'readonly': list(_ARCHIVE_READONLY),
+                 'change': list(_ARCHIVE_DECOMPRESS),
+                 'default': 'approval'},
+        'zstd': {'readonly': list(_ARCHIVE_READONLY),
+                 'change': list(_ARCHIVE_DECOMPRESS),
+                 'default': 'approval'},
+        'unzstd': {'readonly': list(_ARCHIVE_READONLY),
+                   'change': list(_ARCHIVE_DECOMPRESS),
+                   'default': 'approval'},
+        'lz4': {'readonly': list(_ARCHIVE_READONLY),
+                'change': list(_ARCHIVE_DECOMPRESS),
+                'default': 'approval'},
+        'unzip': {'readonly': [r'^-{1,2}[a-zA-Z]*[lp][a-zA-Z]*$', r'-Z\b'],
+                  'change': [r'^-{1,2}[a-zA-Z]*[xd][a-zA-Z]*$', r'--extract'],
+                  'default': 'approval'},
+        'zip': {'readonly': [r'^-{1,2}[a-zA-Z]*l[a-zA-Z]*$', r'--list'],
+                'change': [r'^-{1,2}[a-zA-Z]*[xdufmr][a-zA-Z]*$'],
+                'default': 'approval'},
+        # 服务管理：只读动作 safe，启停/使能动作 approval
+        'systemctl': {'readonly': [r'status\b', r'list-units', r'list-timers', r'list-sockets',
+                                   r'is-active', r'is-enabled', r'is-failed', r'show\b', r'cat\b'],
+                      'change': [r'start\b', r'stop\b', r'restart\b', r'reload\b',
+                                 r'daemon-reload', r'enable\b', r'disable\b', r'mask\b',
+                                 r'unmask\b', r'kill\b', r'isolate\b', r'set-default', r'reset-failed'],
+                      'default': 'approval'},
+        'service': {'readonly': [r'status\b'],
+                    'change': [r'start\b', r'stop\b', r'restart\b', r'reload\b'],
+                    'default': 'approval'},
+        'chkconfig': {'readonly': [r'--list'],
+                      'change': [r'on\b', r'off\b', r'reset\b'],
+                      'default': 'approval'},
+        # 系统参数：sysctl -w / = 是写
+        'sysctl': {'change': [r'-w\b', r'='],
+                   'default': 'safe'},
+        # 内核日志：dmesg -c/-C 清空环形缓冲
+        'dmesg': {'change': [r'-c\b', r'-C\b'],
+                  'default': 'safe'},
+        # 网卡参数：ethtool -s 等改参数
+        'ethtool': {'change': [r'-s\b', r'-A\b', r'-G\b', r'-K\b', r'-L\b', r'-N\b', r'--set-'],
+                    'default': 'safe'},
+        # 计划任务：crontab -l 列表只读
+        'crontab': {'readonly': [r'-l\b'],
+                    'change': [r'-e\b', r'-r\b'],
+                    'default': 'approval'},
+        # 进程控制（用户确认：审批）：-l 列表只读
+        'kill': {'readonly': [r'-l\b'],
+                 'default': 'approval'},
+        'killall': {'readonly': [r'-l\b'],
+                    'default': 'approval'},
+        'pkill': {'readonly': [r'-l\b'],
+                  'default': 'approval'},
+        # ip：show/list/裸子命令只读，增删改查审批（专用逻辑 _evaluate_ip）
+        'ip': {'mode': 'ip'},
     }
+
+    # T3 变更写操作：无只读用法，一律审批
+    CHANGE_COMMANDS = {
+        'cp', 'mv', 'ln', 'mkdir', 'rmdir', 'touch', 'chmod', 'chown', 'chgrp',
+        'tee', 'install', 'rename', 'split', 'csplit', 'patch',
+        'yum', 'dnf', 'apt', 'apt-get', 'rpm', 'dpkg', 'zypper',
+    }
+
+    # 包装命令：真正执行其参数（timeout/env/nice/watch/xargs 等）。
+    # 不入任何只读白名单；被包装命令若为 T1 硬拒命令（如 `timeout 10 rm`）→ 硬拒。
+    WRAPPER_COMMANDS = {'env', 'timeout', 'nice', 'watch', 'xargs',
+                        'nohup', 'setsid', 'stdbuf', 'taskset'}
+
+    # 注入元字符（不含单管道 |；单管道按段受控放行，|| 仍拦截）
+    INJECTION_METACHARS = (';', '&', '>', '<', '`', '$(', '${', '||')
+    # 命令级危险特征（作用于变更命令参数 token）
+    DANGEROUS_METACHARS = [';', '|', '>', '<', '&', '`', '$(', '${']
+
+    # 可插拔的 LLM 审查钩子：judge_fn(command) -> {"allow": bool, "risk": str, "reason": str} | None。
+    # 默认 None（纯静态，离线可用）；由引擎按配置挂载（agent/command_judge.py）。
+    command_judge_fn = None
 
     LEVEL_ORDER = {
         OperationLevel.READONLY: 0,
@@ -126,11 +260,6 @@ class Harness:
         OperationLevel.MAINTENANCE: 2,
         OperationLevel.DANGEROUS: 3,
     }
-
-    # 命令级危险特征（作用于整个命令串/参数 token）
-    DANGEROUS_METACHARS = [';', '|', '>', '<', '&', '`', '$(', '${']
-    DANGEROUS_TOKENS = {'rm', 'dd', 'mkfs', 'mkfifo', 'sh', 'bash', 'sudo', 'su',
-                        'wget', 'curl', 'nc', 'python', 'perl'}
 
     @classmethod
     def validate_sql(cls, sql: str, level: OperationLevel = OperationLevel.READONLY) -> Tuple[bool, str]:
@@ -216,16 +345,29 @@ class Harness:
             return db_type
         return cls.DB_TYPE_ALIASES.get(db_type.lower(), db_type.lower())
 
+    @staticmethod
+    def _is_hard_rejected(cmd_name: str) -> bool:
+        """T1 硬拒绝判定：精确名 + 前缀匹配（mkfs.*）"""
+        if cmd_name in Harness.REJECT_COMMANDS:
+            return True
+        return any(cmd_name.startswith(p) for p in Harness.REJECT_COMMAND_PREFIXES)
+
+    @staticmethod
+    def _is_path_like(arg: str) -> bool:
+        """参数是否「像路径」：仅此类参数才做 .. 穿越检查，避免误伤 grep 正则（a..b）"""
+        return arg.startswith(('/', '.', '~')) or '/' in arg
+
+    # ==================== 命令校验（融合判定） ====================
+
     @classmethod
     def validate_command(cls, command: str, db_type: str,
                          level: OperationLevel = OperationLevel.READONLY) -> Tuple[bool, str]:
-        """验证命令安全性
+        """验证命令是否可作为只读命令直接执行
 
-        校验：危险元字符（不含管道）→ 按 `|` 分段 → 每段单独校验
-        （数据库专用命令或通用只读诊断命令）。
-
-        允许只读命令之间用单管道连接（如 `ps -ef | grep dmserver`），
-        但整串仍禁止 `;`/`&&`/`||`/重定向/命令替换等注入特征。
+        校验：只读链（含 ;/&&/||/| 与 /dev/null 重定向与只读命令替换）→ 放行；
+        注入元字符 → 拦截；按 `|` 分段逐段评估（T1/T2/T3/数据库策略/变更）。
+        未知命令段若有 LLM 审查钩子，审查 allow 则放行（与 classify_command 同一目标
+        + 同一缓存，保证引擎 _validate_action 与 tools.py 双重校验一致）。
 
         Returns:
             (is_safe, error_message)
@@ -238,98 +380,254 @@ class Harness:
             return False, "检测到危险控制字符"
 
         # 纯只读诊断命令链（如 `ps -ef | grep x`、`cat a 2>/dev/null || cat b`）→ 放行
-        if cls._is_diagnostic_chain(command):
+        if cls._is_diagnostic_chain(command, db_type):
             return True, None
 
-        # 危险元字符：不含单个管道 |（单管道按段受控放行），但 || 仍拦截
-        for m in (';', '&', '>', '<', '`', '$(', '${', '||'):
+        # 注入元字符：不含单个管道 |（单管道按段受控放行），但 || 仍拦截
+        for m in cls.INJECTION_METACHARS:
             if m in command:
                 return False, f"检测到危险字符: {m}"
 
-        # 按管道分段（引号感知），逐段校验
+        # 按管道分段（引号感知），逐段评估
         segments = [s.strip() for s in cls._split_shell(command, seps=('|',))]
         if any(not s for s in segments):
             return False, "管道存在空命令段"
 
         for seg in segments:
-            ok, err = cls._validate_single_command(seg, db_type, level)
-            if not ok:
-                return False, err
+            toks = seg.split()
+            seg_cls, err = cls._evaluate_segment(toks, db_type, level)
+            if seg_cls == 'safe':
+                continue
+            # 未知命令段：LLM 审查整个命令串（第二意见，allow 则视为安全）
+            if seg_cls == 'unknown' and cls.command_judge_fn is not None:
+                verdict = cls._invoke_judge(command)
+                if verdict and verdict.get('allow'):
+                    continue
+                return False, f"命令 {toks[0] if toks else ''} 不在白名单中（数据库类型: {db_type}）"
+            return False, err or f"命令 {toks[0] if toks else ''} 校验失败"
 
         return True, None
 
     @classmethod
-    def _validate_single_command(cls, command: str, db_type: str,
-                                 level: OperationLevel) -> Tuple[bool, str]:
-        """校验单段命令（无管道）：数据库专用命令或通用只读诊断命令"""
-        cmd_parts = command.strip().split()
+    def _invoke_judge(cls, command: str) -> Optional[Dict]:
+        """调用可插拔 LLM 审查钩子；钩子异常/未挂载 → None（保持静态判定）"""
+        judge_fn = cls.command_judge_fn
+        if judge_fn is None:
+            return None
+        try:
+            verdict = judge_fn(command)
+            return verdict if isinstance(verdict, dict) else None
+        except Exception as e:
+            print(f"[Harness] LLM 审查调用异常（保持静态判定）: {e}")
+            return None
+
+    @classmethod
+    def _evaluate_segment(cls, cmd_parts: List[str], db_type: str,
+                          level: OperationLevel) -> Tuple[str, Optional[str]]:
+        """评估单个命令段（无管道）：返回 'safe'/'approval'/'reject'/'unknown' + reason"""
         if not cmd_parts:
-            return False, "空命令"
+            return 'reject', '空命令'
         cmd_name = cmd_parts[0]
 
-        # 1. 数据库专用命令（按 db_type 策略）
+        # T1 硬拒绝
+        if cls._is_hard_rejected(cmd_name):
+            return 'reject', f"危险命令: {cmd_name}"
+
+        # T2 纯只读：参数视为数据，仅路径穿越检查
+        if cmd_name in cls.ALWAYS_READONLY_COMMANDS:
+            for arg in cmd_parts[1:]:
+                if cls._is_path_like(arg) and '..' in arg:
+                    return 'reject', f"检测到危险路径参数: {arg}"
+            return 'safe', None
+
+        # T3 参数门控
+        gate = cls.PARAM_GATED_COMMANDS.get(cmd_name)
+        if gate is not None:
+            return cls._evaluate_gated(cmd_parts, gate)
+
+        # T3 变更写操作（无只读用法）→ 审批
+        if cmd_name in cls.CHANGE_COMMANDS:
+            return 'approval', None
+
+        # 数据库专用命令策略
         policy = cls.COMMAND_POLICY.get(cls._normalize_db_type(db_type), {}).get(cmd_name)
         if policy is not None:
-            return cls._validate_policy_command(cmd_name, cmd_parts, policy, level)
+            return cls._evaluate_policy(cmd_parts, policy, level)
 
-        # 2. 通用只读诊断命令
-        if cmd_name in cls.READONLY_DIAGNOSTIC_COMMANDS:
-            return cls._validate_diagnostic_command(cmd_name, cmd_parts)
-
-        # 3. 需限制动作词的系统服务命令
-        svc_policy = cls.READONLY_SERVICE_COMMANDS.get(cmd_name)
-        if svc_policy is not None:
-            return cls._validate_policy_command(cmd_name, cmd_parts, svc_policy, level)
-
-        return False, f"命令 {cmd_name} 不在白名单中（数据库类型: {db_type}）"
+        # 未知/包装命令：T1 命令名作为参数出现（如 `timeout 10 rm ...`）→ 硬拒
+        if any(cls._is_hard_rejected(t) for t in cmd_parts[1:]):
+            return 'reject', '命令参数含危险命令'
+        return 'unknown', f"命令 {cmd_name} 不在白名单"
 
     @classmethod
-    def _validate_policy_command(cls, cmd_name: str, cmd_parts: List[str],
-                                 policy: Dict, level: OperationLevel) -> Tuple[bool, str]:
-        """校验带策略的命令：级别门槛 → 危险动作 → 动作词 → 危险参数扫描"""
-        min_level = policy.get('level', OperationLevel.READONLY)
-        if cls.LEVEL_ORDER[level] < cls.LEVEL_ORDER[min_level]:
-            return False, f"命令 {cmd_name} 需要级别 {min_level.value}，当前级别 {level.value}"
+    def _evaluate_gated(cls, cmd_parts: List[str], gate: Dict) -> Tuple[str, Optional[str]]:
+        """参数门控命令评估：reject → readonly(safe) → change(approval) → default"""
+        cmd_name = cmd_parts[0]
+        if gate.get('mode') == 'ip':
+            return cls._evaluate_ip(cmd_parts)
+        args = cmd_parts[1:]
 
+        def hit(patterns):
+            for pat in patterns:
+                for tok in args:
+                    if re.search(pat, tok):
+                        return True
+            return False
+
+        reject_pat = gate.get('reject')
+        if reject_pat and hit(reject_pat):
+            return 'reject', f"命令 {cmd_name} 含破坏性参数"
+
+        readonly_pat = gate.get('readonly')
+        if readonly_pat and hit(readonly_pat):
+            return cls._check_gated_paths(cmd_name, args)
+
+        change_pat = gate.get('change')
+        if change_pat and hit(change_pat):
+            return 'approval', None
+
+        default = gate.get('default', 'approval')
+        if default == 'readonly':
+            default = 'safe'
+        if default == 'safe':
+            return cls._check_gated_paths(cmd_name, args)
+        return default, None
+
+    @classmethod
+    def _check_gated_paths(cls, cmd_name: str, args: List[str]) -> Tuple[str, Optional[str]]:
+        """只读门控放行前的路径穿越检查"""
+        for arg in args:
+            if cls._is_path_like(arg) and '..' in arg:
+                return 'reject', f"检测到危险路径参数: {arg}"
+        return 'safe', None
+
+    @classmethod
+    def _evaluate_ip(cls, cmd_parts: List[str]) -> Tuple[str, Optional[str]]:
+        """ip 命令：show/list/裸子命令（addr/route/link/neigh）只读；增删改查审批"""
+        args = cmd_parts[1:]
+        change_verbs = ('add', 'del', 'set', 'up', 'down', 'replace', 'change', 'flush')
+        if any(a in change_verbs for a in args):
+            return 'approval', None
+        if not args or any(a in ('show', 'list') for a in args):
+            return 'safe', None
+        if args[-1] in ('addr', 'route', 'link', 'neigh', 'address', 'maddr', 'mroute'):
+            return 'safe', None
+        return 'approval', None
+
+    @classmethod
+    def _evaluate_policy(cls, cmd_parts: List[str], policy: Dict,
+                         level: OperationLevel) -> Tuple[str, Optional[str]]:
+        """数据库专用命令策略：只读动作 safe；变更动作/特权工具 approval；畸形 reject"""
+        cmd_name = cmd_parts[0]
+        actions = policy.get('actions') or []
         blocked = policy.get('blocked_actions', {})
-        for arg in cmd_parts[1:]:
-            if arg in blocked and cls.LEVEL_ORDER[level] < cls.LEVEL_ORDER[blocked[arg]]:
-                return False, f"子命令 {arg} 需要级别 {blocked[arg].value}，当前级别 {level.value}"
+        args = cmd_parts[1:]
+        min_level = policy.get('level', OperationLevel.READONLY)
 
-        actions = policy.get('actions')
-        if actions and not any(a in cmd_parts[1:] for a in actions):
-            return False, f"命令 {cmd_name} 缺少允许的动作词（{', '.join(actions)}）"
-
-        return cls._check_dangerous_args(cmd_parts, check_tokens=True)
-
-    @classmethod
-    def _validate_diagnostic_command(cls, cmd_name: str,
-                                     cmd_parts: List[str]) -> Tuple[bool, str]:
-        """校验通用只读诊断命令：路径穿越检查 + 破坏性参数/代码执行向量拦截，
-        参数视为数据不扫危险 token（避免误伤 grep sudo 等 pattern）。"""
-        forbidden = cls.DIAGNOSTIC_FORBIDDEN_ARGS.get(cmd_name, set())
-        if forbidden and any(t in forbidden for t in cmd_parts[1:]):
-            return False, f"检测到破坏性参数: {next(t for t in cmd_parts[1:] if t in forbidden)}"
-        substrs = cls.DIAGNOSTIC_FORBIDDEN_SUBSTR.get(cmd_name, [])
-        for arg in cmd_parts[1:]:
-            for s in substrs:
-                if s in arg:
-                    return False, f"检测到危险参数: {s}"
-        return cls._check_dangerous_args(cmd_parts, check_tokens=False)
+        # 变更动作（start/stop）或命令本身标记变更 → 审批
+        if policy.get('is_change', False) or any(a in blocked for a in args):
+            return 'approval', None
+        # 只读动作命中：当前级别达标 → safe，否则提升为审批
+        if actions and any(a in args for a in actions):
+            if cls.LEVEL_ORDER[level] >= cls.LEVEL_ORDER[min_level]:
+                return 'safe', None
+            return 'approval', None
+        # 无只读动作定义（备份/导出等特权工具，如 rman/mysqldump）→ 审批
+        if not actions:
+            return 'approval', None
+        # 定义了只读动作但未命中 → 命令畸形
+        return 'reject', f"命令 {cmd_name} 缺少允许的动作词（{', '.join(actions)}）"
 
     @classmethod
-    def _check_dangerous_args(cls, cmd_parts: List[str],
-                              check_tokens: bool = True) -> Tuple[bool, str]:
-        """扫描命令参数的全局危险特征（危险 token / 路径穿越）"""
-        for arg in cmd_parts[1:]:
-            if check_tokens and arg in cls.DANGEROUS_TOKENS:
-                return False, f"检测到危险参数: {arg}"
-            if '..' in arg:
-                return False, f"检测到危险路径参数: {arg}"
-        return True, None
+    def _static_classify(cls, command: str, db_type: str) -> Tuple[str, Optional[str]]:
+        """静态判定（纯脚本，不调 LLM）：safe / approval / reject / unknown"""
+        if not command or not command.strip():
+            return 'reject', '命令为空'
+        if re.search(r'[\n\r\t\x00-\x08\x0b\x0c\x0e-\x1f]', command):
+            return 'reject', '检测到危险控制字符'
 
-    @staticmethod
-    def _split_shell(command: str, seps=(';', '|', '&&', '||')):
+        # 纯只读诊断命令链 → safe
+        if cls._is_diagnostic_chain(command, db_type):
+            return 'safe', None
+
+        # 注入元字符（不含单管道 |）→ reject（交由融合矩阵决定是否降级审批）
+        for m in cls.INJECTION_METACHARS:
+            if m in command:
+                return 'reject', f"检测到危险注入特征: {m}"
+
+        # 按 | 分段逐段评估
+        segments = [s.strip() for s in cls._split_shell(command, seps=('|',))]
+        had_unknown = False
+        for seg in segments:
+            if not seg:
+                return 'reject', '管道存在空命令段'
+            toks = seg.split()
+            seg_cls, reason = cls._evaluate_segment(toks, db_type, OperationLevel.READONLY)
+            if seg_cls == 'reject':
+                return 'reject', reason
+            if seg_cls == 'approval':
+                return 'approval', None
+            if seg_cls == 'unknown':
+                had_unknown = True
+        if had_unknown:
+            first = segments[0].strip().split()
+            name = first[0] if first else ''
+            return 'unknown', f"命令 {name} 不在白名单"
+        return 'safe', None
+
+    @classmethod
+    def classify_command(cls, command: str, db_type: str) -> Tuple[str, Optional[str]]:
+        """命令三态分类（融合判定矩阵）
+
+        - safe：只读白名单（含只读诊断链），直接执行免审批
+        - approval：变更类命令 / 脚本判拒绝但 LLM 判可放行的命令 / 未知待审批命令
+        - reject：脚本与 LLM 均拒绝的命令（硬拒/注入）
+
+        静态判定为 reject 或 unknown 时，若有 LLM 审查钩子，发起一次独立审查作
+        第二意见：
+          reject + allow → approval（DBA 决定，根治脚本误拒）
+          reject + reject → reject
+          unknown + allow → safe（只读直接执行）
+          unknown + reject(high) → reject；unknown + reject(非high) → approval
+
+        Returns:
+            (classification, reason)；reason 为 None 表示无需说明
+        """
+        if not command or not command.strip():
+            return 'reject', "命令为空"
+        if re.search(r'[\n\r\t\x00-\x08\x0b\x0c\x0e-\x1f]', command):
+            return 'reject', "检测到危险控制字符"
+
+        static_cls, static_reason = cls._static_classify(command, db_type)
+
+        # 静态 safe / approval → 快速路径直接返回（不调 LLM）
+        if static_cls in ('safe', 'approval'):
+            return static_cls, static_reason
+
+        # 静态 reject / unknown → 独立 LLM 审查（第二意见）
+        verdict = cls._invoke_judge(command)
+        if verdict:
+            allow = bool(verdict.get('allow'))
+            risk = verdict.get('risk', 'medium')
+            if static_cls == 'reject':
+                if allow:
+                    return 'approval', (f"静态判断拒绝，LLM 判读可放行"
+                                        f"（{verdict.get('reason', '')}），需审批")
+                return 'reject', static_reason
+            # static unknown
+            if allow:
+                return 'safe', f"LLM判读只读放行: {verdict.get('reason', '')}"
+            if risk == 'high':
+                return 'reject', f"LLM判读危险: {verdict.get('reason', '')}"
+            return 'approval', static_reason
+
+        # 无 LLM 审查结果（未挂载/失败/返回空）：unknown 降级为审批，reject 保持拒绝
+        if static_cls == 'unknown':
+            return 'approval', static_reason
+        return static_cls, static_reason
+
+    @classmethod
+    def _split_shell(cls, command: str, seps=('&&', '||', ';', '|')):
         """按 shell 分隔符切分命令，忽略引号内（单/双引号）的分隔符。
 
         用于命令链/管道的分段校验，避免 grep 模式里的 '|' 等被误拆成独立段。
@@ -382,10 +680,11 @@ class Harness:
         return parts
 
     @classmethod
-    def _sanitize_safe_substitutions(cls, command: str) -> Optional[str]:
+    def _sanitize_safe_substitutions(cls, command: str,
+                                     db_type: Optional[str] = None) -> Optional[str]:
         """把命令中的只读命令替换（$() 或反引号）替换为占位符。
 
-        内层命令必须是只读诊断命令且通过校验（如 $(date +%Y%m) 取当前月份日志）；
+        内层命令必须是只读命令且通过校验（如 $(date +%Y%m) 取当前月份日志）；
         否则返回 None（视为注入，如 $(rm -rf /)）。
         """
         invalid = False
@@ -394,11 +693,12 @@ class Harness:
             nonlocal invalid
             inner = m.group(1).strip()
             toks = inner.split()
-            if not toks or toks[0] not in cls.READONLY_DIAGNOSTIC_COMMANDS:
+            if not toks:
                 invalid = True
                 return m.group(0)
-            ok, _ = cls._validate_diagnostic_command(toks[0], toks)
-            if not ok:
+            seg_cls, _ = cls._evaluate_segment(toks, db_type or '',
+                                               OperationLevel.READONLY)
+            if seg_cls != 'safe':
                 invalid = True
                 return m.group(0)
             return 'X'  # 占位符
@@ -410,24 +710,24 @@ class Harness:
         return command
 
     @classmethod
-    def _is_diagnostic_chain(cls, command: str) -> bool:
+    def _is_diagnostic_chain(cls, command: str,
+                             db_type: Optional[str] = None) -> bool:
         """判断命令是否为「纯只读诊断命令链」。
 
-        由只读诊断命令通过 ; / && / || / | 分隔，可带 2>/dev/null、>/dev/null 重定向
+        由只读命令通过 ; / && / || / | 分隔，可带 2>/dev/null、>/dev/null 重定向
         （抑制 stderr/清空输出），可含只读命令替换（$(date +%Y%m) 等）。
-        只要每一段都是 READONLY_DIAGNOSTIC_COMMANDS 内的命令且无破坏性参数
-        （如 find -delete/-exec），就视为安全的只读巡检放行。
+        只要每一段都评估为 safe（T2/T3 只读用法）就视为安全的只读巡检放行。
 
-        背景执行 &、变量展开 ${、任意重定向（非 /dev/null）、危险命令替换等不算诊断链。
+        背景执行 &、变量展开 ${、任意非 /dev/null 重定向、危险命令替换等不算诊断链。
         """
         if not command or not command.strip():
             return False
         # 背景执行 &、变量展开 ${ → 非诊断链
         if re.search(r'(?<![&|])&(?![&|])', command) or '${' in command:
             return False
-        # 命令替换 $()/反引号：内层必须是只读诊断命令，否则视为注入
+        # 命令替换 $()/反引号：内层必须是只读命令，否则视为注入
         if '$(' in command or '`' in command:
-            cleaned_sub = cls._sanitize_safe_substitutions(command)
+            cleaned_sub = cls._sanitize_safe_substitutions(command, db_type)
             if cleaned_sub is None:
                 return False
             command = cleaned_sub
@@ -438,17 +738,18 @@ class Harness:
         # 仍有其他重定向（> 到非 /dev/null，或 < 输入重定向）→ 非诊断链
         if re.search(r'[<>]', cleaned):
             return False
-        # 按分隔符分段（; || && |，引号感知），逐段必须是只读诊断命令且通过统一校验
+        # 按分隔符分段（; || && |，引号感知），逐段必须是只读命令
         parts = cls._split_shell(cleaned)
         for seg in parts:
             seg = seg.strip()
             if not seg:
                 return False
             toks = seg.split()
-            if toks[0] not in cls.READONLY_DIAGNOSTIC_COMMANDS:
+            if not toks:
                 return False
-            ok, _ = cls._validate_diagnostic_command(toks[0], toks)
-            if not ok:
+            seg_cls, _ = cls._evaluate_segment(toks, db_type or '',
+                                               OperationLevel.READONLY)
+            if seg_cls != 'safe':
                 return False
         return True
 
@@ -541,9 +842,9 @@ class Harness:
         for arg in cmd_parts[1:]:
             if any(m in arg for m in cls.DANGEROUS_METACHARS):
                 return False, f"检测到危险参数: {arg}"
-            if arg in cls.DANGEROUS_TOKENS:
+            if cls._is_hard_rejected(arg):
                 return False, f"检测到危险参数: {arg}"
-            if '..' in arg:
+            if cls._is_path_like(arg) and '..' in arg:
                 return False, f"检测到危险路径参数: {arg}"
         return True, None
 
@@ -558,58 +859,6 @@ class Harness:
         return cls.SQL_WHITELIST.get(level, set())
 
     # ==================== 三态分类（供引擎决定执行/审批/拒绝） ====================
-
-    @classmethod
-    def classify_command(cls, command: str, db_type: str) -> Tuple[str, Optional[str]]:
-        """命令三态分类
-
-        - safe：只读白名单（含只读诊断命令管道），直接执行免审批
-        - approval：变更类命令（is_change/start/stop）或非注入的未知命令，走审批
-        - reject：命令注入特征（; && || 重定向 命令替换等），硬拒绝
-
-        Returns:
-            (classification, reason)；reason 为 None 表示无需说明
-        """
-        if not command or not command.strip():
-            return 'reject', "命令为空"
-        if re.search(r'[\n\r\t\x00-\x08\x0b\x0c\x0e-\x1f]', command):
-            return 'reject', "检测到危险控制字符"
-
-        # 纯只读诊断命令链（ps|grep、cat 2>/dev/null || cat 等）→ 直接执行免审批
-        if cls._is_diagnostic_chain(command):
-            return 'safe', None
-
-        # 危险命令名（rm/dd/mkfs/...）→ 硬拒绝，即使走审批也不允许
-        cmd_name = command.strip().split()[0]
-        if cmd_name in cls.DANGEROUS_TOKENS:
-            return 'reject', f"危险命令: {cmd_name}"
-
-        # 硬注入特征（不含单管道 |）
-        for m in (';', '&', '>', '<', '`', '$(', '${', '||'):
-            if m in command:
-                return 'reject', f"检测到危险注入特征: {m}"
-
-        # 只读白名单（含 ps|grep 等只读诊断管道）→ 直接执行
-        is_safe, err = cls.validate_command(command, db_type, OperationLevel.READONLY)
-        if is_safe:
-            return 'safe', None
-
-        # 已知只读诊断命令但校验失败（如 find -delete 破坏性参数）→ 硬拒绝
-        if cmd_name in cls.READONLY_DIAGNOSTIC_COMMANDS:
-            return 'reject', f"只读诊断命令校验失败: {err}"
-
-        # 含管道的非只读命令 → 拒绝（管道在变更/未知场景是注入风险）
-        if '|' in command:
-            return 'reject', "检测到危险管道注入"
-
-        # 变更白名单 → 审批
-        is_change, _ = cls.validate_change_command(command, db_type)
-        if is_change:
-            return 'approval', None
-
-        # 非注入的未知命令 → 审批（审批权交给用户，而非硬拒绝）
-        cmd_name = command.strip().split()[0]
-        return 'approval', f"命令 {cmd_name} 不在白名单，需审批后执行"
 
     @classmethod
     def classify_sql(cls, sql: str) -> Tuple[str, Optional[str]]:
