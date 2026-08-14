@@ -97,7 +97,11 @@ class Harness:
         'du', 'wc', 'head', 'tail', 'sort', 'uniq', 'ip', 'hostname',
         'date', 'id', 'last', 'dmesg', 'lsof', 'vmstat', 'iostat',
         'sar', 'mpstat', 'pidstat', 'lsblk', 'blkid', 'mount', 'findmnt',
-        'ethtool', 'ipcs',
+        'ethtool', 'ipcs', 'which', 'find', 'echo',
+    }
+    # 只读诊断命令中禁止出现的破坏性参数（如 find -delete/-exec/-ok）
+    DIAGNOSTIC_FORBIDDEN_ARGS = {
+        'find': {'-delete', '-exec', '-ok', '-execdir', '-okdir'},
     }
 
     # 需限制动作词的系统服务命令（仅放行只读动作）
@@ -224,6 +228,10 @@ class Harness:
         if re.search(r'[\n\r\t\x00-\x08\x0b\x0c\x0e-\x1f]', command):
             return False, "检测到危险控制字符"
 
+        # 纯只读诊断命令链（如 `ps -ef | grep x`、`cat a 2>/dev/null || cat b`）→ 放行
+        if cls._is_diagnostic_chain(command):
+            return True, None
+
         # 危险元字符：不含单个管道 |（单管道按段受控放行），但 || 仍拦截
         for m in (';', '&', '>', '<', '`', '$(', '${', '||'):
             if m in command:
@@ -288,7 +296,11 @@ class Harness:
     @classmethod
     def _validate_diagnostic_command(cls, cmd_name: str,
                                      cmd_parts: List[str]) -> Tuple[bool, str]:
-        """校验通用只读诊断命令：仅做路径穿越检查，参数视为数据不扫危险 token"""
+        """校验通用只读诊断命令：路径穿越检查 + 破坏性参数拦截，
+        参数视为数据不扫危险 token（避免误伤 grep sudo 等 pattern）。"""
+        forbidden = cls.DIAGNOSTIC_FORBIDDEN_ARGS.get(cmd_name, set())
+        if forbidden and any(t in forbidden for t in cmd_parts[1:]):
+            return False, f"检测到破坏性参数: {next(t for t in cmd_parts[1:] if t in forbidden)}"
         return cls._check_dangerous_args(cmd_parts, check_tokens=False)
 
     @classmethod
@@ -301,6 +313,47 @@ class Harness:
             if '..' in arg:
                 return False, f"检测到危险路径参数: {arg}"
         return True, None
+
+    @classmethod
+    def _is_diagnostic_chain(cls, command: str) -> bool:
+        """判断命令是否为「纯只读诊断命令链」。
+
+        由只读诊断命令通过 ; / && / || / | 分隔，可带 2>/dev/null、>/dev/null 重定向
+        （抑制 stderr/清空输出）。只要每一段都是 READONLY_DIAGNOSTIC_COMMANDS 内的
+        命令且无破坏性参数（如 find -delete/-exec），就视为安全的只读巡检放行。
+
+        背景执行 &、命令替换、任意重定向（非 /dev/null）等一律不算诊断链。
+        """
+        if not command or not command.strip():
+            return False
+        # 背景执行 &、命令替换、变量展开 → 非诊断链
+        if re.search(r'(?<![&|])&(?![&|])', command) or '`' in command \
+                or '${' in command or '$(' in command:
+            return False
+        # 去除 /dev/null 重定向（2>/dev/null、>/dev/null、1>/dev/null，允许空格）
+        cleaned = re.sub(r'\d*\s*>\s*/dev/null', '', command)
+        if not cleaned.strip():
+            return False
+        # 仍有其他重定向（> 到非 /dev/null，或 < 输入重定向）→ 非诊断链
+        if re.search(r'[<>]', cleaned):
+            return False
+        # 按分隔符分段（; || && |），逐段必须是只读诊断命令
+        parts = re.split(r'\s*(?:;|\|\||&&|\|)\s*', cleaned)
+        for seg in parts:
+            seg = seg.strip()
+            if not seg:
+                return False
+            toks = seg.split()
+            if toks[0] not in cls.READONLY_DIAGNOSTIC_COMMANDS:
+                return False
+            # 诊断命令的破坏性参数（find -delete 等）→ 拒绝
+            forbidden = cls.DIAGNOSTIC_FORBIDDEN_ARGS.get(toks[0], set())
+            if forbidden and any(t in forbidden for t in toks[1:]):
+                return False
+            ok, _ = cls._check_dangerous_args(toks, check_tokens=False)
+            if not ok:
+                return False
+        return True
 
     # ==================== 变更类操作校验（审批后执行前二次校验） ====================
 
@@ -425,15 +478,28 @@ class Harness:
         if re.search(r'[\n\r\t\x00-\x08\x0b\x0c\x0e-\x1f]', command):
             return 'reject', "检测到危险控制字符"
 
+        # 纯只读诊断命令链（ps|grep、cat 2>/dev/null || cat 等）→ 直接执行免审批
+        if cls._is_diagnostic_chain(command):
+            return 'safe', None
+
+        # 危险命令名（rm/dd/mkfs/...）→ 硬拒绝，即使走审批也不允许
+        cmd_name = command.strip().split()[0]
+        if cmd_name in cls.DANGEROUS_TOKENS:
+            return 'reject', f"危险命令: {cmd_name}"
+
         # 硬注入特征（不含单管道 |）
         for m in (';', '&', '>', '<', '`', '$(', '${', '||'):
             if m in command:
                 return 'reject', f"检测到危险注入特征: {m}"
 
         # 只读白名单（含 ps|grep 等只读诊断管道）→ 直接执行
-        is_safe, _ = cls.validate_command(command, db_type, OperationLevel.READONLY)
+        is_safe, err = cls.validate_command(command, db_type, OperationLevel.READONLY)
         if is_safe:
             return 'safe', None
+
+        # 已知只读诊断命令但校验失败（如 find -delete 破坏性参数）→ 硬拒绝
+        if cmd_name in cls.READONLY_DIAGNOSTIC_COMMANDS:
+            return 'reject', f"只读诊断命令校验失败: {err}"
 
         # 含管道的非只读命令 → 拒绝（管道在变更/未知场景是注入风险）
         if '|' in command:

@@ -11,6 +11,9 @@ let agentIsRunning = false;
 let agentCurrentSSHConn = null;
 let agentCurrentDBConn = null;
 let agentAbortController = null;
+// 流式文本累加器（thinking/conclusion 逐 token 渲染用）
+let agentThinkingText = '';
+let agentConclusionText = '';
 
 // ==================== 模块初始化 ====================
 function initAgentModule() {
@@ -484,6 +487,7 @@ function renderKnowledgeWarning(message) {
 
 function showAgentThinking(step) {
     const chat = document.getElementById('agent-chat');
+    agentThinkingText = '';
     const div = document.createElement('div');
     div.className = 'agent-message thinking';
     div.id = `agent-thinking-${step}`;
@@ -495,7 +499,7 @@ function showAgentThinking(step) {
                 <span class="thinking-indicator"></span>
             </summary>
             <div class="message-content">
-                <pre class="thinking-content"></pre>
+                <div class="thinking-content markdown-content"></div>
             </div>
         </details>
     `;
@@ -506,7 +510,9 @@ function showAgentThinking(step) {
 function appendAgentThinking(content) {
     const thinkingDiv = document.querySelector('.agent-message.thinking:last-child .thinking-content');
     if (thinkingDiv) {
-        thinkingDiv.textContent += content;
+        agentThinkingText += content;
+        // 逐 token 重渲染 markdown（流式输出，表格/代码可渐进渲染）
+        thinkingDiv.innerHTML = formatMarkdown(agentThinkingText) + '<span class="typing-cursor">▊</span>';
     }
 }
 
@@ -514,6 +520,8 @@ function finalizeAgentThinking() {
     const thinkingDiv = document.querySelector('.agent-message.thinking:last-child');
     if (thinkingDiv) {
         thinkingDiv.querySelector('.thinking-indicator').style.display = 'none';
+        const content = thinkingDiv.querySelector('.thinking-content');
+        if (content) content.innerHTML = formatMarkdown(agentThinkingText);  // 移除光标
     }
 }
 
@@ -584,20 +592,19 @@ function renderAgentResult(result) {
 function buildResultTable(columns, rows) {
     const div = document.createElement('div');
     div.className = 'tool-result';
+    // 构建 markdown 表格字符串，走 formatMarkdown 渲染（与知识问答模块的 md-table 一致）
+    const esc = v => String(v).replace(/\|/g, '｜').replace(/[\r\n]+/g, ' ');
+    const header = '| ' + columns.map(c => esc(c)).join(' | ') + ' |';
+    const sep = '| ' + columns.map(() => '---').join(' | ') + ' |';
+    const body = rows.slice(0, 50)
+        .map(r => '| ' + r.map(c => esc(c)).join(' | ') + ' |')
+        .join('\n');
+    const md = [header, sep, body].join('\n');
     div.innerHTML = `
         <details>
             <summary>查看结果 (${rows.length} 行)</summary>
-            <div class="result-table-wrapper">
-                <table class="result-table">
-                    <thead>
-                        <tr>${columns.map(c => `<th>${escapeHtml(String(c))}</th>`).join('')}</tr>
-                    </thead>
-                    <tbody>
-                        ${rows.map(row => `
-                            <tr>${row.map(cell => `<td>${escapeHtml(String(cell))}</td>`).join('')}</tr>
-                        `).join('')}
-                    </tbody>
-                </table>
+            <div class="result-table-wrapper markdown-content">
+                ${formatMarkdown(md)}
             </div>
         </details>
     `;
@@ -613,8 +620,8 @@ function renderAgentObservation(observation) {
             <span class="icon">👁️</span>
             <span class="label">观察结果</span>
         </div>
-        <div class="message-content">
-            <pre>${escapeHtml(observation)}</pre>
+        <div class="message-content markdown-content">
+            ${formatMarkdown(observation)}
         </div>
     `;
     chat.appendChild(div);
@@ -623,6 +630,7 @@ function renderAgentObservation(observation) {
 
 function showAgentConclusion() {
     const chat = document.getElementById('agent-chat');
+    agentConclusionText = '';
     const div = document.createElement('div');
     div.className = 'agent-message conclusion';
     div.id = 'agent-conclusion';
@@ -640,7 +648,10 @@ function showAgentConclusion() {
 function appendAgentConclusion(content) {
     const conclusionDiv = document.getElementById('agent-conclusion');
     if (conclusionDiv) {
-        conclusionDiv.querySelector('.markdown-content').innerHTML += formatMarkdown(content);
+        agentConclusionText += content;
+        // 逐 token 重渲染 markdown（流式输出，表格/代码可渐进渲染）
+        conclusionDiv.querySelector('.markdown-content').innerHTML =
+            formatMarkdown(agentConclusionText) + '<span class="typing-cursor">▊</span>';
     }
 }
 
@@ -648,6 +659,8 @@ function finalizeAgentConclusion() {
     const conclusionDiv = document.getElementById('agent-conclusion');
     if (conclusionDiv) {
         conclusionDiv.id = '';
+        const content = conclusionDiv.querySelector('.markdown-content');
+        if (content) content.innerHTML = formatMarkdown(agentConclusionText);  // 移除光标
         showAgentFeedback();
     }
 }

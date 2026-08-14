@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Generator, Tuple
 from datetime import datetime, timedelta
 
 from db.database import get_db
-from utils import call_llm
+from utils import call_llm, call_llm_stream
 from rag.embedder import Embedder
 from agent.harness import Harness, OperationLevel
 from agent.skills import SkillManager
@@ -117,8 +117,7 @@ class SmartOpsAgent:
 
             # Thinking
             yield {"type": "thinking_start", "step": self.state.current_step}
-            thought = self._think(system_prompt)
-            yield {"type": "thinking_chunk", "content": thought}
+            thought = yield from self._think_stream(system_prompt)
             yield {"type": "thinking_end"}
 
             step = self.state.add_step(AgentPhase.THINKING, thought=thought,
@@ -216,8 +215,7 @@ class SmartOpsAgent:
 
         # Conclusion
         yield {"type": "concluding_start"}
-        conclusion = self._conclude(knowledge_refs)
-        yield {"type": "concluding_chunk", "content": conclusion}
+        conclusion = yield from self._conclude_stream(knowledge_refs)
         yield {"type": "concluding_end"}
 
         step = self.state.add_step(AgentPhase.CONCLUDING, thought=conclusion)
@@ -416,12 +414,45 @@ class SmartOpsAgent:
 
         return prompt
 
+    def _stream_llm(self, messages: List[Dict],
+                    event_type: str) -> Generator[Dict, None, str]:
+        """流式调用 LLM：逐 delta 产出 {event_type, content} 事件，返回完整文本。
+
+        流式失败/无配置时回退非流式调用（一次性产出），保证不中断。
+        """
+        full = ''
+
+        def fallback():
+            response, _ = call_llm(messages, model_id=self.model_id)
+            text = response or ''
+            yield {"type": event_type, "content": text}
+            return text
+
+        try:
+            for delta, err in call_llm_stream(messages, model_id=self.model_id):
+                if err:
+                    if not full:
+                        return (yield from fallback())
+                    break  # 已产出部分内容，保留部分
+                if delta:
+                    full += delta
+                    yield {"type": event_type, "content": delta}
+        except Exception:
+            if not full:
+                return (yield from fallback())
+        return full
+
     def _think(self, system_prompt: str) -> str:
-        """LLM思考（基于对话历史，过长时自动压缩中间步骤）"""
+        """LLM思考（基于对话历史，过长时自动压缩中间步骤，非流式）"""
         messages = self._build_messages(system_prompt)
 
         response, _ = call_llm(messages, model_id=self.model_id)
         return response
+
+    def _think_stream(self, system_prompt: str) -> Generator[Dict, None, str]:
+        """LLM思考（流式）：逐 token 产出 thinking_chunk，返回完整思考文本"""
+        messages = self._build_messages(system_prompt)
+        return (yield from self._stream_llm(messages, 'thinking_chunk'))
 
     def _build_messages(self, system_prompt: str) -> List[Dict]:
         """构造 LLM 消息列表：对话历史过长时做头尾保护 + 中间摘要压缩。
@@ -832,8 +863,8 @@ class SmartOpsAgent:
             lines.append("| " + " | ".join(str(c) for c in row) + " |")
         return "\n".join(lines)
 
-    def _conclude(self, knowledge_refs: List[Dict]) -> str:
-        """生成最终结论：变更类操作用简洁格式，分析/诊断类用详细格式"""
+    def _build_conclude_messages(self, knowledge_refs: List[Dict]) -> List[Dict]:
+        """构建最终结论的消息列表：变更类操作用简洁格式，分析/诊断类用详细格式"""
         thoughts = [s.thought for s in self.state.steps if s.thought]
         observations = [s.observation for s in self.state.steps if s.observation]
 
@@ -888,9 +919,18 @@ class SmartOpsAgent:
             {"role": "system", "content": system},
             {"role": "user", "content": prompt}
         ]
+        return messages
 
+    def _conclude(self, knowledge_refs: List[Dict]) -> str:
+        """生成最终结论（非流式）"""
+        messages = self._build_conclude_messages(knowledge_refs)
         response, _ = call_llm(messages, model_id=self.model_id)
         return response
+
+    def _conclude_stream(self, knowledge_refs: List[Dict]) -> Generator[Dict, None, str]:
+        """生成最终结论（流式）：逐 token 产出 concluding_chunk"""
+        messages = self._build_conclude_messages(knowledge_refs)
+        return (yield from self._stream_llm(messages, 'concluding_chunk'))
 
     def _recall_memory(self, question: str) -> List[Dict]:
         """召回长期记忆：语义优先，关键词兜底；对主机/实例/集群记忆做图谱补充。

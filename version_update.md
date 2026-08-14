@@ -9,6 +9,20 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v3.0.12 (2026-08-14)
+
+### 🛡️ 命令校验：只读诊断命令链放行
+
+- **纯只读诊断命令链**：`ps -ef | grep x`、`which dmserver 2>/dev/null; find / -name dmserver | head`、`cat a 2>/dev/null || cat b` 等由只读诊断命令通过 `;`/`&&`/`||`/`|` 分隔、可带 `/dev/null` 重定向的命令链，直接执行免审批。
+- 诊断命令白名单补充 `which`/`find`/`echo`。
+- **安全兜底**：`find` 破坏性参数（`-delete/-exec/-ok/-execdir/-okdir`）拦截；危险命令名（rm/dd/mkfs/sh/bash/sudo/su/wget/curl/nc/python/perl）硬拒绝；重定向到非 `/dev/null`、背景执行、命令替换、控制字符仍拒绝；非只读命令用管道拒绝。
+- 三态分类：`safe`（只读诊断链/白名单）/ `approval`（变更命令 dminit/dmserver 等、blocked 动作 start/stop、非注入未知命令）/ `reject`（注入特征、危险命令、破坏性参数）。
+
+### ⚡ Agent 输出流式化 + 表格 Markdown 渲染
+
+- **流式输出**：`_think`/`_conclude` 改用 `call_llm_stream`，思考/结论逐 token 输出（失败自动回退非流式），与知识问答模块体验一致。
+- **Markdown 渲染**：思考内容、观察结果、工具结果表格统一走 `formatMarkdown`（md-table），不再显示原始管道文本；流式逐 token 重渲染 + 打字光标。
+
 ## v3.0.11 (2026-08-13)
 
 ### 🏷️ 表名模块前缀标准化（全量重命名）
