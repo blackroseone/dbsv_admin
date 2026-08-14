@@ -98,10 +98,19 @@ class Harness:
         'date', 'id', 'last', 'dmesg', 'lsof', 'vmstat', 'iostat',
         'sar', 'mpstat', 'pidstat', 'lsblk', 'blkid', 'mount', 'findmnt',
         'ethtool', 'ipcs', 'which', 'find', 'echo',
+        # 管道内纯文本处理（字段提取/替换/切片等）
+        'awk', 'sed', 'cut', 'tr', 'expr', 'printf', 'basename', 'dirname',
+        'rev', 'paste', 'join', 'nl', 'od', 'hexdump',
     }
-    # 只读诊断命令中禁止出现的破坏性参数（如 find -delete/-exec/-ok）
+    # 只读诊断命令中禁止出现的破坏性参数（如 find -delete/-exec/-ok，精确匹配）
     DIAGNOSTIC_FORBIDDEN_ARGS = {
         'find': {'-delete', '-exec', '-ok', '-execdir', '-okdir'},
+        'sed': {'-i', '--in-place'},  # sed 就地改写文件是写操作，非只读诊断
+    }
+    # 只读诊断命令中禁止的参数子串（awk/sed 的代码执行/注入向量）
+    DIAGNOSTIC_FORBIDDEN_SUBSTR = {
+        'awk': ['system(', 'popen(', 'getline'],
+        'sed': ['system(', 'popen('],
     }
 
     # 需限制动作词的系统服务命令（仅放行只读动作）
@@ -296,11 +305,16 @@ class Harness:
     @classmethod
     def _validate_diagnostic_command(cls, cmd_name: str,
                                      cmd_parts: List[str]) -> Tuple[bool, str]:
-        """校验通用只读诊断命令：路径穿越检查 + 破坏性参数拦截，
+        """校验通用只读诊断命令：路径穿越检查 + 破坏性参数/代码执行向量拦截，
         参数视为数据不扫危险 token（避免误伤 grep sudo 等 pattern）。"""
         forbidden = cls.DIAGNOSTIC_FORBIDDEN_ARGS.get(cmd_name, set())
         if forbidden and any(t in forbidden for t in cmd_parts[1:]):
             return False, f"检测到破坏性参数: {next(t for t in cmd_parts[1:] if t in forbidden)}"
+        substrs = cls.DIAGNOSTIC_FORBIDDEN_SUBSTR.get(cmd_name, [])
+        for arg in cmd_parts[1:]:
+            for s in substrs:
+                if s in arg:
+                    return False, f"检测到危险参数: {s}"
         return cls._check_dangerous_args(cmd_parts, check_tokens=False)
 
     @classmethod
@@ -337,7 +351,7 @@ class Harness:
         # 仍有其他重定向（> 到非 /dev/null，或 < 输入重定向）→ 非诊断链
         if re.search(r'[<>]', cleaned):
             return False
-        # 按分隔符分段（; || && |），逐段必须是只读诊断命令
+        # 按分隔符分段（; || && |），逐段必须是只读诊断命令且通过统一校验
         parts = re.split(r'\s*(?:;|\|\||&&|\|)\s*', cleaned)
         for seg in parts:
             seg = seg.strip()
@@ -346,11 +360,7 @@ class Harness:
             toks = seg.split()
             if toks[0] not in cls.READONLY_DIAGNOSTIC_COMMANDS:
                 return False
-            # 诊断命令的破坏性参数（find -delete 等）→ 拒绝
-            forbidden = cls.DIAGNOSTIC_FORBIDDEN_ARGS.get(toks[0], set())
-            if forbidden and any(t in forbidden for t in toks[1:]):
-                return False
-            ok, _ = cls._check_dangerous_args(toks, check_tokens=False)
+            ok, _ = cls._validate_diagnostic_command(toks[0], toks)
             if not ok:
                 return False
         return True
