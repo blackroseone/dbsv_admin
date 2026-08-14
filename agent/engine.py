@@ -959,14 +959,25 @@ class SmartOpsAgent:
         return re.sub(r'\s+', ' ', conclusion).strip()[:max_len]
 
     def _get_db_type(self) -> str:
-        """获取当前数据库类型"""
+        """获取当前数据库类型：优先数据库连接，其次 SSH 连接，最后兜底。
+
+        仅配置 SSH（如只通过服务器命令诊断）时，也应正确识别 db_type，
+        避免 fallback 到默认 oracle 导致 SQL/命令策略误判。
+        """
+        conn = get_db()
         if self.db_conn_id:
-            conn = get_db()
             row = conn.execute(
                 "SELECT db_type FROM agent_db_connections WHERE id=?",
                 (self.db_conn_id,)
             ).fetchone()
-            if row:
+            if row and row['db_type']:
+                return row['db_type']
+        if self.ssh_conn_id:
+            row = conn.execute(
+                "SELECT db_type FROM agent_ssh_connections WHERE id=?",
+                (self.ssh_conn_id,)
+            ).fetchone()
+            if row and row['db_type']:
                 return row['db_type']
         return 'oracle'
 

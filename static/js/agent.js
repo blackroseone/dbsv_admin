@@ -180,7 +180,10 @@ function getStatusIcon(status) {
     return icons[status] || '⏸️';
 }
 
-async function newAgentSession() {
+async function ensureAgentSession() {
+    // 已有会话直接复用，否则自动创建一个（避免必须先点"新会话"才能对话）
+    if (agentCurrentSession) return agentCurrentSession;
+
     if (!agentCurrentSSHConn && !agentCurrentDBConn) {
         // 无连接也允许建会话：知识问答/检查项检索等无需连接的能力可先用；
         // 需要查询/执行时 Agent 会提示缺少对应连接
@@ -203,10 +206,19 @@ async function newAgentSession() {
             agentCurrentSession = data.session.id;
             loadAgentSessions();
             clearAgentChat();
-            showToast('会话创建成功', 'success');
+            return agentCurrentSession;
         }
     } catch (error) {
         console.error('创建会话失败:', error);
+    }
+    return null;
+}
+
+async function newAgentSession() {
+    const sessionId = await ensureAgentSession();
+    if (sessionId) {
+        showToast('会话创建成功', 'success');
+    } else {
         showToast('创建会话失败', 'error');
     }
 }
@@ -240,9 +252,13 @@ async function sendAgentQuestion() {
     const question = input.value.trim();
 
     if (!question) return;
+    // 无会话时自动创建，避免必须先点"新会话"才能对话
     if (!agentCurrentSession) {
-        showToast('请先创建会话', 'warning');
-        return;
+        const sessionId = await ensureAgentSession();
+        if (!sessionId) {
+            showToast('创建会话失败，请重试', 'error');
+            return;
+        }
     }
     if (agentIsRunning) {
         showToast('Agent正在执行中，请等待', 'warning');

@@ -65,6 +65,25 @@ class Harness:
         },
     }
 
+    # 通用 Linux 只读诊断命令（跨数据库类型，服务器 OS 层面巡检）。
+    # 这些命令无副作用、不依赖 db_type；参数视为数据而非可执行对象，
+    # 因此只做路径穿越检查、不扫危险 token（避免误伤 grep sudo 等 pattern）。
+    READONLY_DIAGNOSTIC_COMMANDS = {
+        'ps', 'grep', 'pgrep', 'df', 'free', 'top', 'netstat', 'ss',
+        'cat', 'ls', 'uptime', 'who', 'w', 'uname', 'lscpu', 'lsmem',
+        'du', 'wc', 'head', 'tail', 'sort', 'uniq', 'ip', 'hostname',
+        'date', 'id', 'last', 'dmesg', 'lsof', 'vmstat', 'iostat',
+        'sar', 'mpstat', 'pidstat', 'lsblk', 'blkid', 'mount', 'findmnt',
+        'ethtool', 'ipcs',
+    }
+
+    # 需限制动作词的系统服务命令（仅放行只读动作）
+    READONLY_SERVICE_COMMANDS = {
+        'systemctl': {'actions': ['status', 'list-units', 'is-active', 'show']},
+        'service': {'actions': ['status']},
+        'chkconfig': {'actions': ['--list']},
+    }
+
     LEVEL_ORDER = {
         OperationLevel.READONLY: 0,
         OperationLevel.DIAGNOSIS: 1,
@@ -159,8 +178,11 @@ class Harness:
                          level: OperationLevel = OperationLevel.READONLY) -> Tuple[bool, str]:
         """验证命令安全性
 
-        校验：命令名在策略内 → 级别满足最低要求 → 动作词与危险动作
-        （如 start/stop）按级别约束 → 全局危险特征（shell 元字符/注入 token）。
+        校验：危险元字符（不含管道）→ 按 `|` 分段 → 每段单独校验
+        （数据库专用命令或通用只读诊断命令）。
+
+        允许只读命令之间用单管道连接（如 `ps -ef | grep dmserver`），
+        但整串仍禁止 `;`/`&&`/`||`/重定向/命令替换等注入特征。
 
         Returns:
             (is_safe, error_message)
@@ -172,40 +194,82 @@ class Harness:
         if re.search(r'[\n\r\t\x00-\x08\x0b\x0c\x0e-\x1f]', command):
             return False, "检测到危险控制字符"
 
+        # 危险元字符：不含单个管道 |（单管道按段受控放行），但 || 仍拦截
+        for m in (';', '&', '>', '<', '`', '$(', '${', '||'):
+            if m in command:
+                return False, f"检测到危险字符: {m}"
+
+        # 按管道分段，逐段校验
+        segments = [s.strip() for s in command.split('|')]
+        if any(not s for s in segments):
+            return False, "管道存在空命令段"
+
+        for seg in segments:
+            ok, err = cls._validate_single_command(seg, db_type, level)
+            if not ok:
+                return False, err
+
+        return True, None
+
+    @classmethod
+    def _validate_single_command(cls, command: str, db_type: str,
+                                 level: OperationLevel) -> Tuple[bool, str]:
+        """校验单段命令（无管道）：数据库专用命令或通用只读诊断命令"""
         cmd_parts = command.strip().split()
         if not cmd_parts:
             return False, "空命令"
-
         cmd_name = cmd_parts[0]
-        policy = cls.COMMAND_POLICY.get(db_type, {}).get(cmd_name)
-        if policy is None:
-            return False, f"命令 {cmd_name} 不在白名单中（数据库类型: {db_type}）"
 
-        # 级别门槛
+        # 1. 数据库专用命令（按 db_type 策略）
+        policy = cls.COMMAND_POLICY.get(db_type, {}).get(cmd_name)
+        if policy is not None:
+            return cls._validate_policy_command(cmd_name, cmd_parts, policy, level)
+
+        # 2. 通用只读诊断命令
+        if cmd_name in cls.READONLY_DIAGNOSTIC_COMMANDS:
+            return cls._validate_diagnostic_command(cmd_name, cmd_parts)
+
+        # 3. 需限制动作词的系统服务命令
+        svc_policy = cls.READONLY_SERVICE_COMMANDS.get(cmd_name)
+        if svc_policy is not None:
+            return cls._validate_policy_command(cmd_name, cmd_parts, svc_policy, level)
+
+        return False, f"命令 {cmd_name} 不在白名单中（数据库类型: {db_type}）"
+
+    @classmethod
+    def _validate_policy_command(cls, cmd_name: str, cmd_parts: List[str],
+                                 policy: Dict, level: OperationLevel) -> Tuple[bool, str]:
+        """校验带策略的命令：级别门槛 → 危险动作 → 动作词 → 危险参数扫描"""
         min_level = policy.get('level', OperationLevel.READONLY)
         if cls.LEVEL_ORDER[level] < cls.LEVEL_ORDER[min_level]:
             return False, f"命令 {cmd_name} 需要级别 {min_level.value}，当前级别 {level.value}"
 
-        # 危险动作（start/stop 等）按级别拦截
         blocked = policy.get('blocked_actions', {})
         for arg in cmd_parts[1:]:
             if arg in blocked and cls.LEVEL_ORDER[level] < cls.LEVEL_ORDER[blocked[arg]]:
                 return False, f"子命令 {arg} 需要级别 {blocked[arg].value}，当前级别 {level.value}"
 
-        # 动作词：必须至少命中一个允许的动作
         actions = policy.get('actions')
         if actions and not any(a in cmd_parts[1:] for a in actions):
             return False, f"命令 {cmd_name} 缺少允许的动作词（{', '.join(actions)}）"
 
-        # 全局危险特征
+        return cls._check_dangerous_args(cmd_parts, check_tokens=True)
+
+    @classmethod
+    def _validate_diagnostic_command(cls, cmd_name: str,
+                                     cmd_parts: List[str]) -> Tuple[bool, str]:
+        """校验通用只读诊断命令：仅做路径穿越检查，参数视为数据不扫危险 token"""
+        return cls._check_dangerous_args(cmd_parts, check_tokens=False)
+
+    @classmethod
+    def _check_dangerous_args(cls, cmd_parts: List[str],
+                              check_tokens: bool = True) -> Tuple[bool, str]:
+        """扫描命令参数的全局危险特征（危险 token / 路径穿越）"""
         for arg in cmd_parts[1:]:
-            if any(m in arg for m in cls.DANGEROUS_METACHARS):
-                return False, f"检测到危险参数: {arg}"
-            if arg in cls.DANGEROUS_TOKENS:
+            if check_tokens and arg in cls.DANGEROUS_TOKENS:
                 return False, f"检测到危险参数: {arg}"
             if '..' in arg:
                 return False, f"检测到危险路径参数: {arg}"
-
         return True, None
 
     # ==================== 变更类操作校验（审批后执行前二次校验） ====================
