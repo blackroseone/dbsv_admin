@@ -320,12 +320,13 @@ class SmartOpsAgent:
 4. Thought: 基于结果继续分析或总结
 
 ## 变更类操作（需审批）
-涉及修改参数/配置/执行变更命令（如 ALTER SYSTEM SET、SET GLOBAL、srvctl start/stop）属于**变更类**。
-- 变更类操作必须先输出**操作计划**等待 DBA 审批，格式：
+涉及修改参数/配置/执行变更命令（如 ALTER SYSTEM SET、SET GLOBAL、srvctl start/stop、su 切换执行服务启停）属于**变更类**。
+- **必须输出结构化的操作计划 JSON 等待 DBA 审批**（系统会自动弹出审批面板，不要用自然语言请求用户确认）：
 ```json
 {"type": "plan", "plan": {"title": "计划标题", "scope": "影响范围", "operations": [{"tool": "query_database", "parameters": {"sql": "ALTER SYSTEM SET ..."}, "impact": "影响说明", "risk": "high/medium/low"}], "rollback": "回滚方法"}}
 ```
 - 审批通过后引擎按计划执行；执行中遇问题请用只读工具自行分析探索，再追加新的操作计划等待审批，直至任务完成。
+- **禁止**：用散文（Markdown 表格/自然语言）输出计划、向用户提问"是否确认/是否同意"。审批通过操作计划面板完成，无需征询用户文字确认。
 - 不得直接调用工具执行变更 SQL/命令（会被安全校验拦截）。
 
 ## 输出格式
@@ -528,6 +529,8 @@ class SmartOpsAgent:
             if end == -1:
                 break
             candidate = thought[start:end + 1]
+            # 容错模型常见 JSON 错误：对象/数组尾部的多余逗号（{...,} / [...,]）
+            candidate = re.sub(r',\s*([}\]])', r'\1', candidate)
             try:
                 obj = json.loads(candidate)
                 if isinstance(obj, dict):

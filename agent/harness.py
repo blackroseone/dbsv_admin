@@ -246,8 +246,8 @@ class Harness:
             if m in command:
                 return False, f"检测到危险字符: {m}"
 
-        # 按管道分段，逐段校验
-        segments = [s.strip() for s in command.split('|')]
+        # 按管道分段（引号感知），逐段校验
+        segments = [s.strip() for s in cls._split_shell(command, seps=('|',))]
         if any(not s for s in segments):
             return False, "管道存在空命令段"
 
@@ -328,22 +328,109 @@ class Harness:
                 return False, f"检测到危险路径参数: {arg}"
         return True, None
 
+    @staticmethod
+    def _split_shell(command: str, seps=(';', '|', '&&', '||')):
+        """按 shell 分隔符切分命令，忽略引号内（单/双引号）的分隔符。
+
+        用于命令链/管道的分段校验，避免 grep 模式里的 '|' 等被误拆成独立段。
+        """
+        parts = []
+        current = []
+        in_single = in_double = False
+        i, n = 0, len(command)
+        while i < n:
+            ch = command[i]
+            if in_single:
+                current.append(ch)
+                if ch == "'":
+                    in_single = False
+                i += 1
+                continue
+            if in_double:
+                current.append(ch)
+                if ch == '\\' and i + 1 < n:
+                    current.append(command[i + 1])
+                    i += 2
+                    continue
+                if ch == '"':
+                    in_double = False
+                i += 1
+                continue
+            if ch == "'":
+                in_single = True
+                current.append(ch)
+                i += 1
+                continue
+            if ch == '"':
+                in_double = True
+                current.append(ch)
+                i += 1
+                continue
+            matched = None
+            for s in seps:
+                if command.startswith(s, i):
+                    matched = s
+                    break
+            if matched:
+                parts.append(''.join(current))
+                current = []
+                i += len(matched)
+                continue
+            current.append(ch)
+            i += 1
+        parts.append(''.join(current))
+        return parts
+
+    @classmethod
+    def _sanitize_safe_substitutions(cls, command: str) -> Optional[str]:
+        """把命令中的只读命令替换（$() 或反引号）替换为占位符。
+
+        内层命令必须是只读诊断命令且通过校验（如 $(date +%Y%m) 取当前月份日志）；
+        否则返回 None（视为注入，如 $(rm -rf /)）。
+        """
+        invalid = False
+
+        def repl(m):
+            nonlocal invalid
+            inner = m.group(1).strip()
+            toks = inner.split()
+            if not toks or toks[0] not in cls.READONLY_DIAGNOSTIC_COMMANDS:
+                invalid = True
+                return m.group(0)
+            ok, _ = cls._validate_diagnostic_command(toks[0], toks)
+            if not ok:
+                invalid = True
+                return m.group(0)
+            return 'X'  # 占位符
+
+        for pat in (r'\$\(([^()]*)\)', r'`([^`]*)`'):
+            command = re.sub(pat, repl, command)
+            if invalid:
+                return None
+        return command
+
     @classmethod
     def _is_diagnostic_chain(cls, command: str) -> bool:
         """判断命令是否为「纯只读诊断命令链」。
 
         由只读诊断命令通过 ; / && / || / | 分隔，可带 2>/dev/null、>/dev/null 重定向
-        （抑制 stderr/清空输出）。只要每一段都是 READONLY_DIAGNOSTIC_COMMANDS 内的
-        命令且无破坏性参数（如 find -delete/-exec），就视为安全的只读巡检放行。
+        （抑制 stderr/清空输出），可含只读命令替换（$(date +%Y%m) 等）。
+        只要每一段都是 READONLY_DIAGNOSTIC_COMMANDS 内的命令且无破坏性参数
+        （如 find -delete/-exec），就视为安全的只读巡检放行。
 
-        背景执行 &、命令替换、任意重定向（非 /dev/null）等一律不算诊断链。
+        背景执行 &、变量展开 ${、任意重定向（非 /dev/null）、危险命令替换等不算诊断链。
         """
         if not command or not command.strip():
             return False
-        # 背景执行 &、命令替换、变量展开 → 非诊断链
-        if re.search(r'(?<![&|])&(?![&|])', command) or '`' in command \
-                or '${' in command or '$(' in command:
+        # 背景执行 &、变量展开 ${ → 非诊断链
+        if re.search(r'(?<![&|])&(?![&|])', command) or '${' in command:
             return False
+        # 命令替换 $()/反引号：内层必须是只读诊断命令，否则视为注入
+        if '$(' in command or '`' in command:
+            cleaned_sub = cls._sanitize_safe_substitutions(command)
+            if cleaned_sub is None:
+                return False
+            command = cleaned_sub
         # 去除 /dev/null 重定向（2>/dev/null、>/dev/null、1>/dev/null，允许空格）
         cleaned = re.sub(r'\d*\s*>\s*/dev/null', '', command)
         if not cleaned.strip():
@@ -351,8 +438,8 @@ class Harness:
         # 仍有其他重定向（> 到非 /dev/null，或 < 输入重定向）→ 非诊断链
         if re.search(r'[<>]', cleaned):
             return False
-        # 按分隔符分段（; || && |），逐段必须是只读诊断命令且通过统一校验
-        parts = re.split(r'\s*(?:;|\|\||&&|\|)\s*', cleaned)
+        # 按分隔符分段（; || && |，引号感知），逐段必须是只读诊断命令且通过统一校验
+        parts = cls._split_shell(cleaned)
         for seg in parts:
             seg = seg.strip()
             if not seg:
