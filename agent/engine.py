@@ -55,6 +55,9 @@ class SmartOpsAgent:
         # 操作级别（默认只读）
         self.operation_level = OperationLevel.READONLY
 
+        # 是否执行过变更类操作（审批计划），决定结论采用简洁/分析两种格式
+        self._executed_change_plan = False
+
     def run_stream(self, user_question: str) -> Generator[Dict, None, None]:
         """ReAct主循环（流式输出），带状态持久化与异常兜底"""
         self.state.set_status(AgentStatus.RUNNING)
@@ -612,6 +615,9 @@ class SmartOpsAgent:
         operations = plan.get('operations') or []
         db_type = self._get_db_type()
 
+        # 标记已执行变更类操作，最终结论改用简洁格式
+        self._executed_change_plan = True
+
         for i, op in enumerate(operations, 1):
             tool = op.get('tool')
             params = op.get('parameters') or {}
@@ -827,22 +833,40 @@ class SmartOpsAgent:
         return "\n".join(lines)
 
     def _conclude(self, knowledge_refs: List[Dict]) -> str:
-        """生成最终结论"""
+        """生成最终结论：变更类操作用简洁格式，分析/诊断类用详细格式"""
         thoughts = [s.thought for s in self.state.steps if s.thought]
         observations = [s.observation for s in self.state.steps if s.observation]
 
-        # 构建置信度信息
-        max_similarity = 0
-        if knowledge_refs:
-            max_similarity = max(r.get('similarity', 0) for r in knowledge_refs)
+        if self._executed_change_plan:
+            # 变更类操作：聚焦操作结果，简洁明了，不展开长篇分析
+            prompt = f"""以下是本次变更操作的执行记录，请给出简洁的操作结论：
 
-        confidence = "🔴 低置信度"
-        if max_similarity >= 0.85:
-            confidence = "🟢 高置信度"
-        elif max_similarity >= 0.75:
-            confidence = "🟡 中置信度"
+操作步骤:
+{chr(10).join(thoughts)}
 
-        prompt = f"""基于以下分析和观察结果，给出最终结论和建议：
+执行结果:
+{chr(10).join(observations)}
+
+请用简洁语言给出（2-4 句即可）：
+1. 操作是否成功（一句话）
+2. 关键结果（如新状态、进程、配置生效等）
+3. 如有必要，仅保留 1-2 条后续验证建议
+
+要求：只讲操作结果和必要提醒，不要长篇分析、不要罗列通用建议、不要展开置信度说明。"""
+            system = "你是一个数据库运维专家，请基于操作执行结果给出简洁结论，避免冗长。"
+        else:
+            # 分析/诊断类：保留详细结论格式
+            max_similarity = 0
+            if knowledge_refs:
+                max_similarity = max(r.get('similarity', 0) for r in knowledge_refs)
+
+            confidence = "🔴 低置信度"
+            if max_similarity >= 0.85:
+                confidence = "🟢 高置信度"
+            elif max_similarity >= 0.75:
+                confidence = "🟡 中置信度"
+
+            prompt = f"""基于以下分析和观察结果，给出最终结论和建议：
 
 分析过程:
 {chr(10).join(thoughts)}
@@ -858,9 +882,10 @@ class SmartOpsAgent:
 3. 后续操作建议
 4. 置信度说明
 """
+            system = "你是一个数据库运维专家，请基于分析结果给出专业建议。必须标注置信度。"
 
         messages = [
-            {"role": "system", "content": "你是一个数据库运维专家，请基于分析结果给出专业建议。必须标注置信度。"},
+            {"role": "system", "content": system},
             {"role": "user", "content": prompt}
         ]
 
