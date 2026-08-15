@@ -9,6 +9,18 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v3.0.14 (2026-08-15)
+
+### 🛡️ 受控 su + SQL 客户端只读门 + 移除知识库支撑噪音
+
+**受控 `su`（DM/Oracle 需 `su - dmdba` 跑 disql 的真实场景）**：
+- `su` 从硬拒绝改为**受控门控**：仅放行 `su [-lm] <非root用户> -c '<只读命令>'`——目标用户非 root（`su - root` 仍拒绝）、内层命令只读、外层仅允许 `/dev/null` 重定向与 `<<< 'SQL'` heredoc。
+- **SQL 客户端只读门**：`disql/mysql/sqlplus/psql/gsql` 等命令（含 `su -c` 内层）内嵌 SQL（`-e/--execute` 或 `<<<` heredoc，支持 DM 风格 `''` 转义引号）通过 `validate_sql` 只读校验才放行，写 SQL（DROP/UPDATE 等）走审批。
+- **注入绕过防护**：`su -c 'disql -e "SELECT 1"; rm -rf /'`、`su ... <<< 'SELECT 1'; rm ...`、heredoc 写 SQL 一律拒绝；`sudo` 保持硬拒绝。
+- 已知边界：嵌套引号过于复杂的命令（模型输出的残缺引号）无法静态提取 SQL 时，静态判拒后交 LLM 审查（放行则审批）。
+
+**移除「缺乏知识库支撑」噪音警告**：`_verify_knowledge_support` 启发式对 OS 级/诊断命令几乎必然误报（命令首词不在检索知识块就告警），噪音大于价值，已移除。
+
 ## v3.0.13 (2026-08-14)
 
 ### 🛡️ 命令安全校验重构：参数级甄别 + 融合判定矩阵（脚本 + LLM 双意见）

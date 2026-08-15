@@ -599,17 +599,18 @@ class SmartOpsAgent:
         return [self._run_one_action(v, knowledge_refs) for v in validated]
 
     def _run_one_action(self, item: Dict, knowledge_refs: List[Dict]) -> Dict:
-        """执行单个已校验动作：知识库支撑提示 + 执行 + 格式化观察"""
+        """执行单个已校验动作：执行 + 格式化观察。
+
+        不再输出「缺乏知识库支撑」警告：该启发式对 OS 级/诊断类命令几乎必然误报
+        （命令首词不在检索到的知识块里就告警），噪音大于价值，已移除。
+        """
         action = item['action']
         if not item['is_safe']:
             return {**item, 'observation': f"❌ 安全验证失败: {item['error']}",
                     'result': None, 'warning': None}
-        warning = None
-        if not self._verify_knowledge_support(action, knowledge_refs):
-            warning = "⚠️ 该操作缺乏知识库支撑，执行风险较高"
         result = self._execute_action(action)
         return {**item, 'observation': self._format_result(result),
-                'result': result, 'warning': warning}
+                'result': result, 'warning': None}
 
     # ==================== 变更类操作：审批流 ====================
 
@@ -762,31 +763,6 @@ class SmartOpsAgent:
             return self.harness.validate_command(command, db_type, self.operation_level)
 
         return True, None
-
-    def _verify_knowledge_support(self, action: Dict, knowledge_refs: List[Dict]) -> bool:
-        """验证操作是否有知识库支撑"""
-        if not knowledge_refs:
-            return False
-
-        tool = action.get("tool")
-        params = action.get("parameters", {})
-
-        if tool == "query_database":
-            sql = params.get("sql", "")
-            # 提取SQL中的表名、参数名
-            # 简化版：检查SQL中是否有知识库中提到的关键词
-            for ref in knowledge_refs:
-                if any(keyword in sql.lower() for keyword in ref['chunk'].lower().split()):
-                    return True
-
-        elif tool == "execute_command":
-            command = params.get("command", "")
-            # 检查命令是否在知识库中有提及
-            for ref in knowledge_refs:
-                if command.split()[0] in ref['chunk']:
-                    return True
-
-        return False
 
     def _persist_step(self, step) -> None:
         """持久化单个执行步骤到 agent_steps"""

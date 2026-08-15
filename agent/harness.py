@@ -102,9 +102,10 @@ class Harness:
         # 系统关停
         'shutdown', 'reboot', 'halt', 'poweroff', 'init', 'telinit',
         # 代码执行 / 提权 / 外联
+        # 注：su 已从硬拒改为受控门控（仅 -c 命令形式 + 非 root + 内层只读），见 _is_controlled_su_readonly
         'sh', 'bash', 'zsh', 'dash', 'python', 'python2', 'python3', 'perl',
         'ruby', 'php', 'lua', 'node', 'gcc', 'cc', 'g++', 'make',
-        'nc', 'ncat', 'socat', 'wget', 'curl', 'sudo', 'su', 'scp', 'sftp', 'rsync',
+        'nc', 'ncat', 'socat', 'wget', 'curl', 'sudo', 'scp', 'sftp', 'rsync',
     }
     # 前缀匹配的硬拒绝（如 mkfs.ext4）
     REJECT_COMMAND_PREFIXES = ('mkfs.',)
@@ -244,6 +245,12 @@ class Harness:
     # 不入任何只读白名单；被包装命令若为 T1 硬拒命令（如 `timeout 10 rm`）→ 硬拒。
     WRAPPER_COMMANDS = {'env', 'timeout', 'nice', 'watch', 'xargs',
                         'nohup', 'setsid', 'stdbuf', 'taskset'}
+
+    # SQL 客户端命令：SQL 须走 query_database 工具校验，故不放入只读白名单；
+    # 但当内嵌 SQL 可提取且通过 validate_sql 只读校验时放行（如 SSH 会话下
+    # `su - dmdba -c 'disql ... -e SELECT'` / `disql ... <<< 'SELECT'`）。
+    SQL_CLIENT_COMMANDS = {'disql', 'mysql', 'sqlplus', 'psql', 'gsql',
+                           'isql', 'tsql', 'sqlite3', 'db2'}
 
     # 注入元字符（不含单管道 |；单管道按段受控放行，|| 仍拦截）
     INJECTION_METACHARS = (';', '&', '>', '<', '`', '$(', '${', '||')
@@ -449,6 +456,16 @@ class Harness:
         if cmd_name in cls.CHANGE_COMMANDS:
             return 'approval', None
 
+        # 受控 su：仅 `-c <只读>` 形式且目标非 root；否则拒绝（su 单独/交互/root 切换）
+        if cmd_name == 'su':
+            if cls._is_controlled_su_readonly(' '.join(cmd_parts), db_type):
+                return 'safe', None
+            return 'reject', 'su 需以 -c 命令形式、目标非 root、内层只读'
+
+        # SQL 客户端：内嵌 SQL 通过只读校验才放行（su -c 'disql ... -e SELECT' 同理）
+        if cmd_name in cls.SQL_CLIENT_COMMANDS:
+            return cls._evaluate_sql_client(' '.join(cmd_parts))
+
         # 数据库专用命令策略
         policy = cls.COMMAND_POLICY.get(cls._normalize_db_type(db_type), {}).get(cmd_name)
         if policy is not None:
@@ -537,6 +554,94 @@ class Harness:
             return 'approval', None
         # 定义了只读动作但未命中 → 命令畸形
         return 'reject', f"命令 {cmd_name} 缺少允许的动作词（{', '.join(actions)}）"
+
+    # ==================== 受控 su 与 SQL 客户端只读门 ====================
+
+    @staticmethod
+    def _extract_sql(text: str) -> Optional[str]:
+        """从命令串中提取内嵌 SQL（-e/--execute/<<< 引号内容）。
+
+        支持单引号（含 DM 风格 '' 转义引号）与双引号（含 \\" 转义）包裹。
+        """
+        patterns = (
+            r'(?:--execute|-e)\s*(\'((?:[^\']|\'\')*)\'|"((?:[^"]|\\")*)")',
+            r'--execute\s*=\s*(\'((?:[^\']|\'\')*)\'|"((?:[^"]|\\")*)")',
+            r'<<<\s*(\'((?:[^\']|\'\')*)\'|"((?:[^"]|\\")*)")',
+        )
+        for pat in patterns:
+            m = re.search(pat, text)
+            if m:
+                return m.group(2) if m.group(2) is not None else m.group(3)
+        return None
+
+    @classmethod
+    def _evaluate_sql_client(cls, cmd_str: str) -> Tuple[str, Optional[str]]:
+        """SQL 客户端命令：内嵌 SQL 通过只读校验才放行，否则审批/未知。"""
+        sql = cls._extract_sql(cmd_str)
+        if not sql:
+            return 'unknown', '无法提取内嵌 SQL'
+        # 归一化 DM 风格 '' 转义引号后校验（只读判定，不改变实际执行语义）
+        is_safe, err = cls.validate_sql(re.sub(r"''", "'", sql), OperationLevel.READONLY)
+        if is_safe:
+            return 'safe', None
+        return 'approval', f"内嵌 SQL 非只读，需审批: {err or ''}"
+
+    @classmethod
+    def _is_controlled_su_readonly(cls, command: str,
+                                   db_type: Optional[str] = None) -> bool:
+        """受控 su 只读判定：`su [-lm] <非root用户> -c '<只读命令>'`，可带只读 SQL。
+
+        仅放行：
+        - 必须 `-c` 命令形式（su 单独/交互式切换 → 拒绝）；
+        - 目标用户非 root（`su - root` 仍拒绝）；
+        - 内层命令只读（诊断链/纯只读），或为 SQL 客户端且内嵌 SQL（-e/heredoc）只读；
+        - 外层仅允许 /dev/null 重定向与 `<<< 'SQL'` heredoc，其余重定向/元字符拒绝。
+        """
+        if not command or not command.strip():
+            return False
+        cleaned = re.sub(r'\d*\s*>\s*/dev/null', '', command).strip()
+        if not cleaned:
+            return False
+        toks = cleaned.split()
+        if toks[0] != 'su':
+            return False
+        # 提取 -c 引号命令（单引号含 '' 转义 / 双引号含 \" 转义）
+        cm = re.search(r'-c\s+(\'((?:[^\']|\'\')*)\'|"((?:[^"]|\\")*)")', cleaned)
+        if not cm:
+            return False
+        inner = cm.group(2) if cm.group(2) is not None else cm.group(3)
+        if not inner or inner.split()[0] == 'su':
+            return False  # 禁止嵌套 su
+        # 目标用户：-c 前最后一个非选项参数；缺省为 root
+        prefix = cleaned[:cm.start()]
+        usertoks = [t for t in prefix.split() if not t.startswith('-') and t != 'su']
+        user = usertoks[-1] if usertoks else 'root'
+        if user == 'root':
+            return False
+        # 外层（摘出 heredoc 与 /dev/null 后）：不得含命令分隔符/管道（管道交给标准
+        # 分段逻辑处理）与其它重定向；`$()`/反引号由链逻辑下游兜底
+        rest = re.sub(r'<<<\s*(\'((?:[^\']|\'\')*)\'|"((?:[^"]|\\")*)")', ' ', cleaned)
+        if re.search(r'[;&|]', rest) or re.search(r'[<>]', rest):
+            return False
+        heredoc_sql = cls._extract_sql(cleaned)  # 优先 <<< 里的 SQL
+        inner_name = inner.split()[0]
+        inner_sql = cls._extract_sql(inner) if inner_name in cls.SQL_CLIENT_COMMANDS else None
+        sql = inner_sql or heredoc_sql
+        if sql:
+            # 内层去除内嵌 SQL 后也不得含分隔符/危险命令（防 `-e 'SELECT 1'; rm -rf /`）
+            inner_rest = re.sub(
+                r'(?:--execute|-e)\s*(\'((?:[^\']|\'\')*)\'|"((?:[^"]|\\")*)")',
+                ' ', inner)
+            if re.search(r'[;&|]', inner_rest):
+                return False
+            if any(cls._is_hard_rejected(t) for t in inner_rest.split()):
+                return False
+            is_safe, _ = cls.validate_sql(re.sub(r"''", "'", sql), OperationLevel.READONLY)
+            return is_safe
+        # 无内嵌 SQL：内层命令本身须为只读
+        inner_cls, _ = cls._evaluate_segment(inner.split(), db_type or '',
+                                             OperationLevel.READONLY)
+        return inner_cls == 'safe'
 
     @classmethod
     def _static_classify(cls, command: str, db_type: str) -> Tuple[str, Optional[str]]:
@@ -725,6 +830,10 @@ class Harness:
         # 背景执行 &、变量展开 ${ → 非诊断链
         if re.search(r'(?<![&|])&(?![&|])', command) or '${' in command:
             return False
+        # 受控 su 只读查询（su - dmdba -c 'disql...' <<< 'SELECT...'）→ 放行，
+        # 需在 /dev/null 与 heredoc 元字符检查前拦截
+        if cls._is_controlled_su_readonly(command, db_type):
+            return True
         # 命令替换 $()/反引号：内层必须是只读命令，否则视为注入
         if '$(' in command or '`' in command:
             cleaned_sub = cls._sanitize_safe_substitutions(command, db_type)
