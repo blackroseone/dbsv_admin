@@ -9,6 +9,21 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v3.0.15 (2026-08-15)
+
+### 🛡️ 引号感知元字符检查 + 受控 su 支持二次 `-c` SQL 与内层只读管道
+
+**引号感知元字符检查**（`_strip_quoted`）：命令分隔符/管道/重定向只在**引号外**检测——引号内是数据而非 shell 元字符。修复两类误拒：
+- `su - dmdba -c 'disql' -c "SELECT ...;"` —— SQL 末尾分号在引号内，不再误判注入；
+- `su - dmdba -c 'cat dm.ini | grep -E "^PORT_NUM|^DB_NAME"'` —— grep 正则里的 `|` 在引号内，不再误判管道。
+
+**受控 su 扩展**：
+- 支持 **二次 `-c` 传 SQL**（`su -c 'disql 连接串' -c "SQL;"`，DM disql 命令串写法）；
+- 支持 **内层只读管道**（`su -c 'cat x | grep y'`，内层整体走只读链校验）；
+- `_extract_sql` 增加 SQL 关键字兜底（`-e/--execute/<<<` 之外的 `-c "SELECT..."` 也能识别）。
+
+**绕过封堵**（对抗用例验证）：`su -c 'cat /etc/passwd | rm -rf /'`（内层管道含危险命令）、`su -c 'echo "SELECT 1" > /tmp/x'`（内层写文件）、`su -c 'disql -e "SELECT 1"; rm -rf /'`（内层分隔符）一律拒绝。
+
 ## v3.0.14 (2026-08-15)
 
 ### 🛡️ 受控 su + SQL 客户端只读门 + 移除知识库支撑噪音

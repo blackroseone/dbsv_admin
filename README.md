@@ -385,7 +385,7 @@ waitress-serve --host=0.0.0.0 --port=5000 app:app
 
 ## 版本
 
-当前版本：v3.0.14。完整更新记录见 `version_update.md`。
+当前版本：v3.0.15。完整更新记录见 `version_update.md`。
 
 ## 贡献者
 

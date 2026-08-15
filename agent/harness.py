@@ -558,9 +558,60 @@ class Harness:
     # ==================== 受控 su 与 SQL 客户端只读门 ====================
 
     @staticmethod
-    def _extract_sql(text: str) -> Optional[str]:
-        """从命令串中提取内嵌 SQL（-e/--execute/<<< 引号内容）。
+    def _strip_quoted(text: str) -> str:
+        """把单/双引号包裹的内容（含转义）替换为空格，返回未加引号的骨架。
 
+        用于只在引号外检测命令分隔符/元字符——引号内（如 SQL 里的 `;`、grep 正则
+        里的 `|`）是数据而非 shell 分隔符。
+        """
+        out = []
+        i, n = 0, len(text)
+        in_s = in_d = False
+        while i < n:
+            ch = text[i]
+            if in_s:
+                if ch == "'":
+                    in_s = False
+                elif ch == '\\' and i + 1 < n:
+                    out.append(' ')
+                    out.append(' ')
+                    i += 2
+                    continue
+                out.append(' ')
+                i += 1
+                continue
+            if in_d:
+                if ch == '"':
+                    in_d = False
+                elif ch == '\\' and i + 1 < n:
+                    out.append(' ')
+                    out.append(' ')
+                    i += 2
+                    continue
+                out.append(' ')
+                i += 1
+                continue
+            if ch == "'":
+                in_s = True
+                out.append(' ')
+                i += 1
+                continue
+            if ch == '"':
+                in_d = True
+                out.append(' ')
+                i += 1
+                continue
+            out.append(ch)
+            i += 1
+        return ''.join(out)
+
+    @staticmethod
+    def _extract_sql(text: str, allow_sql_keyword: bool = False) -> Optional[str]:
+        """从命令串中提取内嵌 SQL。
+
+        优先级：显式 `-e/--execute/<<<` 引号内容 → （allow_sql_keyword 时）任意以
+        SELECT/SHOW/EXPLAIN/DESCRIBE/WITH 开头的引号串（覆盖 `disql -c "SQL;"`、
+        `su ... -c 'disql' -c "SQL;"` 等写法）。
         支持单引号（含 DM 风格 '' 转义引号）与双引号（含 \\" 转义）包裹。
         """
         patterns = (
@@ -572,12 +623,18 @@ class Harness:
             m = re.search(pat, text)
             if m:
                 return m.group(2) if m.group(2) is not None else m.group(3)
+        if allow_sql_keyword:
+            for qpat in (r"'((?:[^']|'')*)'", r'"((?:[^"]|\\")*)"'):
+                for m in re.finditer(qpat, text):
+                    cand = m.group(1)
+                    if re.match(r'\s*(SELECT|SHOW|EXPLAIN|DESCRIBE|WITH)\b', cand, re.I):
+                        return cand
         return None
 
     @classmethod
     def _evaluate_sql_client(cls, cmd_str: str) -> Tuple[str, Optional[str]]:
         """SQL 客户端命令：内嵌 SQL 通过只读校验才放行，否则审批/未知。"""
-        sql = cls._extract_sql(cmd_str)
+        sql = cls._extract_sql(cmd_str, allow_sql_keyword=True)
         if not sql:
             return 'unknown', '无法提取内嵌 SQL'
         # 归一化 DM 风格 '' 转义引号后校验（只读判定，不改变实际执行语义）
@@ -594,8 +651,10 @@ class Harness:
         仅放行：
         - 必须 `-c` 命令形式（su 单独/交互式切换 → 拒绝）；
         - 目标用户非 root（`su - root` 仍拒绝）；
-        - 内层命令只读（诊断链/纯只读），或为 SQL 客户端且内嵌 SQL（-e/heredoc）只读；
-        - 外层仅允许 /dev/null 重定向与 `<<< 'SQL'` heredoc，其余重定向/元字符拒绝。
+        - 内层为 SQL 客户端（disql/mysql 等，含路径）且内嵌 SQL 只读；或内层整条
+          命令为只读链（`cat x | grep y` 这类管道）；
+        - 外层骨架（引号内容剔除）不含命令分隔符/管道/重定向。
+        引号内字符视为数据：SQL 末尾的 `;`、grep 正则里的 `|` 不再误判为注入。
         """
         if not command or not command.strip():
             return False
@@ -605,7 +664,7 @@ class Harness:
         toks = cleaned.split()
         if toks[0] != 'su':
             return False
-        # 提取 -c 引号命令（单引号含 '' 转义 / 双引号含 \" 转义）
+        # 提取第一个 -c 引号命令（单引号含 '' 转义 / 双引号含 \" 转义）
         cm = re.search(r'-c\s+(\'((?:[^\']|\'\')*)\'|"((?:[^"]|\\")*)")', cleaned)
         if not cm:
             return False
@@ -618,30 +677,32 @@ class Harness:
         user = usertoks[-1] if usertoks else 'root'
         if user == 'root':
             return False
-        # 外层（摘出 heredoc 与 /dev/null 后）：不得含命令分隔符/管道（管道交给标准
-        # 分段逻辑处理）与其它重定向；`$()`/反引号由链逻辑下游兜底
-        rest = re.sub(r'<<<\s*(\'((?:[^\']|\'\')*)\'|"((?:[^"]|\\")*)")', ' ', cleaned)
-        if re.search(r'[;&|]', rest) or re.search(r'[<>]', rest):
+        # 外层骨架（先摘掉 heredoc 区域，再剔除引号内容）：不得含命令分隔符/管道/
+        # 重定向；`$()`/反引号由链逻辑下游兜底
+        no_heredoc = re.sub(r'<<<\s*(\'((?:[^\']|\'\')*)\'|"((?:[^"]|\\")*)")',
+                            ' ', cleaned)
+        if re.search(r'[;&|<>]', cls._strip_quoted(no_heredoc)):
             return False
-        heredoc_sql = cls._extract_sql(cleaned)  # 优先 <<< 里的 SQL
         inner_name = inner.split()[0]
-        inner_sql = cls._extract_sql(inner) if inner_name in cls.SQL_CLIENT_COMMANDS else None
-        sql = inner_sql or heredoc_sql
+        inner_base = inner_name.rsplit('/', 1)[-1]
+        is_sql_client = inner_base in cls.SQL_CLIENT_COMMANDS
+        if is_sql_client:
+            # SQL 可能在 -c 内层（disql -e/-c 'SQL'）、外层第二个 -c 或 <<< heredoc
+            sql = cls._extract_sql(inner, allow_sql_keyword=True) \
+                or cls._extract_sql(cleaned, allow_sql_keyword=True)
+        else:
+            # 非 SQL 客户端：仅显式 -e/<<< 的 SQL
+            sql = cls._extract_sql(cleaned, allow_sql_keyword=False)
         if sql:
-            # 内层去除内嵌 SQL 后也不得含分隔符/危险命令（防 `-e 'SELECT 1'; rm -rf /`）
-            inner_rest = re.sub(
-                r'(?:--execute|-e)\s*(\'((?:[^\']|\'\')*)\'|"((?:[^"]|\\")*)")',
-                ' ', inner)
-            if re.search(r'[;&|]', inner_rest):
+            # 内层骨架不得含分隔符/危险命令（防 `-e 'SELECT 1'; rm -rf /`）
+            if re.search(r'[;&|]', cls._strip_quoted(inner)):
                 return False
-            if any(cls._is_hard_rejected(t) for t in inner_rest.split()):
+            if any(cls._is_hard_rejected(t) for t in inner.split()):
                 return False
             is_safe, _ = cls.validate_sql(re.sub(r"''", "'", sql), OperationLevel.READONLY)
             return is_safe
-        # 无内嵌 SQL：内层命令本身须为只读
-        inner_cls, _ = cls._evaluate_segment(inner.split(), db_type or '',
-                                             OperationLevel.READONLY)
-        return inner_cls == 'safe'
+        # 无内嵌 SQL：内层整条命令须为只读链（含管道，如 `cat x | grep y`）
+        return cls._is_diagnostic_chain(inner, db_type)
 
     @classmethod
     def _static_classify(cls, command: str, db_type: str) -> Tuple[str, Optional[str]]:

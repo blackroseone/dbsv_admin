@@ -615,7 +615,8 @@ data: [DONE]
 - **T2 纯只读**：ps/grep/cat/ls/date/top/ss/df/du/lsof 等，参数视为数据，仅路径穿越检查。
 - **T3 参数门控**：按参数甄别只读/变更/硬拒（sed 无 `-i` 只读、`-i` 审批；find `-delete` 硬拒；tar/gzip/unzip `-t/-l/-c` 只读、其余审批；systemctl status 只读、restart 审批；ip show 只读、add/set 审批）；变更写操作（cp/mv/mkdir/chmod/包管理）一律审批。
 - **融合判定矩阵**：`classify_command` 静态判 safe/approval 直接返回；静态判 reject/unknown 时挂载可插拔 LLM 审查钩子（`Harness.command_judge_fn`，默认 None 纯静态），脚本拒绝+LLM放行→审批、未知+LLM只读→执行，LLM 不可用保持静态判定。
-- **受控 su + SQL 客户端只读门**：`su` 仅放行 `su - <非root用户> -c '<只读命令>'`（`_is_controlled_su_readonly`）；`disql/mysql/sqlplus/psql/gsql` 等 SQL 客户端（含 `su -c` 内层）内嵌 SQL（`-e/--execute`/`<<<` heredoc）通过 `validate_sql` 只读校验才放行（`_evaluate_sql_client`），写 SQL 走审批；`sudo` 仍硬拒，`su - root`/无 `-c`/内层含分隔符或危险命令一律拒绝。
+- **受控 su + SQL 客户端只读门**：`su` 仅放行 `su - <非root用户> -c '<只读命令>'`（`_is_controlled_su_readonly`）；`disql/mysql/sqlplus/psql/gsql` 等 SQL 客户端（含 `su -c` 内层、二次 `-c "SQL"` 传参）内嵌 SQL（`-e/--execute`/`<<<` heredoc/SQL 关键字引号串，`_extract_sql`）通过 `validate_sql` 只读校验才放行（`_evaluate_sql_client`），写 SQL 走审批；`sudo` 仍硬拒，`su - root`/无 `-c`/内层含分隔符或危险命令一律拒绝。
+- **引号感知元字符检查**（`_strip_quoted`）：命令分隔符/管道/重定向只在引号外检测——SQL 末尾分号、grep 正则里的 `|` 等在引号内视为数据，不再误判注入。
 
 **安全级别：**
 - `READONLY`: 只读查询（SELECT, EXPLAIN, DESCRIBE, SHOW）
