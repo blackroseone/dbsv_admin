@@ -16,7 +16,7 @@ COMMANDS_DIR = os.path.join(DATA_DIR, 'commands')
 # ==================== 应用配置 ====================
 
 # 版本号
-APP_VERSION = '3.0.17'
+APP_VERSION = '3.0.20'
 
 # Secret Key（生产环境应从环境变量读取）
 SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dbsv-admin-dev-secret-key-change-in-production')
@@ -42,8 +42,8 @@ SYNC_INTERVAL_HOURS = int(os.environ.get('DB_TOOL_SYNC_INTERVAL_HOURS', '1'))
 
 # ==================== Agent 配置 ====================
 
-# ReAct 最大执行步数（迭代预算）
-AGENT_MAX_STEPS = int(os.environ.get('DB_TOOL_AGENT_MAX_STEPS', '10'))
+# ReAct 最大执行步数（迭代预算；默认 6：收敛步数，防简单任务跑满步数，可用 env 覆盖）
+AGENT_MAX_STEPS = int(os.environ.get('DB_TOOL_AGENT_MAX_STEPS', '6'))
 
 # 对话历史字符预算：超过则强制收敛到结论（防超长 prompt）
 AGENT_MAX_HISTORY_CHARS = int(os.environ.get('DB_TOOL_AGENT_MAX_HISTORY_CHARS', '12000'))

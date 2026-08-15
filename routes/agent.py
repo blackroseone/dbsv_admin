@@ -118,6 +118,14 @@ def run_agent():
     ssh_conn_id = row['ssh_connection_id']
     db_conn_id = row['db_connection_id']
 
+    # 会话标题自动命名：默认「新会话」用首问句替换，便于会话列表区分
+    if not row['title'] or row['title'].strip() in ('', '新会话'):
+        new_title = ' '.join(question.split())[:24].strip() or '新会话'
+        conn.execute(
+            "UPDATE agent_sessions SET title=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (new_title, session_id))
+        conn.commit()
+
     def generate():
         """生成SSE流"""
         agent = SmartOpsAgent(
@@ -136,6 +144,15 @@ def run_agent():
         yield "data: [DONE]\n\n"
 
     return Response(generate(), mimetype='text/event-stream')
+
+
+@agent_bp.route('/api/agent/sessions/<session_id>/stop', methods=['POST'])
+def stop_session(session_id):
+    """请求停止 Agent 执行：写进程内取消标志，引擎在下一轮循环收敛并置 cancelled。"""
+    from agent.engine import request_cancel
+    request_cancel(session_id)
+    add_operation_log('Agent', '停止执行', session_id)
+    return jsonify({'message': '已请求停止'})
 
 
 @agent_bp.route('/api/agent/sessions/<session_id>/steps', methods=['GET'])
@@ -333,14 +350,16 @@ def delete_memory_record(memory_id):
 
 @agent_bp.route('/api/agent/approve', methods=['POST'])
 def approve_plan():
-    """审批操作计划（变更类）：approve 放行引擎执行，reject 拒绝并附原因。"""
+    """审批操作计划（变更类）：approve 放行引擎执行，reject 拒绝，revise 附修改要求重出方案。"""
     data = request.get_json() or {}
     plan_id = data.get('plan_id')
-    action = data.get('action')  # 'approve' | 'reject'
+    action = data.get('action')  # 'approve' | 'reject' | 'revise'
     comment = (data.get('comment') or '').strip()
 
-    if not plan_id or action not in ('approve', 'reject'):
+    if not plan_id or action not in ('approve', 'reject', 'revise'):
         return jsonify({'error': '缺少plan_id或action'}), 400
+    if action == 'revise' and not comment:
+        return jsonify({'error': '修改并重新提供方案请附上希望调整的内容'}), 400
 
     from db.database import get_plan, update_plan_status
     plan = get_plan(plan_id)
@@ -349,7 +368,8 @@ def approve_plan():
     if plan['status'] != 'pending':
         return jsonify({'error': f"计划已处理（{plan['status']}）"}), 400
 
-    status = 'approved' if action == 'approve' else 'rejected'
+    status = {'approve': 'approved', 'reject': 'rejected',
+              'revise': 'revised'}.get(action)
     update_plan_status(plan_id, status, approved_by='dba', comment=comment)
     add_operation_log('Agent', '审批操作计划', f'{status} {plan.get("title", "")[:40]}')
     return jsonify({'message': '审批已提交', 'plan_id': plan_id, 'status': status})

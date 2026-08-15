@@ -5543,6 +5543,31 @@ body {
     margin-bottom: 8px;
 }
 
+/* 审批条摘要危险徽标（无需展开即可见） */
+.risk-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 8px;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-weight: 600;
+}
+
+.risk-badge.risk-high {
+    background: var(--bg-error, #fdecea);
+    color: #e74c3c;
+}
+
+.risk-badge.risk-medium {
+    background: #fff4e5;
+    color: #e67e22;
+}
+
+.risk-badge.risk-low {
+    background: #e8f7ef;
+    color: #27ae60;
+}
+
 .plan-detail {
     margin-top: 8px;
     padding-top: 8px;
@@ -5899,6 +5924,88 @@ body {
     margin-top: 6px;
     font-size: 0.78rem;
     color: var(--text-muted);
+}
+
+/* ==================== Agent 审批槽（贴近输入框，Claude Code 权限形态） ==================== */
+
+.agent-approval-slot {
+    border-top: 1px solid var(--border-color);
+    background: var(--bg-module);
+    padding: 10px 14px;
+    max-height: 45%;
+    overflow-y: auto;
+    min-height: 0;
+}
+
+.agent-approval-slot:empty {
+    display: none;
+    padding: 0;
+    border-top: none;
+}
+
+.approval-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.approval-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.approval-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.approval-target {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+}
+
+.approval-scope {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+}
+
+/* 竖向选项：批准 / 拒绝 / 修改并重新提供方案 */
+.approval-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.approval-btn {
+    width: 100%;
+    text-align: left;
+}
+
+.approval-revise-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 2px;
+}
+
+.approval-revise-panel textarea {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    resize: vertical;
+}
+
+.approval-status {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
 }
 
 .loading-spinner {

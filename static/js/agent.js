@@ -381,15 +381,22 @@ async function sendAgentQuestion() {
         agentIsRunning = false;
         agentAbortController = null;
         if (stopBtn) stopBtn.style.display = 'none';
+        clearApprovalSlot();  // 任何结束（done/取消/断开）都恢复输入框、清空审批槽
         loadAgentSessions();  // 刷新会话状态
     }
 }
 
-// 停止Agent执行
-function stopAgent() {
-    if (agentAbortController) {
-        agentAbortController.abort();
+// 停止Agent执行：先通知后端取消（服务端生成器在下一轮循环收敛、会话置 cancelled），再断开流
+async function stopAgent() {
+    if (!agentAbortController) return;
+    if (agentCurrentSession) {
+        try {
+            await fetch(`/api/agent/sessions/${agentCurrentSession}/stop`, { method: 'POST' });
+        } catch (e) {
+            // 后端通知失败不阻断前端断开
+        }
     }
+    agentAbortController.abort();
 }
 
 function handleAgentEvent(event) {
@@ -439,11 +446,19 @@ function handleAgentEvent(event) {
         case 'approval_rejected':
             renderAgentApprovalRejected(event);
             break;
+        case 'approval_revised':
+            renderAgentApprovalRevised(event);
+            break;
         case 'approval_expired':
             renderAgentApprovalExpired(event);
             break;
         case 'plan_operation_result':
             renderPlanOperationResult(event);
+            break;
+        case 'cancelled':
+            removeAgentLoading();
+            clearApprovalSlot();
+            addAgentMessage('error', '⏹ 已取消');
             break;
         case 'concluding_start':
             showAgentConclusion();
@@ -459,6 +474,7 @@ function handleAgentEvent(event) {
             break;
         case 'done':
             removeAgentLoading();
+            clearApprovalSlot();
             break;
     }
 }
@@ -484,7 +500,7 @@ function addAgentMessage(role, content) {
     `;
 
     chat.appendChild(messageDiv);
-    chat.scrollTop = chat.scrollHeight;
+    scrollAgentChatIfNearBottom();
 }
 
 function renderKnowledgeRefs(refs) {
@@ -514,7 +530,7 @@ function renderKnowledgeRefs(refs) {
     `;
 
     chat.appendChild(div);
-    chat.scrollTop = chat.scrollHeight;
+    scrollAgentChatIfNearBottom();
 }
 
 function renderKnowledgeWarning(message) {
@@ -534,7 +550,7 @@ function renderKnowledgeWarning(message) {
         </div>
     `;
     chat.appendChild(div);
-    chat.scrollTop = chat.scrollHeight;
+    scrollAgentChatIfNearBottom();
 }
 
 function showAgentThinking(step) {
@@ -544,7 +560,7 @@ function showAgentThinking(step) {
     div.className = 'agent-message thinking';
     div.id = `agent-thinking-${step}`;
     div.innerHTML = `
-        <details class="agent-collapse" open>
+        <details class="agent-collapse">
             <summary class="message-header">
                 <span class="icon">🤔</span>
                 <span class="label">思考中</span>
@@ -556,7 +572,7 @@ function showAgentThinking(step) {
         </details>
     `;
     chat.appendChild(div);
-    chat.scrollTop = chat.scrollHeight;
+    scrollAgentChatIfNearBottom();
 }
 
 function appendAgentThinking(content) {
@@ -596,7 +612,7 @@ function renderAgentToolCall(tool, params) {
         </details>
     `;
     chat.appendChild(div);
-    chat.scrollTop = chat.scrollHeight;
+    scrollAgentChatIfNearBottom();
 }
 
 function renderAgentResult(result) {
@@ -677,7 +693,7 @@ function renderAgentObservation(observation) {
         </div>
     `;
     chat.appendChild(div);
-    chat.scrollTop = chat.scrollHeight;
+    scrollAgentChatIfNearBottom();
 }
 
 function showAgentConclusion() {
@@ -694,7 +710,7 @@ function showAgentConclusion() {
         <div class="message-content markdown-content"></div>
     `;
     chat.appendChild(div);
-    chat.scrollTop = chat.scrollHeight;
+    scrollAgentChatIfNearBottom();
 }
 
 function appendAgentConclusion(content) {
@@ -717,26 +733,34 @@ function finalizeAgentConclusion() {
     }
 }
 
-// ==================== 变更类操作审批 ====================
+// ==================== 变更类操作审批（Claude Code 形态：审批槽 + 竖向选项） ====================
 
 function renderAgentApproval(event) {
-    // 紧凑内联审批条（贴近 Claude Code 的权限提示风格）：默认只展示标题+影响范围+操作数，
-    // 操作明细折叠在"详情"里；批准后自动展开看逐项执行结果。位置在对话流底部，紧贴输入框。
-    const chat = document.getElementById('agent-chat');
+    // 渲染进贴近输入框的固定审批槽（#agent-approval-slot），审批期间隐藏主输入框——
+    // 审批框与输入框互斥，同一时刻只存在其一（参照 Claude Code 权限决策形态）。
+    // 待批命令全量展开、不可折叠；每条命令旁标注真实危险级别（后端 estimate_command_risk 重算）。
+    const slot = document.getElementById('agent-approval-slot');
+    if (!slot) return;
     const plan = event.plan || {};
     const ops = plan.operations || [];
 
-    const div = document.createElement('div');
-    div.className = 'agent-message approval';
-    div.id = `agent-approval-${event.plan_id}`;
-    div.dataset.planId = event.plan_id;
+    const riskOrder = { 'high': 3, 'medium': 2, 'low': 1 };
+    let maxRisk = 'low';
+    ops.forEach(op => {
+        const r = (op.risk || 'medium').toLowerCase();
+        if ((riskOrder[r] || 2) > (riskOrder[maxRisk] || 1)) maxRisk = r;
+    });
 
+    const target = agentApprovalTarget();
+    const riskBadge = ops.length
+        ? `<span class="risk-badge risk-${maxRisk}">${riskLabel(maxRisk)}</span>`
+        : '';
     const opsHtml = ops.map((op, i) => {
         const params = op.parameters || {};
         const paramText = op.tool === 'execute_command'
             ? (params.command || '')
             : (params.sql || '');
-        const riskClass = `risk-${(op.risk || 'low').toLowerCase()}`;
+        const riskClass = `risk-${(op.risk || 'medium').toLowerCase()}`;
         return `
             <div class="plan-op" data-op="${i + 1}">
                 <span class="op-index">${i + 1}</span>
@@ -744,60 +768,73 @@ function renderAgentApproval(event) {
                 <code class="op-params">${escapeHtml(paramText)}</code>
                 <div class="op-meta">
                     <span class="op-impact">${escapeHtml(op.impact || '')}</span>
-                    <span class="op-risk ${riskClass}">${escapeHtml(op.risk || 'low')}</span>
+                    <span class="op-risk ${riskClass}">${riskText(op.risk)}</span>
                 </div>
                 <span class="op-status"></span>
             </div>`;
     }).join('');
 
-    div.innerHTML = `
-        <div class="message-header">
-            <span class="icon">🧾</span>
-            <span class="label">操作计划待审批</span>
-            <button class="approval-toggle" onclick="toggleApprovalDetail(${event.plan_id})">详情 ▾</button>
-        </div>
-        <div class="message-content">
-            <div class="plan-title">${escapeHtml(plan.title || '操作计划')}</div>
-            ${plan.scope ? `<div class="plan-scope">🎯 ${escapeHtml(plan.scope)}</div>` : ''}
-            ${ops.length ? `<div class="plan-op-count">📋 ${ops.length} 项操作</div>` : ''}
-            <div class="plan-actions">
-                <button class="btn btn-primary" onclick="approvePlan(${event.plan_id})">✅ 批准</button>
-                <button class="btn btn-danger" onclick="toggleRejectPanel(${event.plan_id})">❌ 拒绝</button>
+    slot.innerHTML = `
+        <div class="approval-bar" id="agent-approval-${event.plan_id}" data-planId="${event.plan_id}">
+            <div class="approval-header">
+                <span class="approval-title">🧾 ${escapeHtml(plan.title || '操作计划')}</span>
+                ${target ? `<span class="approval-target">${target}</span>` : ''}
             </div>
-            <div class="plan-detail" id="plan-detail-${event.plan_id}" style="display:none;">
-                <div class="plan-ops">${opsHtml || '<div class="empty-message">计划无操作项</div>'}</div>
-                ${plan.rollback ? `<div class="plan-rollback">↩️ 回滚：${escapeHtml(plan.rollback)}</div>` : ''}
+            ${plan.scope ? `<div class="approval-scope">${escapeHtml(plan.scope)}</div>` : ''}
+            ${ops.length ? `<div class="plan-op-count">📋 ${ops.length} 项操作${riskBadge}</div>` : ''}
+            <div class="plan-ops">${opsHtml || '<div class="empty-message">计划无操作项</div>'}</div>
+            ${plan.rollback ? `<div class="plan-rollback">↩️ 回滚：${escapeHtml(plan.rollback)}</div>` : ''}
+            <div class="approval-actions">
+                <button class="btn btn-primary approval-btn" onclick="approvePlan(${event.plan_id})">✅ 批准</button>
+                <button class="btn btn-danger approval-btn" onclick="rejectPlan(${event.plan_id})">❌ 拒绝</button>
+                <button class="btn btn-secondary approval-btn" onclick="toggleRevisePanel(${event.plan_id})">✏️ 修改并重新提供方案</button>
+                <div class="approval-revise-panel" id="revise-panel-${event.plan_id}" style="display:none;">
+                    <textarea id="revise-comment-${event.plan_id}" rows="2"
+                              placeholder="描述希望修改的地方，Agent 将据此重新提供方案..."></textarea>
+                    <button class="btn btn-primary" onclick="revisePlan(${event.plan_id})">提交修改</button>
+                    <button class="btn btn-secondary" onclick="toggleRevisePanel(${event.plan_id})">取消</button>
+                </div>
             </div>
-            <div class="plan-reject-panel" id="reject-panel-${event.plan_id}" style="display:none;">
-                <input type="text" id="reject-reason-${event.plan_id}" placeholder="拒绝原因（可选，将反馈给 Agent）"
-                       onkeypress="if(event.key==='Enter')confirmRejectPlan(${event.plan_id})">
-                <button class="btn btn-danger" onclick="confirmRejectPlan(${event.plan_id})">确认拒绝</button>
-                <button class="btn btn-secondary" onclick="toggleRejectPanel(${event.plan_id})">取消</button>
-            </div>
+            <div class="approval-status" id="approval-status-${event.plan_id}"></div>
         </div>
     `;
-    chat.appendChild(div);
-    chat.scrollTop = chat.scrollHeight;
+
+    // 审批进行中：隐藏主输入框（审批框与输入框互斥）
+    const inputArea = document.querySelector('.agent-input-area');
+    if (inputArea) inputArea.style.display = 'none';
 }
 
-function toggleApprovalDetail(planId) {
-    const detail = document.getElementById(`plan-detail-${planId}`);
-    const toggle = detail ? detail.closest('.agent-message')?.querySelector('.approval-toggle') : null;
-    if (!detail) return;
-    const show = detail.style.display === 'none';
-    detail.style.display = show ? 'block' : 'none';
-    if (toggle) toggle.textContent = show ? '详情 ▴' : '详情 ▾';
-    const chat = document.getElementById('agent-chat');
-    if (chat) chat.scrollTop = chat.scrollHeight;
+function agentApprovalTarget() {
+    // 审批留痕：展示本次操作的目标主机/数据库连接
+    const parts = [];
+    if (agentCurrentSSHConn) {
+        const c = agentSSHConnections.find(x => x.id === agentCurrentSSHConn);
+        if (c) parts.push(`SSH: ${c.name}`);
+    }
+    if (agentCurrentDBConn) {
+        const c = agentDBConnections.find(x => x.id === agentCurrentDBConn);
+        if (c) parts.push(`DB: ${c.name}`);
+    }
+    return parts.length ? `🎯 ${parts.join(' / ')}` : '';
 }
 
-function toggleRejectPanel(planId) {
-    const panel = document.getElementById(`reject-panel-${planId}`);
+function riskLabel(risk) {
+    const map = { 'high': '⚠️ 高风险', 'medium': '⚡ 中风险', 'low': '低风险' };
+    return map[(risk || 'medium').toLowerCase()] || '⚡ 中风险';
+}
+
+function riskText(risk) {
+    const map = { 'high': '高风险', 'medium': '中风险', 'low': '低风险' };
+    return map[(risk || 'medium').toLowerCase()] || '中风险';
+}
+
+function toggleRevisePanel(planId) {
+    const panel = document.getElementById(`revise-panel-${planId}`);
     if (!panel) return;
     const show = panel.style.display === 'none';
     panel.style.display = show ? 'flex' : 'none';
     if (show) {
-        const input = document.getElementById(`reject-reason-${planId}`);
+        const input = document.getElementById(`revise-comment-${planId}`);
         if (input) input.focus();
     }
 }
@@ -806,14 +843,22 @@ async function approvePlan(planId) {
     await submitPlanDecision(planId, 'approve', '');
 }
 
-async function confirmRejectPlan(planId) {
-    const input = document.getElementById(`reject-reason-${planId}`);
+async function rejectPlan(planId) {
+    await submitPlanDecision(planId, 'reject', '');
+}
+
+async function revisePlan(planId) {
+    const input = document.getElementById(`revise-comment-${planId}`);
     const comment = input ? input.value.trim() : '';
-    await submitPlanDecision(planId, 'reject', comment);
+    if (!comment) {
+        showToast('请先描述希望修改的地方', 'warning');
+        return;
+    }
+    await submitPlanDecision(planId, 'revise', comment);
 }
 
 async function submitPlanDecision(planId, action, comment) {
-    const box = document.getElementById(`agent-approval-${planId}`);
+    const bar = document.getElementById(`agent-approval-${planId}`);
     try {
         const response = await fetch('/api/agent/approve', {
             method: 'POST',
@@ -826,13 +871,18 @@ async function submitPlanDecision(planId, action, comment) {
             return;
         }
         showToast(data.message || '审批已提交', 'success');
-        if (box) {
-            const header = box.querySelector('.message-header .label');
-            const actions = box.querySelector('.plan-actions');
-            if (actions) actions.innerHTML = '<span class="approval-waiting">⏳ 等待执行...</span>';
-            if (header) header.textContent = action === 'approve' ? '✅ 已批准，执行中' : '❌ 已拒绝';
-            const panel = box.querySelector('.plan-reject-panel');
-            if (panel) panel.remove();
+        if (bar) {
+            const status = bar.querySelector('.approval-status');
+            const actions = bar.querySelector('.approval-actions');
+            if (actions) actions.remove();
+            if (status) {
+                const map = {
+                    'approve': '⏳ 已批准，等待执行...',
+                    'reject': '❌ 已拒绝',
+                    'revise': '✏️ 已要求修改，等待重新提供方案...'
+                };
+                status.textContent = map[action] || '';
+            }
         }
     } catch (error) {
         showToast('审批提交失败', 'error');
@@ -840,45 +890,53 @@ async function submitPlanDecision(planId, action, comment) {
 }
 
 function renderAgentApprovalGranted(event) {
-    const box = document.getElementById(`agent-approval-${event.plan_id}`);
-    if (!box) return;
-    const header = box.querySelector('.message-header .label');
-    if (header) header.textContent = '✅ 已批准，开始执行';
-    const actions = box.querySelector('.plan-actions');
+    const bar = document.getElementById(`agent-approval-${event.plan_id}`);
+    if (!bar) return;
+    const status = bar.querySelector('.approval-status');
+    if (status) status.textContent = '✅ 已批准，开始执行';
+    const actions = bar.querySelector('.approval-actions');
     if (actions) actions.remove();
-    // 自动展开详情，让逐项执行结果可见
-    const detail = box.querySelector('.plan-detail');
-    if (detail) detail.style.display = 'block';
-    const toggle = box.querySelector('.approval-toggle');
-    if (toggle) toggle.textContent = '详情 ▴';
 }
 
 function renderAgentApprovalRejected(event) {
-    const box = document.getElementById(`agent-approval-${event.plan_id}`);
-    if (!box) return;
-    const header = box.querySelector('.message-header .label');
-    if (header) header.textContent = '❌ 已拒绝';
-    const actions = box.querySelector('.plan-actions');
+    const bar = document.getElementById(`agent-approval-${event.plan_id}`);
+    if (!bar) return;
+    const status = bar.querySelector('.approval-status');
+    if (status) status.textContent = '❌ 已拒绝' + (event.comment ? `（${event.comment}）` : '');
+    const actions = bar.querySelector('.approval-actions');
     if (actions) actions.remove();
-    const content = box.querySelector('.message-content');
-    if (content && event.comment) {
-        content.insertAdjacentHTML('beforeend', `<div class="plan-reject-comment">拒绝原因：${escapeHtml(event.comment)}</div>`);
-    }
+}
+
+function renderAgentApprovalRevised(event) {
+    const bar = document.getElementById(`agent-approval-${event.plan_id}`);
+    if (!bar) return;
+    const status = bar.querySelector('.approval-status');
+    if (status) status.textContent = '✏️ 已要求修改，等待 Agent 重新提供方案';
+    const actions = bar.querySelector('.approval-actions');
+    if (actions) actions.remove();
 }
 
 function renderAgentApprovalExpired(event) {
-    const box = document.getElementById(`agent-approval-${event.plan_id}`);
-    if (!box) return;
-    const header = box.querySelector('.message-header .label');
-    if (header) header.textContent = '⏰ 审批超时';
-    const actions = box.querySelector('.plan-actions');
+    const bar = document.getElementById(`agent-approval-${event.plan_id}`);
+    if (!bar) return;
+    const status = bar.querySelector('.approval-status');
+    if (status) status.textContent = '⏰ 审批超时';
+    const actions = bar.querySelector('.approval-actions');
     if (actions) actions.remove();
 }
 
+function clearApprovalSlot() {
+    // 审批结束/会话收尾：清空审批槽并恢复主输入框显示
+    const slot = document.getElementById('agent-approval-slot');
+    const inputArea = document.querySelector('.agent-input-area');
+    if (slot) slot.innerHTML = '';
+    if (inputArea) inputArea.style.display = '';
+}
+
 function renderPlanOperationResult(event) {
-    const box = document.getElementById(`agent-approval-${event.plan_id}`);
-    if (!box) return;
-    const opRow = box.querySelector(`.plan-op[data-op="${event.index}"]`);
+    const bar = document.getElementById(`agent-approval-${event.plan_id}`);
+    if (!bar) return;
+    const opRow = bar.querySelector(`.plan-op[data-op="${event.index}"]`);
     if (!opRow) return;
     const statusEl = opRow.querySelector('.op-status');
     const result = event.result || {};
@@ -970,7 +1028,7 @@ function renderAgentError(error) {
         </div>
     `;
     chat.appendChild(div);
-    chat.scrollTop = chat.scrollHeight;
+    scrollAgentChatIfNearBottom();
 }
 
 function renderAgentWarning(warning) {
@@ -987,7 +1045,7 @@ function renderAgentWarning(warning) {
         </div>
     `;
     chat.appendChild(div);
-    chat.scrollTop = chat.scrollHeight;
+    scrollAgentChatIfNearBottom();
 }
 
 function showAgentLoading(message) {
@@ -1001,7 +1059,7 @@ function showAgentLoading(message) {
         </div>
     `;
     chat.appendChild(div);
-    chat.scrollTop = chat.scrollHeight;
+    scrollAgentChatIfNearBottom();
 }
 
 function removeAgentLoading() {
@@ -1010,7 +1068,19 @@ function removeAgentLoading() {
 }
 
 // ==================== 工具函数 ====================
+
+// 仅当用户接近底部时才自动滚动到底（用户上翻看历史时不被拉回）
+function scrollAgentChatIfNearBottom() {
+    const chat = document.getElementById('agent-chat');
+    if (!chat) return;
+    const threshold = 60;
+    if (chat.scrollHeight - chat.scrollTop - chat.clientHeight < threshold) {
+        chat.scrollTop = chat.scrollHeight;
+    }
+}
+
 function clearAgentChat() {
+    clearApprovalSlot();  // 切换/新建会话时清掉残留审批槽，恢复输入框
     const chat = document.getElementById('agent-chat');
     chat.innerHTML = `
         <div class="agent-welcome">

@@ -364,6 +364,59 @@ class Harness:
         """参数是否「像路径」：仅此类参数才做 .. 穿越检查，避免误伤 grep 正则（a..b）"""
         return arg.startswith(('/', '.', '~')) or '/' in arg
 
+    @staticmethod
+    def _skeleton_has_injection(skeleton: str) -> bool:
+        """骨架（引号内容已剔除）是否含命令扩展向量。
+
+        命令链/分隔符（; && ||）、子 shell/命令替换（` $( ${）、后台执行（单 &）。
+        单管道 | 与重定向 >/< 是已批准命令的可见组成部分，不算注入；
+        fd 重定向里的 &（如 2>&1）也不计。
+        """
+        if not skeleton:
+            return False
+        if ';' in skeleton or '&&' in skeleton or '||' in skeleton:
+            return True
+        if '`' in skeleton or '$(' in skeleton or '${' in skeleton:
+            return True
+        # 后台/分隔符 &（排除 && 与 fd 重定向 2>&1 / <&n）
+        if re.search(r'(?<![&|<>])&(?![&|])', skeleton):
+            return True
+        return False
+
+    @classmethod
+    def _has_injection_vector(cls, command: str) -> bool:
+        """命令是否含注入/扩展向量——即使经 DBA 审批也不静默放行的类型。
+
+        覆盖：控制字符、外层骨架命令链/子 shell/后台、su -c 内层命令链、
+        参数门控硬拒的代码执行模式（find -exec/-delete、awk system(/popen(/getline）、
+        路径穿越参数。这些向量会把「已批准的命令」扩展成另一条命令或逃逸目录范围；
+        单管道 | 与重定向 >/< 为可见部分，不算注入。
+        """
+        if not command or not command.strip():
+            return False
+        if re.search(r'[\n\r\t\x00-\x08\x0b\x0c\x0e-\x1f]', command):
+            return True
+        if cls._skeleton_has_injection(cls._strip_quoted(command)):
+            return True
+        # su -c '<cmd>'：内层命令在目标用户 shell 执行，须同样检查
+        cm = re.search(r'-c\s+(\'((?:[^\']|\'\')*)\'|"((?:[^"]|\\")*)")', command)
+        if cm:
+            inner = cm.group(2) if cm.group(2) is not None else cm.group(3)
+            if inner and cls._skeleton_has_injection(cls._strip_quoted(inner)):
+                return True
+        # 参数门控硬拒的代码执行模式（与 PARAM_GATED reject 规则对齐）
+        if re.search(r'\bfind\b', command) and \
+                re.search(r'-(?:delete|exec|ok|execdir|okdir)\b', command):
+            return True
+        if re.search(r'\b(?:awk|gawk|mawk)\b', command) and \
+                re.search(r'\bsystem\s*\(|popen\s*\(|getline', command):
+            return True
+        # 路径穿越参数（如 rm ../../etc/x）
+        for tok in command.split():
+            if cls._is_path_like(tok) and '..' in tok:
+                return True
+        return False
+
     # ==================== 命令校验（融合判定） ====================
 
     @classmethod
@@ -746,15 +799,19 @@ class Harness:
         """命令三态分类（融合判定矩阵）
 
         - safe：只读白名单（含只读诊断链），直接执行免审批
-        - approval：变更类命令 / 脚本判拒绝但 LLM 判可放行的命令 / 未知待审批命令
-        - reject：脚本与 LLM 均拒绝的命令（硬拒/注入）
+        - approval：变更类命令 / 策略级拒绝但可交 DBA 审批的命令 / 未知待审批命令
+        - reject：注入/扩展向量且判读不放行的命令（硬拒）
 
-        静态判定为 reject 或 unknown 时，若有 LLM 审查钩子，发起一次独立审查作
-        第二意见：
-          reject + allow → approval（DBA 决定，根治脚本误拒）
-          reject + reject → reject
-          unknown + allow → safe（只读直接执行）
-          unknown + reject(high) → reject；unknown + reject(非high) → approval
+        静态判定处理：
+          static safe/approval → 快速路径直接返回（不调 LLM）
+          static reject：
+            - 含注入/扩展向量（命令链/子 shell/反引号/代码执行模式/路径穿越/
+              su 内层链）：判读 allow → approval（DBA 决定）；判读拒绝/不可用 → reject
+            - 无注入向量（策略级拒绝：T1 硬拒命令/su 门控/白名单外）：
+              直接 approval（DBA 决定，不再依赖判读器——判读器对一切写入
+              给 allow=false，会让「T1 降级审批」的逃生通道失效）
+          static unknown：判读 allow → safe（只读放行）；判读 reject(high) → reject；
+            判读 reject(非high)/不可用 → approval
 
         Returns:
             (classification, reason)；reason 为 None 表示无需说明
@@ -770,27 +827,93 @@ class Harness:
         if static_cls in ('safe', 'approval'):
             return static_cls, static_reason
 
-        # 静态 reject / unknown → 独立 LLM 审查（第二意见）
+        # 静态 reject：区分注入向量与策略级拒绝
+        if static_cls == 'reject':
+            if cls._has_injection_vector(command):
+                # 注入/扩展向量：LLM 判读为第二意见，allow 才降级审批
+                verdict = cls._invoke_judge(command)
+                if verdict and verdict.get('allow'):
+                    return 'approval', (f"静态拒绝（{static_reason}），"
+                                        f"LLM 判读可放行，需审批")
+                return 'reject', static_reason
+            # 策略级拒绝（T1 硬拒/su 门控/白名单外，无注入向量）：
+            # 直接降级审批，由 DBA 决定
+            return 'approval', f"命令需 DBA 审批（{static_reason}）"
+
+        # static unknown → 独立 LLM 审查（第二意见）
         verdict = cls._invoke_judge(command)
         if verdict:
             allow = bool(verdict.get('allow'))
             risk = verdict.get('risk', 'medium')
-            if static_cls == 'reject':
-                if allow:
-                    return 'approval', (f"静态判断拒绝，LLM 判读可放行"
-                                        f"（{verdict.get('reason', '')}），需审批")
-                return 'reject', static_reason
-            # static unknown
             if allow:
                 return 'safe', f"LLM判读只读放行: {verdict.get('reason', '')}"
             if risk == 'high':
                 return 'reject', f"LLM判读危险: {verdict.get('reason', '')}"
             return 'approval', static_reason
 
-        # 无 LLM 审查结果（未挂载/失败/返回空）：unknown 降级为审批，reject 保持拒绝
-        if static_cls == 'unknown':
-            return 'approval', static_reason
-        return static_cls, static_reason
+        # 无 LLM 审查结果（未挂载/失败/返回空）：unknown 降级为审批
+        return 'approval', static_reason
+
+    @classmethod
+    def validate_plan_operation(cls, command: str, db_type: str) -> Tuple[bool, str]:
+        """审批后计划操作校验：DBA 已批准即授权，仅挡注入/绕过与危险控制。
+
+        用于操作计划经 DBA 审批后、引擎执行前的二次校验（_execute_plan_operations）。
+        不复用只读三态分类（会把「这是变更」误当「这是危险」）：
+        - 纯只读诊断链 → 放行
+        - classify_command 判 safe/approval（已知只读/变更命令）→ 放行
+        - 策略级拒绝（T1 硬拒/su 门控/白名单外）→ DBA 已批准，无注入向量即放行
+        - 注入/扩展向量 → 需 LLM 判读 allow 才放行（人类审批 + 第二意见共同把关）
+
+        Returns:
+            (is_safe, error)
+        """
+        if not command or not command.strip():
+            return False, "命令为空"
+        if re.search(r'[\n\r\t\x00-\x08\x0b\x0c\x0e-\x1f]', command):
+            return False, "检测到危险控制字符"
+        # 纯只读诊断命令链（ps -ef | grep x 等）：本来就是安全放行
+        if cls._is_diagnostic_chain(command, db_type):
+            return True, None
+        fused, reason = cls.classify_command(command, db_type)
+        if fused in ('safe', 'approval'):
+            return True, None
+        # classify 判 reject：DBA 已批准
+        if not cls._has_injection_vector(command):
+            # 策略级拒绝（T1/su 门控/白名单外），无注入向量 → 放行
+            return True, None
+        # 含注入向量：需 LLM 判读放行
+        verdict = cls._invoke_judge(command)
+        if verdict and verdict.get('allow'):
+            return True, None
+        return False, f"命令含注入/扩展向量且未获判读放行: {reason or ''}"
+
+    @classmethod
+    def estimate_command_risk(cls, command: str,
+                              db_type: Optional[str] = None) -> str:
+        """估算命令危险级别（high/medium/low），供审批条标注提醒。
+
+        仅用于展示，不参与放行决策：
+        - 注入/扩展向量，或命令含 T1 硬拒命令（rm/dd/sudo/shutdown/curl 等）
+          token 级扫描 → high
+        - 特权切换（首命令为 su）→ high
+        - 其余可审批的变更命令（cp/mv/chmod/kill/systemctl restart/包管理/
+          SQL 客户端/数据库策略变更 srvctl stop 等）→ medium
+        - 只读（classify=safe）→ low
+        - 其余默认 → medium
+        """
+        if not command or not command.strip():
+            return 'medium'
+        static, _ = cls._static_classify(command, db_type or '')
+        if static == 'safe':
+            return 'low'
+        if cls._has_injection_vector(command):
+            return 'high'
+        toks = command.strip().split()
+        if toks and (toks[0] == 'su'
+                     or any(cls._is_hard_rejected(t) for t in toks)):
+            return 'high'
+        return 'medium'
 
     @classmethod
     def _split_shell(cls, command: str, seps=('&&', '||', ';', '|')):

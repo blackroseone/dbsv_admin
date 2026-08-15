@@ -9,6 +9,57 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v3.0.20 (2026-08-15)
+
+### 🧾 审批交互改 Claude Code 形态 + 停止真停 + 会话命名 + 滚动
+
+**审批交互（`static/js/agent.js` + `templates/index.html` + `static/css/style.css`）**：
+- 审批条从对话流移入**贴近输入框的固定审批槽**（`#agent-approval-slot`），不随对话滚动。
+- **审批框与主输入框互斥**：审批进行中隐藏输入框与提示行（Claude Code 等待权限决策形态），审批解决、会话收尾后恢复。
+- **选项竖向排列**：【✅ 批准】【❌ 拒绝】【✏️ 修改并重新提供方案】——第三个展开输入框，DBA 输入希望修改的地方后提交，Agent 据此**重新输出操作计划**再走审批。
+- 保留 ② 的全量命令展开 + 危险徽标；审批条头部展示 **🎯 目标主机**（SSH/DB 连接名）留痕。
+
+**后端（`routes/agent.py` + `agent/engine.py`）**：
+- `POST /api/agent/approve` 支持 `action='revise'`（要求附修改内容）→ 计划状态 `revised` → 引擎把修改要求回流给模型重新出计划（`approval_revised` 事件）。
+- 新增 `POST /api/agent/sessions/<id>/stop`：进程内取消标志，引擎 ReAct 循环在下一轮收敛、**跳过结论、会话置 `cancelled`**，SSE 发 `cancelled` 事件——停止按钮从「只断前端流」变为「真停」。
+- `run` 时默认「新会话」标题用首问句自动命名（≤24 字），会话列表可区分。
+
+**滚动**：对话区自动滚动改为**距底 <60px 才跟随**，用户上翻看历史时不再被拉回底部。
+
+## v3.0.19 (2026-08-15)
+
+### ✂️ Agent 简洁优先：简单任务不再想得多
+
+**根因**：system prompt 只教 ReAct 多步思考，没有「简单任务直接答/单工具即止」规则；`AGENT_MAX_STEPS` 默认 10 助长连续工具调用；结论模板对单次查询也套「诊断结论+建议」；前端「思考中」默认展开放大感知。
+
+**改动**（`agent/engine.py` + `config.py` + `static/js/agent.js`）：
+- system prompt 核心原则新增 **0. 简洁优先**：单条查询/直接回答/问候 → 一句话答或一次工具后立即结束，禁止多步思考、检索知识库、章节标题、置信度、建议清单。
+- ReAct 工作模式新增 **5. 答案即止**：拿到足够信息立即停止给结论，单条查询能解决就不多步。
+- 结论模板（执行过诊断）加收口：只执行了单次查询且答案在结果中 → 一两句话回答，不展开分析/建议。
+- `AGENT_MAX_STEPS` 默认 10 → 6（步数预算后盾，`DB_TOOL_AGENT_MAX_STEPS` 可覆盖）。
+- 前端「思考中」块**默认折叠**（点击展开），结论块仍默认可见。
+
+## v3.0.18 (2026-08-15)
+
+### 🛡️ 审批覆盖：DBA 已批准的变更操作真正可执行
+
+**根因**：审批后执行阶段（`_execute_plan_operations`）仍用只读三态分类器二次校验，把「这是变更」误当「这是危险」——`rm`（T1 硬拒）、`su -c 'disql -e "ALTER SYSTEM SET ..."'`（受控 su 只读门拒）等在 DBA 批准后仍被拦下；LLM 判读器对「任何写入」一律 `allow=false`，使「reject → 降级审批（DBA 决定）」的逃生通道失效。
+
+**改动**（`agent/harness.py` + `agent/engine.py`）：
+- 新增 `Harness.validate_plan_operation`：审批后计划执行二次校验改为**计划级语义**——DBA 已批准即授权。只读链 / 已知变更命令放行；策略级拒绝（T1/su 门控/白名单外，无注入向量）放行；**注入/扩展向量**（命令链 `; && ||`、子 shell `` ` ``/`$()`/`${}`、后台 `&`、su 内层命令链、`find -exec/-delete`、`awk system(`、路径穿越 `..`）保持硬拒，但保留「LLM 判读 allow → 放行」出口。
+- 重构 `Harness.classify_command` 的 reject 分支：
+  - 无注入向量的**策略级拒绝** → 直接 `approval`（DBA 决定，不再被判读器否决）；
+  - **注入向量** → 判读 allow → `approval`；判读拒绝/不可用 → `reject`（保留第二意见）。
+- 重定向 `>`/`<` 不再视为注入向量（是已批准命令的可见组成部分，否则误杀 `mysqldump > backup.sql`、`mysql < change.sql` 等备份/导入）。
+- `query_database` 工具的 DML/DCL（DROP/UPDATE/INSERT/GRANT/CREATE）仍硬拒——结构性安全边界，不在本通道放开。
+
+### 🧾 审批条全量展开 + 危险标注
+
+- 新增 `Harness.estimate_command_risk`：按命令真实危险性估算 `high/medium/low`（T1/su/注入 → high，普通变更 → medium，只读 → low），审批标注用，不参与放行决策。
+- 引擎审批前**重算每个 op 的 risk**（不信任模型自填），直接命令降级审批也用真实风险。
+- 前端审批条**全量展开所有待批命令、不可折叠**（DBA 决定前必须看到每条命令）；摘要区显示最高风险徽标（⚠️ 高风险/⚡ 中风险/低风险），每条命令旁有 risk 徽标。
+- 行为基准 `temp_scripts/bench_command_gate.py` 随语义更新，并新增 `validate_plan_operation` / `estimate_command_risk` 矩阵（109 项全绿）。
+
 ## v3.0.17 (2026-08-15)
 
 ### 🎛️ 会话删除按钮统一 × 样式

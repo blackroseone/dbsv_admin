@@ -16,6 +16,25 @@ from agent.state import AgentState, AgentPhase, AgentStatus
 from agent.tools import get_tool_schemas, execute_tool, ToolContext
 
 
+# 进程内会话取消标志：{session_id: True}。单进程 Flask 下有效，
+# 由 routes stop 端点写入、引擎 ReAct 循环在下一轮收敛检查消费。
+_cancel_flags: Dict[str, bool] = {}
+
+
+def request_cancel(session_id: str) -> None:
+    """请求取消一个正在执行的 Agent 会话（stop 端点调用）"""
+    _cancel_flags[session_id] = True
+
+
+def clear_cancel(session_id: str) -> None:
+    """清除会话取消标志（新一轮 run 启动时调用，避免上一轮取消污染）"""
+    _cancel_flags.pop(session_id, None)
+
+
+def _is_cancelled(session_id: str) -> bool:
+    return _cancel_flags.get(session_id, False)
+
+
 class SmartOpsAgent:
     """智能运维Agent（第三代 - 自主决策模式）"""
 
@@ -68,6 +87,7 @@ class SmartOpsAgent:
 
     def run_stream(self, user_question: str) -> Generator[Dict, None, None]:
         """ReAct主循环（流式输出），带状态持久化与异常兜底"""
+        clear_cancel(self.session_id)  # 新一轮启动，清除上一轮可能的取消标记
         self.state.set_status(AgentStatus.RUNNING)
         self._persist_session(AgentStatus.RUNNING)
         try:
@@ -116,7 +136,12 @@ class SmartOpsAgent:
         # 使模型能基于上一轮工具结果继续推理（链式 ReAct）。
         self.state.add_message('user', user_question)
 
+        cancelled = False  # 被 DBA 停止：跳过结论，会话置 cancelled
         while self.state.current_step < self.state.max_steps:
+            # 取消：DBA 点了停止 → 收敛退出（跳过结论）
+            if _is_cancelled(self.session_id):
+                cancelled = True
+                break
             # 迭代预算：对话历史字符超限 → 强制收敛
             if self._history_chars() > self.max_history_chars:
                 yield {"type": "executing_warning",
@@ -153,7 +178,10 @@ class SmartOpsAgent:
                 plan_result = yield from self._handle_plan_approval(plan_obj)
                 if plan_result == 'expired':
                     break
-                # 获批执行（计划操作已记步骤）或拒绝后，本轮不执行其他工具，进入下一轮思考
+                if plan_result == 'cancelled':
+                    cancelled = True
+                    break
+                # 获批执行（计划操作已记步骤）/ 拒绝 / 要求修改后，本轮不执行其他工具，进入下一轮思考
                 continue
 
             # Planning
@@ -194,6 +222,10 @@ class SmartOpsAgent:
                 if plan_result == 'expired':
                     expired = True
                     break
+                if plan_result == 'cancelled':
+                    cancelled = True
+                    expired = True
+                    break
             if expired:
                 break
 
@@ -221,22 +253,27 @@ class SmartOpsAgent:
 
             self.state.next_step()
 
-        # Conclusion
-        yield {"type": "concluding_start"}
-        conclusion = yield from self._conclude_stream(knowledge_refs)
-        yield {"type": "concluding_end"}
+        # Conclusion（DBA 停止时跳过结论，直接收尾置 cancelled）
+        if not cancelled:
+            yield {"type": "concluding_start"}
+            conclusion = yield from self._conclude_stream(knowledge_refs)
+            yield {"type": "concluding_end"}
 
-        step = self.state.add_step(AgentPhase.CONCLUDING, thought=conclusion)
-        self._persist_step(step)
-        self.state.set_status(AgentStatus.COMPLETED)
-        self._persist_session(AgentStatus.COMPLETED)
+            step = self.state.add_step(AgentPhase.CONCLUDING, thought=conclusion)
+            self._persist_step(step)
+            self.state.set_status(AgentStatus.COMPLETED)
+            self._persist_session(AgentStatus.COMPLETED)
 
-        # 学习闭环：成功诊断 → 后台沉淀技能 + 写长期记忆（不阻塞流式返回）
-        threading.Thread(
-            target=self._crystallize_after_success,
-            args=(user_question, conclusion, knowledge_refs),
-            daemon=True,
-        ).start()
+            # 学习闭环：成功诊断 → 后台沉淀技能 + 写长期记忆（不阻塞流式返回）
+            threading.Thread(
+                target=self._crystallize_after_success,
+                args=(user_question, conclusion, knowledge_refs),
+                daemon=True,
+            ).start()
+        else:
+            yield {"type": "cancelled", "message": "⏹ 已取消"}
+            self.state.set_status(AgentStatus.CANCELLED)
+            self._persist_session(AgentStatus.CANCELLED)
 
         yield {"type": "done"}
 
@@ -304,6 +341,7 @@ class SmartOpsAgent:
         prompt = """你是一个智能数据库运维Agent。你的任务是根据用户的指令，自主分析、自主决策、自主执行数据库运维任务。
 
 ## 核心原则
+0. **简洁优先**：若请求只需单条查询或直接回答（查版本/状态/参数、问含义、问候致谢等），直接用一句话回答，或调用一次必要工具后立即结束。禁止为简单任务做多步思考、检索知识库、输出章节标题、标注置信度、罗列建议。
 1. **知识库优先**：分析/建议类回答尽量基于检索到的知识库内容
 2. **禁止编造**：知识库缺失时如实说明；但**变更类操作不以知识库为前置条件**——正确性由 DBA 审批把关，你负责输出可执行的操作计划
 3. **置信度标注**：仅分析/建议类结论需要标注置信度；变更操作计划不需要标注
@@ -323,6 +361,7 @@ class SmartOpsAgent:
 2. Action: 调用合适的工具获取数据（格式: {"tool": "xxx", "parameters": {...}}）
 3. Observation: 观察执行结果
 4. Thought: 基于结果继续分析或总结
+5. **答案即止**：一旦拿到足够信息立即停止并给结论，不要为了"严谨"继续调用工具；单条查询能解决就不要多步。
 
 ## 变更类操作（需审批）
 涉及修改参数/配置/执行变更命令（如 ALTER SYSTEM SET、SET GLOBAL、srvctl start/stop、重启/启停实例、su 切换执行服务启停）属于**变更类**。
@@ -614,17 +653,22 @@ class SmartOpsAgent:
     # ==================== 变更类操作：审批流 ====================
 
     def _handle_plan_approval(self, plan: Dict) -> Generator[Dict, None, str]:
-        """变更类操作审批流：创建计划 → 暂停轮询审批 → 获批执行 / 拒绝继续 / 超时收尾。
+        """变更类操作审批流：创建计划 → 暂停轮询审批 → 获批执行 / 拒绝继续 / 修改重出方案 / 超时收尾 / 取消。
 
-        返回 'approved' / 'rejected' / 'expired'。
+        返回 'approved' / 'rejected' / 'revised' / 'expired' / 'cancelled'。
         """
         from db.database import create_plan, get_plan, update_plan_status
+        # 用命令真实危险性重算每个 op 的 risk（不信任模型自填），供审批条标注
+        self._enrich_plan_risks(plan)
         plan_id = create_plan(self.session_id, plan.get('title', '操作计划'), plan)
         yield {"type": "approval_required", "plan_id": plan_id, "plan": plan}
 
         from config import AGENT_PLAN_TIMEOUT_MINUTES
         deadline = datetime.now() + timedelta(minutes=int(AGENT_PLAN_TIMEOUT_MINUTES))
         while True:
+            if _is_cancelled(self.session_id):
+                # DBA 停止了执行：不落 cancelled 状态（计划仍 pending，避免与超时混淆）
+                return 'cancelled'
             if datetime.now() > deadline:
                 update_plan_status(plan_id, 'expired')
                 yield {"type": "approval_expired", "plan_id": plan_id}
@@ -633,6 +677,15 @@ class SmartOpsAgent:
             status = (row or {}).get('status', 'expired')
             if status == 'approved':
                 break
+            if status == 'revised':
+                # 修改并重新提供方案：把 DBA 的修改要求回流给模型，重新输出计划
+                comment = (row or {}).get('comment', '') or ''
+                yield {"type": "approval_revised", "plan_id": plan_id, "comment": comment}
+                self.state.add_message(
+                    'user', f"DBA 要求修改：{comment or '未说明'}。"
+                            f"请基于反馈调整并重新输出操作计划（{{\"type\": \"plan\", \"plan\": {{...}}}}）"
+                            f"等待审批；若无需再变更请直接给出结论，禁止执行写操作。")
+                return 'revised'
             if status == 'rejected':
                 comment = (row or {}).get('comment', '') or ''
                 yield {"type": "approval_rejected", "plan_id": plan_id, "comment": comment}
@@ -665,12 +718,15 @@ class SmartOpsAgent:
             params = op.get('parameters') or {}
             if tool == 'query_database':
                 cls, err = Harness.classify_sql(params.get('sql', ''))
+                ok = cls != 'reject'
             elif tool == 'execute_command':
-                cls, err = Harness.classify_command(params.get('command', ''), db_type)
+                # DBA 已批准：计划级校验（只挡注入/绕过，策略级拒绝放行）
+                ok, err = Harness.validate_plan_operation(
+                    params.get('command', ''), db_type)
             else:
-                cls, err = 'reject', f'计划操作不支持的工具: {tool}'
+                ok, err = False, f'计划操作不支持的工具: {tool}'
 
-            if cls == 'reject':
+            if not ok:
                 observation = f"❌ 计划操作 {i} 校验失败: {err}"
                 yield {"type": "plan_operation_result", "index": i, "tool": tool,
                        "parameters": params, "status": "rejected", "error": err}
@@ -743,10 +799,30 @@ class SmartOpsAgent:
                 'tool': tool,
                 'parameters': params,
                 'impact': '',
-                'risk': 'medium',
+                'risk': self._estimate_op_risk(tool, params),
             }],
             'rollback': '未提供（请 DBA 评估）',
         }
+
+    def _estimate_op_risk(self, tool: str, params: Dict) -> str:
+        """估算单个操作的危险级别（审批标注用，不参与放行决策）"""
+        if tool == 'execute_command':
+            return Harness.estimate_command_risk(
+                params.get('command', ''), self._get_db_type())
+        if tool == 'query_database':
+            sql = params.get('sql', '')
+            is_safe, _ = Harness.validate_sql(sql, OperationLevel.READONLY)
+            return 'low' if is_safe else 'medium'
+        return 'medium'
+
+    def _enrich_plan_risks(self, plan: Dict) -> None:
+        """按命令真实危险性重算操作计划里每个 op 的 risk（审批标注用）。
+
+        只读 SQL/命令 → low；普通变更 → medium；T1/su/注入 → high。
+        不改动放行语义，仅修正展示风险，不信任模型自填值。
+        """
+        for op in (plan.get('operations') or []):
+            op['risk'] = self._estimate_op_risk(op.get('tool', ''), op.get('parameters') or {})
 
     def _validate_action(self, action: Dict) -> Tuple[bool, str]:
         """验证动作安全性"""
@@ -915,7 +991,7 @@ class SmartOpsAgent:
 1. 问题诊断结论（2-4 句，直接说问题与依据）
 2. 具体建议（与本次观察/操作直接相关；若建议下一步操作，直接给，不要泛泛而谈）
 
-要求：不要罗列通用最佳实践（监控建设、流程规范等）、不要展开置信度说明、不要重复分析过程。"""
+要求：不要罗列通用最佳实践（监控建设、流程规范等）、不要展开置信度说明、不要重复分析过程。若本次只执行了单次查询且答案已在结果中，直接用一两句话回答即可，不要展开分析、不要罗列建议。"""
             system = "你是一个数据库运维专家，请基于分析结果给出专业建议，保持简洁，避免冗余。"
 
         messages = [
