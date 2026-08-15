@@ -82,6 +82,7 @@ def delete_session(session_id):
     """删除Agent会话"""
     conn = get_db()
     conn.execute("DELETE FROM agent_steps WHERE session_id=?", (session_id,))
+    conn.execute("DELETE FROM agent_plans WHERE session_id=?", (session_id,))
     conn.execute("DELETE FROM agent_sessions WHERE id=?", (session_id,))
     conn.commit()
 

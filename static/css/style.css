@@ -5302,6 +5302,42 @@ body {
     margin-left: auto;
 }
 
+/* 会话项：主区域可点选加载，右侧悬停显示删除按钮 */
+.session-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.session-main {
+    flex: 1;
+    min-width: 0;
+    cursor: pointer;
+}
+
+.session-delete {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    cursor: pointer;
+    padding: 2px 5px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.session-item:hover .session-delete {
+    opacity: 1;
+}
+
+.session-delete:hover {
+    color: #e74c3c;
+    background: var(--bg-hover);
+}
+
 .agent-main {
     flex: 1;
     display: flex;
@@ -5469,9 +5505,43 @@ body {
     font-size: 0.82rem;
 }
 
-/* 变更类操作审批 */
+/* 变更类操作审批（紧凑内联，贴近权限提示风格） */
 .agent-message.approval {
     border-color: var(--primary-color);
+}
+
+.agent-message.approval .message-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.approval-toggle {
+    margin-left: auto;
+    background: none;
+    border: 1px solid var(--border-color);
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    padding: 1px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.approval-toggle:hover {
+    color: var(--text-primary);
+    border-color: var(--primary-color);
+}
+
+.plan-op-count {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+}
+
+.plan-detail {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--border-color);
 }
 
 .plan-title {

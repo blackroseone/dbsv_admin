@@ -162,15 +162,42 @@ function renderAgentSessions() {
     }
 
     container.innerHTML = agentSessions.map(session => `
-        <div class="session-item ${agentCurrentSession === session.id ? 'active' : ''}"
-             onclick="loadAgentSession('${escapeJsAttr(session.id)}')">
-            <div class="session-title">${escapeHtml(session.title)}</div>
-            <div class="session-meta">
-                <span class="session-status ${escapeHtml(session.status)}">${getStatusIcon(session.status)}</span>
-                <span class="session-time">${formatTime(session.created_at)}</span>
+        <div class="session-item ${agentCurrentSession === session.id ? 'active' : ''}">
+            <div class="session-main" onclick="loadAgentSession('${escapeJsAttr(session.id)}')">
+                <div class="session-title">${escapeHtml(session.title)}</div>
+                <div class="session-meta">
+                    <span class="session-status ${escapeHtml(session.status)}">${getStatusIcon(session.status)}</span>
+                    <span class="session-time">${formatTime(session.created_at)}</span>
+                </div>
             </div>
+            <button class="session-delete" title="删除会话"
+                    onclick="event.stopPropagation(); deleteAgentSession('${escapeJsAttr(session.id)}')">🗑</button>
         </div>
     `).join('');
+}
+
+async function deleteAgentSession(sessionId) {
+    if (!confirm('确定删除该会话？该操作不可恢复。')) return;
+    try {
+        const response = await fetch(`/api/agent/sessions/${sessionId}`, { method: 'DELETE' });
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            showToast(data.error || '删除失败', 'error');
+            return;
+        }
+        if (agentCurrentSession === sessionId) {
+            // 删除的是当前会话：清空对话区，回到欢迎页
+            agentCurrentSession = null;
+            agentThinkingText = '';
+            agentConclusionText = '';
+            clearAgentChat();
+        }
+        loadAgentSessions();
+        showToast('会话已删除', 'success');
+    } catch (error) {
+        console.error('删除会话失败:', error);
+        showToast('删除失败', 'error');
+    }
 }
 
 function getStatusIcon(status) {
@@ -218,10 +245,35 @@ async function ensureAgentSession() {
 }
 
 async function newAgentSession() {
-    const sessionId = await ensureAgentSession();
-    if (sessionId) {
-        showToast('会话创建成功', 'success');
-    } else {
+    // 强制新建会话：不复用当前会话，清空对话区回到欢迎页。
+    // 注意与 ensureAgentSession 的区别——后者是"首次发消息自动建会话"的兜底。
+    if (agentIsRunning) {
+        showToast('Agent正在执行中，请等待', 'warning');
+        return;
+    }
+    try {
+        const response = await fetch('/api/agent/sessions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                title: '新会话',
+                ssh_connection_id: agentCurrentSSHConn,
+                db_connection_id: agentCurrentDBConn
+            })
+        });
+        const data = await response.json();
+        if (data.session) {
+            agentCurrentSession = data.session.id;
+            agentThinkingText = '';
+            agentConclusionText = '';
+            clearAgentChat();
+            loadAgentSessions();
+            showToast('会话创建成功', 'success');
+        } else {
+            showToast('创建会话失败', 'error');
+        }
+    } catch (error) {
+        console.error('创建会话失败:', error);
         showToast('创建会话失败', 'error');
     }
 }
@@ -668,6 +720,8 @@ function finalizeAgentConclusion() {
 // ==================== 变更类操作审批 ====================
 
 function renderAgentApproval(event) {
+    // 紧凑内联审批条（贴近 Claude Code 的权限提示风格）：默认只展示标题+影响范围+操作数，
+    // 操作明细折叠在"详情"里；批准后自动展开看逐项执行结果。位置在对话流底部，紧贴输入框。
     const chat = document.getElementById('agent-chat');
     const plan = event.plan || {};
     const ops = plan.operations || [];
@@ -700,15 +754,19 @@ function renderAgentApproval(event) {
         <div class="message-header">
             <span class="icon">🧾</span>
             <span class="label">操作计划待审批</span>
+            <button class="approval-toggle" onclick="toggleApprovalDetail(${event.plan_id})">详情 ▾</button>
         </div>
         <div class="message-content">
             <div class="plan-title">${escapeHtml(plan.title || '操作计划')}</div>
-            ${plan.scope ? `<div class="plan-scope">🎯 影响范围：${escapeHtml(plan.scope)}</div>` : ''}
-            <div class="plan-ops">${opsHtml || '<div class="empty-message">计划无操作项</div>'}</div>
-            ${plan.rollback ? `<div class="plan-rollback">↩️ 回滚：${escapeHtml(plan.rollback)}</div>` : ''}
+            ${plan.scope ? `<div class="plan-scope">🎯 ${escapeHtml(plan.scope)}</div>` : ''}
+            ${ops.length ? `<div class="plan-op-count">📋 ${ops.length} 项操作</div>` : ''}
             <div class="plan-actions">
                 <button class="btn btn-primary" onclick="approvePlan(${event.plan_id})">✅ 批准</button>
                 <button class="btn btn-danger" onclick="toggleRejectPanel(${event.plan_id})">❌ 拒绝</button>
+            </div>
+            <div class="plan-detail" id="plan-detail-${event.plan_id}" style="display:none;">
+                <div class="plan-ops">${opsHtml || '<div class="empty-message">计划无操作项</div>'}</div>
+                ${plan.rollback ? `<div class="plan-rollback">↩️ 回滚：${escapeHtml(plan.rollback)}</div>` : ''}
             </div>
             <div class="plan-reject-panel" id="reject-panel-${event.plan_id}" style="display:none;">
                 <input type="text" id="reject-reason-${event.plan_id}" placeholder="拒绝原因（可选，将反馈给 Agent）"
@@ -720,6 +778,17 @@ function renderAgentApproval(event) {
     `;
     chat.appendChild(div);
     chat.scrollTop = chat.scrollHeight;
+}
+
+function toggleApprovalDetail(planId) {
+    const detail = document.getElementById(`plan-detail-${planId}`);
+    const toggle = detail ? detail.closest('.agent-message')?.querySelector('.approval-toggle') : null;
+    if (!detail) return;
+    const show = detail.style.display === 'none';
+    detail.style.display = show ? 'block' : 'none';
+    if (toggle) toggle.textContent = show ? '详情 ▴' : '详情 ▾';
+    const chat = document.getElementById('agent-chat');
+    if (chat) chat.scrollTop = chat.scrollHeight;
 }
 
 function toggleRejectPanel(planId) {
@@ -777,6 +846,11 @@ function renderAgentApprovalGranted(event) {
     if (header) header.textContent = '✅ 已批准，开始执行';
     const actions = box.querySelector('.plan-actions');
     if (actions) actions.remove();
+    // 自动展开详情，让逐项执行结果可见
+    const detail = box.querySelector('.plan-detail');
+    if (detail) detail.style.display = 'block';
+    const toggle = box.querySelector('.approval-toggle');
+    if (toggle) toggle.textContent = '详情 ▴';
 }
 
 function renderAgentApprovalRejected(event) {

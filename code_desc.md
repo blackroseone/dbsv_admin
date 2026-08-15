@@ -1076,7 +1076,8 @@ data: [DONE]
 | `switchAgentTab(tab)` | 切换SSH/DB标签 |
 | `loadAgentSessions()` | 加载Agent会话列表 |
 | `renderAgentSessions()` | 渲染会话列表 |
-| `newAgentSession()` | 创建新会话 |
+| `newAgentSession()` | 强制新建会话并清空对话区（不复用当前会话） |
+| `deleteAgentSession(sessionId)` | 删除会话（后端级联清理 agent_steps/agent_plans） |
 | `loadAgentSession(sessionId)` | 加载会话详情 |
 | `sendAgentQuestion()` | 发送问题（SSE流式） |
 | `handleAgentEvent(event)` | 处理SSE事件 |
