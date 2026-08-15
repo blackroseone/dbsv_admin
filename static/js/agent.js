@@ -171,7 +171,7 @@ function renderAgentSessions() {
                 </div>
             </div>
             <button class="session-delete" title="删除会话"
-                    onclick="event.stopPropagation(); deleteAgentSession('${escapeJsAttr(session.id)}')">🗑</button>
+                    onclick="event.stopPropagation(); deleteAgentSession('${escapeJsAttr(session.id)}')">&times;</button>
         </div>
     `).join('');
 }
