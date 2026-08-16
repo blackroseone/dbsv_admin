@@ -477,50 +477,22 @@
 
                     <!-- 右侧主区域 -->
                     <div class="agent-main">
-                        <!-- 顶部工具栏 -->
+                        <!-- 顶部工具栏：连接状态 | 会话页签 | 操作按钮 -->
                         <div class="agent-toolbar">
                             <div class="connection-status">
                                 <span id="agent-ssh-status">🔴 SSH未连接</span>
                                 <span id="agent-db-status">🔴 DB未连接</span>
                             </div>
+                            <div class="agent-tabs" id="agent-tabs"></div>
                             <div class="agent-actions">
                                 <button class="btn btn-primary" onclick="newAgentSession()">📝 新会话</button>
-                                <button class="btn btn-secondary" onclick="clearAgentChat()">🗑️ 清空</button>
-                                <button class="btn btn-danger" id="agent-stop-btn" onclick="stopAgent()" style="display:none;">⏹ 停止</button>
+                                <button class="btn btn-secondary" onclick="clearAgentChat(agentCurrentSession)">🗑️ 清空</button>
+                                <button class="btn btn-danger" id="agent-stop-btn" onclick="stopAgent(agentCurrentSession)" style="display:none;">⏹ 停止</button>
                             </div>
                         </div>
 
-                        <!-- 对话区域 -->
-                        <div class="agent-chat" id="agent-chat">
-                            <div class="agent-welcome">
-                                <div class="welcome-icon">🤖</div>
-                                <div class="welcome-title">智能运维Agent</div>
-                                <div class="welcome-desc">
-                                    我可以帮你执行数据库运维任务，包括：<br>
-                                    • 查询数据库状态<br>
-                                    • 分析性能问题<br>
-                                    • 检查集群健康<br>
-                                    • 诊断慢查询<br><br>
-                                    <span class="welcome-warning">⚠️ 所有操作均为只读，不会修改数据</span>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- 审批槽：贴近输入框、不随对话滚动；与输入框互斥显示（Claude Code 权限形态） -->
-                        <div id="agent-approval-slot" class="agent-approval-slot"></div>
-
-                        <!-- 输入区域 -->
-                        <div class="agent-input-area">
-                            <div class="input-wrapper">
-                                <input type="text" id="agent-input"
-                                       placeholder="输入指令，如：检查Oracle集群状态"
-                                       onkeypress="if(event.key==='Enter')sendAgentQuestion()">
-                                <button class="btn btn-primary" onclick="sendAgentQuestion()">发送</button>
-                            </div>
-                            <div class="input-hints">
-                                <span>💡 试试：查看慢查询 | 检查集群状态 | 分析AWR报告</span>
-                            </div>
-                        </div>
+                        <!-- 会话页签内容（每会话一个 pane，JS 创建；各视图完全隔离） -->
+                        <div class="agent-tab-panes" id="agent-tab-panes"></div>
                     </div>
                 </div>
             </div>

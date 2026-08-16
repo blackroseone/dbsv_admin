@@ -1,19 +1,18 @@
 /**
- * 智能运维Agent模块
+ * 智能运维Agent模块（页签模式：每会话一个页签、独立视图，SSE 流只写所属会话视图）
  */
 
 // ==================== Agent模块状态 ====================
-let agentCurrentSession = null;
+let agentCurrentSession = null;      // 当前激活页签的会话 id
 let agentSSHConnections = [];
 let agentDBConnections = [];
 let agentSessions = [];
-let agentIsRunning = false;
 let agentCurrentSSHConn = null;
 let agentCurrentDBConn = null;
-let agentAbortController = null;
-// 流式文本累加器（thinking/conclusion 逐 token 渲染用）
-let agentThinkingText = '';
-let agentConclusionText = '';
+// 打开的页签（有序）
+let agentOpenTabs = [];
+// 每会话视图状态：{sid: {running, controller, thinkingText, conclusionText, lastPlan, loaded}}
+let agentSessionViews = {};
 
 // ==================== 模块初始化 ====================
 function initAgentModule() {
@@ -140,13 +139,18 @@ function switchAgentTab(tab) {
     document.getElementById(`agent-${tab}-connections`).style.display = 'block';
 }
 
-// ==================== 会话管理 ====================
+// ==================== 会话列表（侧栏） ====================
 async function loadAgentSessions() {
     try {
         const response = await fetch('/api/agent/sessions');
         const data = await response.json();
         agentSessions = data.sessions || [];
         renderAgentSessions();
+        renderAgentTabs();  // 页签标题与会话列表同步（含自动命名后）
+        // 首次进入且无页签时，自动打开最近一个会话
+        if (agentOpenTabs.length === 0 && agentSessions.length > 0 && !agentCurrentSession) {
+            openAgentTab(agentSessions[0].id);
+        }
     } catch (error) {
         console.error('加载会话失败:', error);
     }
@@ -163,7 +167,7 @@ function renderAgentSessions() {
 
     container.innerHTML = agentSessions.map(session => `
         <div class="session-item ${agentCurrentSession === session.id ? 'active' : ''}">
-            <div class="session-main" onclick="loadAgentSession('${escapeJsAttr(session.id)}')">
+            <div class="session-main" onclick="openAgentTab('${escapeJsAttr(session.id)}')">
                 <div class="session-title">${escapeHtml(session.title)}</div>
                 <div class="session-meta">
                     <span class="session-status ${escapeHtml(session.status)}">${getStatusIcon(session.status)}</span>
@@ -178,19 +182,16 @@ function renderAgentSessions() {
 
 async function deleteAgentSession(sessionId) {
     if (!confirm('确定删除该会话？该操作不可恢复。')) return;
+    // 若已打开页签，先关闭（运行中会先停止）
+    if (agentOpenTabs.includes(sessionId)) {
+        await closeAgentTab(sessionId);
+    }
     try {
         const response = await fetch(`/api/agent/sessions/${sessionId}`, { method: 'DELETE' });
         if (!response.ok) {
             const data = await response.json().catch(() => ({}));
             showToast(data.error || '删除失败', 'error');
             return;
-        }
-        if (agentCurrentSession === sessionId) {
-            // 删除的是当前会话：清空对话区，回到欢迎页
-            agentCurrentSession = null;
-            agentThinkingText = '';
-            agentConclusionText = '';
-            clearAgentChat();
         }
         loadAgentSessions();
         showToast('会话已删除', 'success');
@@ -210,47 +211,138 @@ function getStatusIcon(status) {
     return icons[status] || '⏸️';
 }
 
-async function ensureAgentSession() {
-    // 已有会话直接复用，否则自动创建一个（避免必须先点"新会话"才能对话）
-    if (agentCurrentSession) return agentCurrentSession;
+// ==================== 页签管理 ====================
 
-    if (!agentCurrentSSHConn && !agentCurrentDBConn) {
-        // 无连接也允许建会话：知识问答/检查项检索等无需连接的能力可先用；
-        // 需要查询/执行时 Agent 会提示缺少对应连接
-        showToast('未选连接：知识问答可用，查询/执行类操作需先配置连接', 'info');
+function agentView(sid) {
+    if (!agentSessionViews[sid]) {
+        agentSessionViews[sid] = {
+            running: false, controller: null,
+            thinkingText: '', conclusionText: '',
+            lastPlan: null, loaded: false
+        };
     }
+    return agentSessionViews[sid];
+}
 
+function agentSessionTitle(sid) {
+    const s = agentSessions.find(x => x.id === sid);
+    return (s && s.title) || '会话';
+}
+
+// 打开会话页签（不存在则创建 pane + 加载历史），并激活
+async function openAgentTab(sid) {
+    const firstOpen = !agentSessionViews[sid] || !agentSessionViews[sid].loaded;
+    if (!agentSessionViews[sid]) {
+        createAgentPane(sid);
+    }
+    if (!agentOpenTabs.includes(sid)) {
+        agentOpenTabs.push(sid);
+    }
+    activateAgentTab(sid);
+    renderAgentTabs();
+    if (firstOpen) {
+        await loadAgentSessionHistory(sid);
+        agentSessionViews[sid].loaded = true;
+    }
+}
+
+function createAgentPane(sid) {
+    const panes = document.getElementById('agent-tab-panes');
+    if (!panes || document.querySelector(`.agent-tab-pane[data-session-id="${sid}"]`)) return;
+    const pane = document.createElement('div');
+    pane.className = 'agent-tab-pane';
+    pane.dataset.sessionId = sid;
+    pane.innerHTML = `
+        <div class="agent-chat" id="agent-chat-${sid}"></div>
+        <div class="agent-approval-slot" id="agent-approval-slot-${sid}"></div>
+        <div class="agent-input-area" id="agent-input-area-${sid}">
+            <div class="input-wrapper">
+                <input type="text" id="agent-input-${sid}" placeholder="输入指令，如：检查Oracle集群状态"
+                       onkeypress="if(event.key==='Enter')sendAgentQuestion('${escapeJsAttr(sid)}')">
+                <button class="btn btn-primary" onclick="sendAgentQuestion('${escapeJsAttr(sid)}')">发送</button>
+            </div>
+            <div class="input-hints">
+                <span>💡 试试：查看慢查询 | 检查集群状态 | 分析AWR报告</span>
+            </div>
+        </div>
+    `;
+    panes.appendChild(pane);
+    clearAgentChat(sid);
+}
+
+async function loadAgentSessionHistory(sid) {
     try {
-        const response = await fetch('/api/agent/sessions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                title: '新会话',
-                ssh_connection_id: agentCurrentSSHConn,
-                db_connection_id: agentCurrentDBConn
-            })
-        });
-
+        const response = await fetch(`/api/agent/sessions/${sid}`);
         const data = await response.json();
-        if (data.session) {
-            agentCurrentSession = data.session.id;
-            loadAgentSessions();
-            clearAgentChat();
-            return agentCurrentSession;
+        clearAgentChat(sid);
+        if (data.steps && data.steps.length > 0) {
+            data.steps.forEach(step => renderAgentStep(sid, step));
+            const welcome = document.querySelector(`#agent-chat-${sid} .agent-welcome`);
+            if (welcome) welcome.remove();
         }
     } catch (error) {
-        console.error('创建会话失败:', error);
+        console.error('加载会话失败:', error);
     }
-    return null;
+}
+
+function activateAgentTab(sid) {
+    agentCurrentSession = sid;
+    document.querySelectorAll('#agent-tab-panes .agent-tab-pane').forEach(p => {
+        p.style.display = p.dataset.sessionId === sid ? 'flex' : 'none';
+    });
+    renderAgentTabs();
+    renderAgentSessions();
+    updateAgentStopButton();
+    const input = document.getElementById(`agent-input-${sid}`);
+    if (input) input.focus();
+}
+
+async function closeAgentTab(sid) {
+    const view = agentSessionViews[sid];
+    if (view && view.running) {
+        await stopAgent(sid);  // 运行中先停止
+    }
+    const pane = document.querySelector(`.agent-tab-pane[data-session-id="${sid}"]`);
+    if (pane) pane.remove();
+    agentOpenTabs = agentOpenTabs.filter(x => x !== sid);
+    delete agentSessionViews[sid];
+    if (agentCurrentSession === sid) {
+        const next = agentOpenTabs[agentOpenTabs.length - 1] || null;
+        if (next) {
+            activateAgentTab(next);
+        } else {
+            agentCurrentSession = null;
+            renderAgentTabs();
+            renderAgentSessions();
+            updateAgentStopButton();
+        }
+    }
+    renderAgentTabs();
+}
+
+function renderAgentTabs() {
+    const bar = document.getElementById('agent-tabs');
+    if (!bar) return;
+    bar.innerHTML = agentOpenTabs.map(sid => {
+        const active = sid === agentCurrentSession ? ' active' : '';
+        return `
+            <div class="agent-tab${active}" title="${escapeHtml(agentSessionTitle(sid))}"
+                 onclick="activateAgentTab('${escapeJsAttr(sid)}')">
+                <span class="agent-tab-title">${escapeHtml(agentSessionTitle(sid))}</span>
+                <span class="agent-tab-close" title="关闭页签"
+                      onclick="event.stopPropagation(); closeAgentTab('${escapeJsAttr(sid)}')">&times;</span>
+            </div>`;
+    }).join('');
+}
+
+function updateAgentStopButton() {
+    const stopBtn = document.getElementById('agent-stop-btn');
+    if (!stopBtn) return;
+    const view = agentSessionViews[agentCurrentSession];
+    stopBtn.style.display = (view && view.running) ? 'inline-block' : 'none';
 }
 
 async function newAgentSession() {
-    // 强制新建会话：不复用当前会话，清空对话区回到欢迎页。
-    // 注意与 ensureAgentSession 的区别——后者是"首次发消息自动建会话"的兜底。
-    if (agentIsRunning) {
-        showToast('Agent正在执行中，请等待', 'warning');
-        return;
-    }
     try {
         const response = await fetch('/api/agent/sessions', {
             method: 'POST',
@@ -263,10 +355,7 @@ async function newAgentSession() {
         });
         const data = await response.json();
         if (data.session) {
-            agentCurrentSession = data.session.id;
-            agentThinkingText = '';
-            agentConclusionText = '';
-            clearAgentChat();
+            await openAgentTab(data.session.id);
             loadAgentSessions();
             showToast('会话创建成功', 'success');
         } else {
@@ -278,70 +367,35 @@ async function newAgentSession() {
     }
 }
 
-async function loadAgentSession(sessionId) {
-    agentCurrentSession = sessionId;
-    renderAgentSessions();
-
-    try {
-        const response = await fetch(`/api/agent/sessions/${sessionId}`);
-        const data = await response.json();
-
-        // 渲染历史消息
-        clearAgentChat();
-        if (data.steps && data.steps.length > 0) {
-            data.steps.forEach(step => {
-                renderAgentStep(step);
-            });
-            // 有历史消息则不展示欢迎语（与知识问答模块一致）
-            const welcome = document.querySelector('#agent-chat .agent-welcome');
-            if (welcome) welcome.remove();
-        }
-    } catch (error) {
-        console.error('加载会话失败:', error);
-    }
-}
-
-// ==================== 对话功能 ====================
-async function sendAgentQuestion() {
-    const input = document.getElementById('agent-input');
+// ==================== 对话功能（按会话路由） ====================
+async function sendAgentQuestion(sid) {
+    const input = document.getElementById(`agent-input-${sid}`);
+    if (!input) return;
     const question = input.value.trim();
-
     if (!question) return;
-    // 无会话时自动创建，避免必须先点"新会话"才能对话
-    if (!agentCurrentSession) {
-        const sessionId = await ensureAgentSession();
-        if (!sessionId) {
-            showToast('创建会话失败，请重试', 'error');
-            return;
-        }
-    }
-    if (agentIsRunning) {
-        showToast('Agent正在执行中，请等待', 'warning');
+    const view = agentView(sid);
+    if (view.running) {
+        showToast('该会话正在执行中，请等待', 'warning');
         return;
     }
 
-    // 开始对话后移除欢迎语（参考知识问答模块：有消息即不再展示欢迎页）
-    const agentWelcome = document.querySelector('#agent-chat .agent-welcome');
-    if (agentWelcome) agentWelcome.remove();
+    // 开始对话后移除欢迎语
+    const welcome = document.querySelector(`#agent-chat-${sid} .agent-welcome`);
+    if (welcome) welcome.remove();
 
-    // 添加用户消息
-    addAgentMessage('user', question);
+    addAgentMessage(sid, 'user', question);
     input.value = '';
 
-    agentIsRunning = true;
-    agentAbortController = new AbortController();
-    const stopBtn = document.getElementById('agent-stop-btn');
-    if (stopBtn) stopBtn.style.display = 'inline-block';
+    view.running = true;
+    view.controller = new AbortController();
+    updateAgentStopButton();
 
     try {
         const response = await fetch('/api/agent/run', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                session_id: agentCurrentSession,
-                question: question
-            }),
-            signal: agentAbortController.signal
+            body: JSON.stringify({ session_id: sid, question }),
+            signal: view.controller.signal
         });
 
         const reader = response.body.getReader();
@@ -360,10 +414,8 @@ async function sendAgentQuestion() {
                 if (line.startsWith('data: ')) {
                     const data = line.slice(6);
                     if (data === '[DONE]') continue;
-
                     try {
-                        const event = JSON.parse(data);
-                        handleAgentEvent(event);
+                        handleAgentEvent(JSON.parse(data), sid);
                     } catch (e) {
                         console.error('解析SSE事件失败:', e);
                     }
@@ -372,116 +424,113 @@ async function sendAgentQuestion() {
         }
     } catch (error) {
         if (error.name === 'AbortError') {
-            addAgentMessage('error', '⏹ 已手动停止');
+            addAgentMessage(sid, 'error', '⏹ 已手动停止');
         } else {
             console.error('Agent执行失败:', error);
-            addAgentMessage('error', `执行失败: ${error.message}`);
+            addAgentMessage(sid, 'error', `执行失败: ${error.message}`);
         }
     } finally {
-        agentIsRunning = false;
-        agentAbortController = null;
-        if (stopBtn) stopBtn.style.display = 'none';
-        clearApprovalSlot();  // 任何结束（done/取消/断开）都恢复输入框、清空审批槽
-        loadAgentSessions();  // 刷新会话状态
+        const v = agentSessionViews[sid];
+        if (v) { v.running = false; v.controller = null; }
+        updateAgentStopButton();
+        clearApprovalSlot(sid);  // 任何结束（done/取消/断开）都恢复输入框、清空审批槽
+        loadAgentSessions();     // 刷新会话状态
     }
 }
 
-// 停止Agent执行：先通知后端取消（服务端生成器在下一轮循环收敛、会话置 cancelled），再断开流
-async function stopAgent() {
-    if (!agentAbortController) return;
-    if (agentCurrentSession) {
-        try {
-            await fetch(`/api/agent/sessions/${agentCurrentSession}/stop`, { method: 'POST' });
-        } catch (e) {
-            // 后端通知失败不阻断前端断开
-        }
+// 停止指定会话的执行：先通知后端取消（生成器下一轮收敛、会话置 cancelled），再断开流
+async function stopAgent(sid) {
+    const view = agentSessionViews[sid];
+    if (!view || !view.controller) return;
+    try {
+        await fetch(`/api/agent/sessions/${sid}/stop`, { method: 'POST' });
+    } catch (e) {
+        // 后端通知失败不阻断前端断开
     }
-    agentAbortController.abort();
+    view.controller.abort();
 }
 
-function handleAgentEvent(event) {
+function handleAgentEvent(event, sid) {
     switch (event.type) {
         case 'retrieving_start':
-            showAgentLoading('正在检索知识库...');
+            showAgentLoading(sid, '正在检索知识库...');
             break;
         case 'knowledge_refs':
-            renderKnowledgeRefs(event.refs);
+            renderKnowledgeRefs(sid, event.refs);
             break;
         case 'knowledge_warning':
-            renderKnowledgeWarning(event.message);
+            renderKnowledgeWarning(sid, event.message);
             break;
         case 'thinking_start':
-            showAgentThinking(event.step);
+            showAgentThinking(sid, event.step);
             break;
         case 'thinking_chunk':
-            appendAgentThinking(event.content);
+            appendAgentThinking(sid, event.content);
             break;
         case 'thinking_end':
-            finalizeAgentThinking();
-            break;
-        case 'planning':
-            renderAgentPlan(event.action);
+            finalizeAgentThinking(sid);
             break;
         case 'executing_start':
-            renderAgentToolCall(event.tool, event.parameters);
+            renderAgentToolCall(sid, event.tool, event.parameters);
             break;
         case 'executing_end':
-            renderAgentResult(event.result);
+            renderAgentResult(sid, event.result);
             break;
         case 'executing_error':
-            renderAgentError(event.error);
+            renderAgentError(sid, event.error);
             break;
         case 'executing_warning':
-            renderAgentWarning(event.warning);
+            renderAgentWarning(sid, event.warning);
             break;
         case 'observing':
-            renderAgentObservation(event.observation);
+            renderAgentObservation(sid, event.observation);
             break;
         case 'approval_required':
-            renderAgentApproval(event);
+            renderAgentApproval(event, sid);
             break;
         case 'approval_granted':
-            renderAgentApprovalGranted(event);
+            renderAgentApprovalGranted(event, sid);
             break;
         case 'approval_rejected':
-            renderAgentApprovalRejected(event);
+            renderAgentApprovalRejected(event, sid);
             break;
         case 'approval_revised':
-            renderAgentApprovalRevised(event);
+            renderAgentApprovalRevised(event, sid);
             break;
         case 'approval_expired':
-            renderAgentApprovalExpired(event);
+            renderAgentApprovalExpired(event, sid);
             break;
         case 'plan_operation_result':
-            renderPlanOperationResult(event);
+            renderPlanOperationResult(event, sid);
             break;
         case 'cancelled':
-            removeAgentLoading();
-            clearApprovalSlot();
-            addAgentMessage('error', '⏹ 已取消');
+            removeAgentLoading(sid);
+            clearApprovalSlot(sid);
+            addAgentMessage(sid, 'error', '⏹ 已取消');
             break;
         case 'concluding_start':
-            showAgentConclusion();
+            showAgentConclusion(sid);
             break;
         case 'concluding_chunk':
-            appendAgentConclusion(event.content);
+            appendAgentConclusion(sid, event.content);
             break;
         case 'concluding_end':
-            finalizeAgentConclusion();
+            finalizeAgentConclusion(sid);
             break;
         case 'error':
-            renderAgentError(event.message);
+            renderAgentError(sid, event.message);
             break;
         case 'done':
-            removeAgentLoading();
-            clearApprovalSlot();
+            removeAgentLoading(sid);
+            clearApprovalSlot(sid);
             break;
     }
 }
 
-// ==================== 消息渲染 ====================
-function addAgentMessage(role, content) {
-    const chat = document.getElementById('agent-chat');
+// ==================== 消息渲染（均按会话路由） ====================
+function addAgentMessage(sid, role, content) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    if (!chat) return;
     const messageDiv = document.createElement('div');
     messageDiv.className = `agent-message ${role}`;
 
@@ -500,11 +549,12 @@ function addAgentMessage(role, content) {
     `;
 
     chat.appendChild(messageDiv);
-    scrollAgentChatIfNearBottom();
+    scrollAgentChatIfNearBottom(sid);
 }
 
-function renderKnowledgeRefs(refs) {
-    const chat = document.getElementById('agent-chat');
+function renderKnowledgeRefs(sid, refs) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    if (!chat) return;
     const div = document.createElement('div');
     div.className = 'agent-message knowledge';
 
@@ -530,11 +580,12 @@ function renderKnowledgeRefs(refs) {
     `;
 
     chat.appendChild(div);
-    scrollAgentChatIfNearBottom();
+    scrollAgentChatIfNearBottom(sid);
 }
 
-function renderKnowledgeWarning(message) {
-    const chat = document.getElementById('agent-chat');
+function renderKnowledgeWarning(sid, message) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    if (!chat) return;
     const div = document.createElement('div');
     div.className = 'agent-message warning';
     div.innerHTML = `
@@ -550,15 +601,17 @@ function renderKnowledgeWarning(message) {
         </div>
     `;
     chat.appendChild(div);
-    scrollAgentChatIfNearBottom();
+    scrollAgentChatIfNearBottom(sid);
 }
 
-function showAgentThinking(step) {
-    const chat = document.getElementById('agent-chat');
-    agentThinkingText = '';
+function showAgentThinking(sid, step) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    if (!chat) return;
+    const view = agentView(sid);
+    view.thinkingText = '';
     const div = document.createElement('div');
     div.className = 'agent-message thinking';
-    div.id = `agent-thinking-${step}`;
+    div.id = `agent-thinking-${sid}-${step}`;
     div.innerHTML = `
         <details class="agent-collapse">
             <summary class="message-header">
@@ -572,29 +625,36 @@ function showAgentThinking(step) {
         </details>
     `;
     chat.appendChild(div);
-    scrollAgentChatIfNearBottom();
+    scrollAgentChatIfNearBottom(sid);
 }
 
-function appendAgentThinking(content) {
-    const thinkingDiv = document.querySelector('.agent-message.thinking:last-child .thinking-content');
+function appendAgentThinking(sid, content) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    const view = agentSessionViews[sid];
+    if (!chat || !view) return;
+    const thinkingDiv = chat.querySelector('.agent-message.thinking:last-child .thinking-content');
     if (thinkingDiv) {
-        agentThinkingText += content;
+        view.thinkingText += content;
         // 逐 token 重渲染 markdown（流式输出，表格/代码可渐进渲染）
-        thinkingDiv.innerHTML = formatMarkdown(agentThinkingText) + '<span class="typing-cursor">▊</span>';
+        thinkingDiv.innerHTML = formatMarkdown(view.thinkingText) + '<span class="typing-cursor">▊</span>';
     }
 }
 
-function finalizeAgentThinking() {
-    const thinkingDiv = document.querySelector('.agent-message.thinking:last-child');
+function finalizeAgentThinking(sid) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    const view = agentSessionViews[sid];
+    if (!chat || !view) return;
+    const thinkingDiv = chat.querySelector('.agent-message.thinking:last-child');
     if (thinkingDiv) {
         thinkingDiv.querySelector('.thinking-indicator').style.display = 'none';
         const content = thinkingDiv.querySelector('.thinking-content');
-        if (content) content.innerHTML = formatMarkdown(agentThinkingText);  // 移除光标
+        if (content) content.innerHTML = formatMarkdown(view.thinkingText);  // 移除光标
     }
 }
 
-function renderAgentToolCall(tool, params) {
-    const chat = document.getElementById('agent-chat');
+function renderAgentToolCall(sid, tool, params) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    if (!chat) return;
     const div = document.createElement('div');
     div.className = 'agent-message tool';
     div.innerHTML = `
@@ -612,11 +672,13 @@ function renderAgentToolCall(tool, params) {
         </details>
     `;
     chat.appendChild(div);
-    scrollAgentChatIfNearBottom();
+    scrollAgentChatIfNearBottom(sid);
 }
 
-function renderAgentResult(result) {
-    const toolDiv = document.querySelector('.agent-message.tool:last-child');
+function renderAgentResult(sid, result) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    if (!chat) return;
+    const toolDiv = chat.querySelector('.agent-message.tool:last-child');
     if (!toolDiv) return;
 
     const statusDiv = toolDiv.querySelector('.tool-status');
@@ -679,8 +741,9 @@ function buildResultTable(columns, rows) {
     return div;
 }
 
-function renderAgentObservation(observation) {
-    const chat = document.getElementById('agent-chat');
+function renderAgentObservation(sid, observation) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    if (!chat) return;
     const div = document.createElement('div');
     div.className = 'agent-message observation';
     div.innerHTML = `
@@ -693,15 +756,17 @@ function renderAgentObservation(observation) {
         </div>
     `;
     chat.appendChild(div);
-    scrollAgentChatIfNearBottom();
+    scrollAgentChatIfNearBottom(sid);
 }
 
-function showAgentConclusion() {
-    const chat = document.getElementById('agent-chat');
-    agentConclusionText = '';
+function showAgentConclusion(sid) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    if (!chat) return;
+    const view = agentView(sid);
+    view.conclusionText = '';
     const div = document.createElement('div');
     div.className = 'agent-message conclusion';
-    div.id = 'agent-conclusion';
+    div.id = `agent-conclusion-${sid}`;
     div.innerHTML = `
         <div class="message-header">
             <span class="icon">📝</span>
@@ -710,38 +775,44 @@ function showAgentConclusion() {
         <div class="message-content markdown-content"></div>
     `;
     chat.appendChild(div);
-    scrollAgentChatIfNearBottom();
+    scrollAgentChatIfNearBottom(sid);
 }
 
-function appendAgentConclusion(content) {
-    const conclusionDiv = document.getElementById('agent-conclusion');
+function appendAgentConclusion(sid, content) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    const view = agentSessionViews[sid];
+    if (!chat || !view) return;
+    const conclusionDiv = chat.querySelector(`#agent-conclusion-${sid}`);
     if (conclusionDiv) {
-        agentConclusionText += content;
-        // 逐 token 重渲染 markdown（流式输出，表格/代码可渐进渲染）
+        view.conclusionText += content;
         conclusionDiv.querySelector('.markdown-content').innerHTML =
-            formatMarkdown(agentConclusionText) + '<span class="typing-cursor">▊</span>';
+            formatMarkdown(view.conclusionText) + '<span class="typing-cursor">▊</span>';
     }
 }
 
-function finalizeAgentConclusion() {
-    const conclusionDiv = document.getElementById('agent-conclusion');
+function finalizeAgentConclusion(sid) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    const view = agentSessionViews[sid];
+    if (!chat || !view) return;
+    const conclusionDiv = chat.querySelector(`#agent-conclusion-${sid}`);
     if (conclusionDiv) {
-        conclusionDiv.id = '';
+        // 保留 sid 作用域的 id（供 showAgentFeedback 查询；sid 唯一，无冲突）
         const content = conclusionDiv.querySelector('.markdown-content');
-        if (content) content.innerHTML = formatMarkdown(agentConclusionText);  // 移除光标
-        showAgentFeedback();
+        if (content) content.innerHTML = formatMarkdown(view.conclusionText);  // 移除光标
+        showAgentFeedback(sid);
     }
 }
 
-// ==================== 变更类操作审批（Claude Code 形态：审批槽 + 竖向选项） ====================
+// ==================== 变更类操作审批（Claude Code 形态：审批槽 + 竖向选项 + 批准即收起） ====================
 
-function renderAgentApproval(event) {
-    // 渲染进贴近输入框的固定审批槽（#agent-approval-slot），审批期间隐藏主输入框——
-    // 审批框与输入框互斥，同一时刻只存在其一（参照 Claude Code 权限决策形态）。
-    // 待批命令全量展开、不可折叠；每条命令旁标注真实危险级别（后端 estimate_command_risk 重算）。
-    const slot = document.getElementById('agent-approval-slot');
+function renderAgentApproval(event, sid) {
+    // 渲染进该会话贴近输入框的固定审批槽，审批期间隐藏该会话输入框——
+    // 审批框与输入框互斥；批准后审批槽即刻收起、输入框恢复，执行结果以 chat 记录呈现。
+    const slot = document.getElementById(`agent-approval-slot-${sid}`);
     if (!slot) return;
+    const view = agentView(sid);
     const plan = event.plan || {};
+    view.lastPlan = plan;
     const ops = plan.operations || [];
 
     const riskOrder = { 'high': 3, 'medium': 2, 'low': 1 };
@@ -785,13 +856,13 @@ function renderAgentApproval(event) {
             <div class="plan-ops">${opsHtml || '<div class="empty-message">计划无操作项</div>'}</div>
             ${plan.rollback ? `<div class="plan-rollback">↩️ 回滚：${escapeHtml(plan.rollback)}</div>` : ''}
             <div class="approval-actions">
-                <button class="btn btn-primary approval-btn" onclick="approvePlan(${event.plan_id})">✅ 批准</button>
-                <button class="btn btn-danger approval-btn" onclick="rejectPlan(${event.plan_id})">❌ 拒绝</button>
+                <button class="btn btn-primary approval-btn" onclick="approvePlan('${escapeJsAttr(sid)}', ${event.plan_id})">✅ 批准</button>
+                <button class="btn btn-danger approval-btn" onclick="rejectPlan('${escapeJsAttr(sid)}', ${event.plan_id})">❌ 拒绝</button>
                 <button class="btn btn-secondary approval-btn" onclick="toggleRevisePanel(${event.plan_id})">✏️ 修改并重新提供方案</button>
                 <div class="approval-revise-panel" id="revise-panel-${event.plan_id}" style="display:none;">
                     <textarea id="revise-comment-${event.plan_id}" rows="2"
                               placeholder="描述希望修改的地方，Agent 将据此重新提供方案..."></textarea>
-                    <button class="btn btn-primary" onclick="revisePlan(${event.plan_id})">提交修改</button>
+                    <button class="btn btn-primary" onclick="revisePlan('${escapeJsAttr(sid)}', ${event.plan_id})">提交修改</button>
                     <button class="btn btn-secondary" onclick="toggleRevisePanel(${event.plan_id})">取消</button>
                 </div>
             </div>
@@ -799,8 +870,8 @@ function renderAgentApproval(event) {
         </div>
     `;
 
-    // 审批进行中：隐藏主输入框（审批框与输入框互斥）
-    const inputArea = document.querySelector('.agent-input-area');
+    // 审批进行中：隐藏该会话输入框（审批框与输入框互斥）
+    const inputArea = document.getElementById(`agent-input-area-${sid}`);
     if (inputArea) inputArea.style.display = 'none';
 }
 
@@ -839,26 +910,26 @@ function toggleRevisePanel(planId) {
     }
 }
 
-async function approvePlan(planId) {
-    await submitPlanDecision(planId, 'approve', '');
+async function approvePlan(sid, planId) {
+    await submitPlanDecision(sid, planId, 'approve', '');
 }
 
-async function rejectPlan(planId) {
-    await submitPlanDecision(planId, 'reject', '');
+async function rejectPlan(sid, planId) {
+    await submitPlanDecision(sid, planId, 'reject', '');
 }
 
-async function revisePlan(planId) {
+async function revisePlan(sid, planId) {
     const input = document.getElementById(`revise-comment-${planId}`);
     const comment = input ? input.value.trim() : '';
     if (!comment) {
         showToast('请先描述希望修改的地方', 'warning');
         return;
     }
-    await submitPlanDecision(planId, 'revise', comment);
+    await submitPlanDecision(sid, planId, 'revise', comment);
 }
 
-async function submitPlanDecision(planId, action, comment) {
-    const bar = document.getElementById(`agent-approval-${planId}`);
+async function submitPlanDecision(sid, planId, action, comment) {
+    const view = agentSessionViews[sid];
     try {
         const response = await fetch('/api/agent/approve', {
             method: 'POST',
@@ -871,17 +942,23 @@ async function submitPlanDecision(planId, action, comment) {
             return;
         }
         showToast(data.message || '审批已提交', 'success');
-        if (bar) {
-            const status = bar.querySelector('.approval-status');
-            const actions = bar.querySelector('.approval-actions');
-            if (actions) actions.remove();
-            if (status) {
-                const map = {
-                    'approve': '⏳ 已批准，等待执行...',
-                    'reject': '❌ 已拒绝',
-                    'revise': '✏️ 已要求修改，等待重新提供方案...'
-                };
-                status.textContent = map[action] || '';
+        if (action === 'approve') {
+            // 批准：审批框即刻消失、返回输入框；执行结果以 chat 记录呈现
+            clearApprovalSlot(sid);
+            if (view && view.lastPlan) {
+                renderPlanExecRecord(sid, planId, view.lastPlan);
+            }
+        } else {
+            const bar = document.getElementById(`agent-approval-${planId}`);
+            if (bar) {
+                const status = bar.querySelector('.approval-status');
+                const actions = bar.querySelector('.approval-actions');
+                if (actions) actions.remove();
+                if (status) {
+                    status.textContent = action === 'reject'
+                        ? '❌ 已拒绝'
+                        : '✏️ 已要求修改，等待重新提供方案...';
+                }
             }
         }
     } catch (error) {
@@ -889,7 +966,60 @@ async function submitPlanDecision(planId, action, comment) {
     }
 }
 
-function renderAgentApprovalGranted(event) {
+// 批准后：在会话 chat 渲染「已批准，开始执行」记录（全量命令 + risk），plan_operation_result 逐项更新
+function renderPlanExecRecord(sid, planId, plan) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    if (!chat) return;
+    const ops = plan.operations || [];
+    const riskOrder = { 'high': 3, 'medium': 2, 'low': 1 };
+    let maxRisk = 'low';
+    ops.forEach(op => {
+        const r = (op.risk || 'medium').toLowerCase();
+        if ((riskOrder[r] || 2) > (riskOrder[maxRisk] || 1)) maxRisk = r;
+    });
+    const riskBadge = ops.length
+        ? `<span class="risk-badge risk-${maxRisk}">${riskLabel(maxRisk)}</span>`
+        : '';
+    const opsHtml = ops.map((op, i) => {
+        const params = op.parameters || {};
+        const paramText = op.tool === 'execute_command'
+            ? (params.command || '')
+            : (params.sql || '');
+        const riskClass = `risk-${(op.risk || 'medium').toLowerCase()}`;
+        return `
+            <div class="plan-op" data-op="${i + 1}">
+                <span class="op-index">${i + 1}</span>
+                <span class="op-tool">${escapeHtml(op.tool || '')}</span>
+                <code class="op-params">${escapeHtml(paramText)}</code>
+                <div class="op-meta">
+                    <span class="op-impact">${escapeHtml(op.impact || '')}</span>
+                    <span class="op-risk ${riskClass}">${riskText(op.risk)}</span>
+                </div>
+                <span class="op-status"></span>
+            </div>`;
+    }).join('');
+
+    const div = document.createElement('div');
+    div.className = 'agent-message plan-exec';
+    div.id = `plan-exec-${planId}`;
+    div.innerHTML = `
+        <div class="message-header">
+            <span class="icon">🧾</span>
+            <span class="label">✅ 已批准，开始执行</span>
+        </div>
+        <div class="message-content">
+            <div class="plan-title">${escapeHtml(plan.title || '操作计划')}</div>
+            ${ops.length ? `<div class="plan-op-count">📋 ${ops.length} 项操作${riskBadge}</div>` : ''}
+            <div class="plan-ops">${opsHtml || '<div class="empty-message">计划无操作项</div>'}</div>
+            ${plan.rollback ? `<div class="plan-rollback">↩️ 回滚：${escapeHtml(plan.rollback)}</div>` : ''}
+        </div>
+    `;
+    chat.appendChild(div);
+    scrollAgentChatIfNearBottom(sid);
+}
+
+function renderAgentApprovalGranted(event, sid) {
+    // 前端批准时已即时收起审批槽；此处兜底（如经 API 批准/其他端触发）
     const bar = document.getElementById(`agent-approval-${event.plan_id}`);
     if (!bar) return;
     const status = bar.querySelector('.approval-status');
@@ -898,7 +1028,7 @@ function renderAgentApprovalGranted(event) {
     if (actions) actions.remove();
 }
 
-function renderAgentApprovalRejected(event) {
+function renderAgentApprovalRejected(event, sid) {
     const bar = document.getElementById(`agent-approval-${event.plan_id}`);
     if (!bar) return;
     const status = bar.querySelector('.approval-status');
@@ -907,7 +1037,7 @@ function renderAgentApprovalRejected(event) {
     if (actions) actions.remove();
 }
 
-function renderAgentApprovalRevised(event) {
+function renderAgentApprovalRevised(event, sid) {
     const bar = document.getElementById(`agent-approval-${event.plan_id}`);
     if (!bar) return;
     const status = bar.querySelector('.approval-status');
@@ -916,7 +1046,7 @@ function renderAgentApprovalRevised(event) {
     if (actions) actions.remove();
 }
 
-function renderAgentApprovalExpired(event) {
+function renderAgentApprovalExpired(event, sid) {
     const bar = document.getElementById(`agent-approval-${event.plan_id}`);
     if (!bar) return;
     const status = bar.querySelector('.approval-status');
@@ -925,18 +1055,20 @@ function renderAgentApprovalExpired(event) {
     if (actions) actions.remove();
 }
 
-function clearApprovalSlot() {
-    // 审批结束/会话收尾：清空审批槽并恢复主输入框显示
-    const slot = document.getElementById('agent-approval-slot');
-    const inputArea = document.querySelector('.agent-input-area');
+function clearApprovalSlot(sid) {
+    // 审批结束/会话收尾：清空该会话审批槽并恢复输入框显示
+    const slot = document.getElementById(`agent-approval-slot-${sid}`);
+    const inputArea = document.getElementById(`agent-input-area-${sid}`);
     if (slot) slot.innerHTML = '';
     if (inputArea) inputArea.style.display = '';
 }
 
-function renderPlanOperationResult(event) {
-    const bar = document.getElementById(`agent-approval-${event.plan_id}`);
-    if (!bar) return;
-    const opRow = bar.querySelector(`.plan-op[data-op="${event.index}"]`);
+function renderPlanOperationResult(event, sid) {
+    // 批准后执行结果更新 chat 中的执行记录（审批槽已收起）
+    const record = document.getElementById(`plan-exec-${event.plan_id}`);
+    const host = record || document.getElementById(`agent-approval-${event.plan_id}`);
+    if (!host) return;
+    const opRow = host.querySelector(`.plan-op[data-op="${event.index}"]`);
     if (!opRow) return;
     const statusEl = opRow.querySelector('.op-status');
     const result = event.result || {};
@@ -966,9 +1098,9 @@ function renderPlanOperationResult(event) {
 
 // ==================== DBA 反馈闭环 ====================
 
-function showAgentFeedback() {
-    const conclusionDiv = document.getElementById('agent-conclusion');
-    if (!conclusionDiv || !agentCurrentSession) return;
+function showAgentFeedback(sid) {
+    const conclusionDiv = document.getElementById(`agent-conclusion-${sid}`);
+    if (!conclusionDiv) return;
     if (conclusionDiv.querySelector('.agent-feedback')) return;
 
     const row = document.createElement('div');
@@ -976,36 +1108,41 @@ function showAgentFeedback() {
     row.innerHTML = `
         <div class="feedback-actions">
             <span class="feedback-label">这个结论对你有帮助吗？</span>
-            <button class="feedback-btn" onclick="submitAgentFeedback('up')">👍 有帮助</button>
-            <button class="feedback-btn" onclick="showAgentFeedbackCorrection()">👎 有误/需纠正</button>
+            <button class="feedback-btn" onclick="submitAgentFeedback('${escapeJsAttr(sid)}', 'up')">👍 有帮助</button>
+            <button class="feedback-btn" onclick="showAgentFeedbackCorrection('${escapeJsAttr(sid)}')">👎 有误/需纠正</button>
         </div>
         <div class="feedback-correction" style="display:none;">
-            <input type="text" id="agent-feedback-correction-input" placeholder="补充或纠正（可选），写入长期记忆">
-            <button class="feedback-btn primary" onclick="submitAgentFeedback('down')">提交</button>
+            <input type="text" id="agent-feedback-correction-input-${sid}" placeholder="补充或纠正（可选），写入长期记忆">
+            <button class="feedback-btn primary" onclick="submitAgentFeedback('${escapeJsAttr(sid)}', 'down')">提交</button>
         </div>
     `;
     conclusionDiv.appendChild(row);
     conclusionDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-function showAgentFeedbackCorrection() {
-    const correction = document.querySelector('.agent-feedback .feedback-correction');
+function showAgentFeedbackCorrection(sid) {
+    const conclusionDiv = document.getElementById(`agent-conclusion-${sid}`);
+    if (!conclusionDiv) return;
+    const correction = conclusionDiv.querySelector('.agent-feedback .feedback-correction');
     if (correction) correction.style.display = 'flex';
 }
 
-async function submitAgentFeedback(feedback) {
-    const input = document.getElementById('agent-feedback-correction-input');
+async function submitAgentFeedback(sid, feedback) {
+    const input = document.getElementById(`agent-feedback-correction-input-${sid}`);
     const correction = input ? input.value.trim() : '';
     try {
         const response = await fetch('/api/agent/feedback', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: agentCurrentSession, feedback, correction })
+            body: JSON.stringify({ session_id: sid, feedback, correction })
         });
         const data = await response.json();
         if (response.ok) {
             showToast(data.message || '反馈已记录', 'success');
-            document.querySelectorAll('.agent-feedback .feedback-btn').forEach(b => b.disabled = true);
+            const conclusionDiv = document.getElementById(`agent-conclusion-${sid}`);
+            if (conclusionDiv) {
+                conclusionDiv.querySelectorAll('.agent-feedback .feedback-btn').forEach(b => b.disabled = true);
+            }
         } else {
             showToast(data.error || '反馈失败', 'error');
         }
@@ -1014,8 +1151,9 @@ async function submitAgentFeedback(feedback) {
     }
 }
 
-function renderAgentError(error) {
-    const chat = document.getElementById('agent-chat');
+function renderAgentError(sid, error) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    if (!chat) return;
     const div = document.createElement('div');
     div.className = 'agent-message error';
     div.innerHTML = `
@@ -1028,11 +1166,12 @@ function renderAgentError(error) {
         </div>
     `;
     chat.appendChild(div);
-    scrollAgentChatIfNearBottom();
+    scrollAgentChatIfNearBottom(sid);
 }
 
-function renderAgentWarning(warning) {
-    const chat = document.getElementById('agent-chat');
+function renderAgentWarning(sid, warning) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    if (!chat) return;
     const div = document.createElement('div');
     div.className = 'agent-message warning';
     div.innerHTML = `
@@ -1045,11 +1184,12 @@ function renderAgentWarning(warning) {
         </div>
     `;
     chat.appendChild(div);
-    scrollAgentChatIfNearBottom();
+    scrollAgentChatIfNearBottom(sid);
 }
 
-function showAgentLoading(message) {
-    const chat = document.getElementById('agent-chat');
+function showAgentLoading(sid, message) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    if (!chat) return;
     const div = document.createElement('div');
     div.className = 'agent-message loading';
     div.innerHTML = `
@@ -1059,19 +1199,20 @@ function showAgentLoading(message) {
         </div>
     `;
     chat.appendChild(div);
-    scrollAgentChatIfNearBottom();
+    scrollAgentChatIfNearBottom(sid);
 }
 
-function removeAgentLoading() {
-    const chat = document.getElementById('agent-chat');
+function removeAgentLoading(sid) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    if (!chat) return;
     chat.querySelectorAll('.agent-message.loading').forEach(el => el.remove());
 }
 
 // ==================== 工具函数 ====================
 
 // 仅当用户接近底部时才自动滚动到底（用户上翻看历史时不被拉回）
-function scrollAgentChatIfNearBottom() {
-    const chat = document.getElementById('agent-chat');
+function scrollAgentChatIfNearBottom(sid) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
     if (!chat) return;
     const threshold = 60;
     if (chat.scrollHeight - chat.scrollTop - chat.clientHeight < threshold) {
@@ -1079,9 +1220,10 @@ function scrollAgentChatIfNearBottom() {
     }
 }
 
-function clearAgentChat() {
-    clearApprovalSlot();  // 切换/新建会话时清掉残留审批槽，恢复输入框
-    const chat = document.getElementById('agent-chat');
+function clearAgentChat(sid) {
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    if (!chat) return;
+    clearApprovalSlot(sid);  // 清掉该会话残留审批槽，恢复输入框
     chat.innerHTML = `
         <div class="agent-welcome">
             <div class="welcome-icon">🤖</div>
@@ -1098,7 +1240,7 @@ function clearAgentChat() {
     `;
 }
 
-function renderAgentStep(step) {
+function renderAgentStep(sid, step) {
     // 持久化的 action 是 JSON 字符串，先解析
     if (typeof step.action === 'string' && step.action) {
         try {
@@ -1108,25 +1250,25 @@ function renderAgentStep(step) {
         }
     }
 
-    // 渲染历史步骤
+    // 渲染历史步骤（按会话路由）
     switch (step.phase) {
         case 'thinking':
-            showAgentThinking(step.step_number);
-            appendAgentThinking(step.thought || '');
-            finalizeAgentThinking();
+            showAgentThinking(sid, step.step_number);
+            appendAgentThinking(sid, step.thought || '');
+            finalizeAgentThinking(sid);
             break;
         case 'executing':
             if (step.action) {
-                renderAgentToolCall(step.action.tool, step.action.parameters || {});
+                renderAgentToolCall(sid, step.action.tool, step.action.parameters || {});
             }
             if (step.observation) {
-                renderAgentObservation(step.observation);
+                renderAgentObservation(sid, step.observation);
             }
             break;
         case 'concluding':
-            showAgentConclusion();
-            appendAgentConclusion(step.thought || '');
-            finalizeAgentConclusion();
+            showAgentConclusion(sid);
+            appendAgentConclusion(sid, step.thought || '');
+            finalizeAgentConclusion(sid);
             break;
     }
 }

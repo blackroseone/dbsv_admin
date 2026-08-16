@@ -5375,6 +5375,75 @@ body {
     gap: 8px;
 }
 
+/* 会话页签栏（内嵌于标题栏那一行，复用顶部空间） */
+.agent-tabs {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    padding: 0 10px;
+    scrollbar-width: thin;
+}
+
+.agent-tab {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-module);
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    cursor: pointer;
+    white-space: nowrap;
+    max-width: 180px;
+}
+
+.agent-tab:hover {
+    color: var(--text-primary);
+    border-color: var(--primary-color);
+}
+
+.agent-tab.active {
+    background: var(--bg-card);
+    border-color: var(--primary-color);
+    color: var(--text-primary);
+}
+
+.agent-tab-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.agent-tab-close {
+    color: var(--text-muted);
+    padding: 0 2px;
+    line-height: 1;
+    font-size: 0.9rem;
+}
+
+.agent-tab-close:hover {
+    color: #e74c3c;
+}
+
+/* 会话页签内容容器：每会话一个 pane，视图完全隔离 */
+.agent-tab-panes {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.agent-tab-pane {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
 .agent-chat {
     flex: 1;
     overflow-y: auto;
