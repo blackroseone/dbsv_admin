@@ -428,11 +428,62 @@
             <div class="module" id="module-agent" style="display: none;">
                 <h2>🤖 智能运维</h2>
                 <div class="agent-layout">
-                    <!-- 左侧边栏 -->
+                    <!-- 左侧边栏：操作范围（主入口）；连接/历史/知识收纳进右上角抽屉 -->
                     <div class="agent-sidebar">
-                        <!-- 连接管理 -->
                         <div class="agent-section">
-                            <h3>🔌 连接管理</h3>
+                            <h3>🎯 操作范围 <span id="agent-scope-count" class="scope-count"></span></h3>
+                            <div id="agent-scope-panel" class="scope-panel"></div>
+                        </div>
+                        <div class="agent-sidebar-hint">
+                            💡 批量操作先在范围面板勾选节点，再开新会话。
+                            连接配置 / 会话历史 / 知识沉淀在右上角「🗂 历史」「⚙️ 管理」。
+                        </div>
+                    </div>
+
+                    <!-- 右侧主区域 -->
+                    <div class="agent-main">
+                        <!-- 顶部工具栏：范围状态 | 会话页签 | 操作按钮 -->
+                        <div class="agent-toolbar">
+                            <div class="connection-status">
+                                <span id="agent-scope-badge" style="display:none;"></span>
+                                <span id="agent-ssh-status">🔴 SSH未连接</span>
+                                <span id="agent-db-status">🔴 DB未连接</span>
+                            </div>
+                            <div class="agent-tabs" id="agent-tabs"></div>
+                            <div class="agent-actions">
+                                <button class="btn btn-secondary" title="会话历史" onclick="toggleAgentHistoryDrawer()">🗂 历史</button>
+                                <button class="btn btn-secondary" title="连接/技能/记忆管理" onclick="toggleAgentManageDrawer()">⚙️ 管理</button>
+                                <button class="btn btn-primary" onclick="newAgentSession()">📝 新会话</button>
+                                <button class="btn btn-secondary" onclick="clearAgentChat(agentCurrentSession)">🗑️ 清空</button>
+                                <button class="btn btn-danger" id="agent-stop-btn" onclick="stopAgent(agentCurrentSession)" style="display:none;">⏹ 停止</button>
+                            </div>
+                        </div>
+
+                        <!-- 会话页签内容（每会话一个 pane，JS 创建；各视图完全隔离） -->
+                        <div class="agent-tab-panes" id="agent-tab-panes"></div>
+                    </div>
+
+                    <!-- 会话历史抽屉 -->
+                    <div class="agent-drawer drawer-left" id="agent-history-drawer">
+                        <div class="drawer-header">
+                            <h3>📋 会话历史</h3>
+                            <button class="btn btn-secondary" onclick="toggleAgentHistoryDrawer()">×</button>
+                        </div>
+                        <div id="agent-session-list" class="session-list"></div>
+                    </div>
+
+                    <!-- 管理抽屉：连接 / 技能 / 记忆 -->
+                    <div class="agent-drawer drawer-right" id="agent-manage-drawer">
+                        <div class="drawer-header">
+                            <h3>⚙️ 管理</h3>
+                            <button class="btn btn-secondary" onclick="toggleAgentManageDrawer()">×</button>
+                        </div>
+                        <div class="manage-tabs">
+                            <button class="tab-btn active" data-tab="conn" onclick="switchManageTab('conn')">连接</button>
+                            <button class="tab-btn" data-tab="skill" onclick="switchManageTab('skill')">技能</button>
+                            <button class="tab-btn" data-tab="memory" onclick="switchManageTab('memory')">记忆</button>
+                        </div>
+                        <div id="agent-manage-conn" style="display: block;">
                             <div class="connection-tabs">
                                 <button class="tab-btn active" data-tab="ssh" onclick="switchAgentTab('ssh')">SSH</button>
                                 <button class="tab-btn" data-tab="db" onclick="switchAgentTab('db')">数据库</button>
@@ -446,53 +497,18 @@
                                 <div id="agent-db-conn-list" class="connection-list"></div>
                             </div>
                         </div>
-
-                        <!-- 会话列表 -->
-                        <div class="agent-section">
-                            <h3>📋 会话历史</h3>
-                            <div id="agent-session-list" class="session-list"></div>
+                        <div id="agent-manage-skill" style="display: none;">
+                            <button class="btn-add" onclick="showAddSkillDialog()">+ 手动技能</button>
+                            <button class="btn-add" onclick="document.getElementById('agent-skill-doc-input').click()">📄 从手册生成</button>
+                            <input type="file" id="agent-skill-doc-input" style="display:none"
+                                   accept=".txt,.md,.pdf,.docx,.html,.doc"
+                                   onchange="uploadDocSkill(this)">
+                            <div id="agent-skill-list" class="connection-list"></div>
                         </div>
-
-                        <!-- 知识沉淀（技能库 + 长期记忆） -->
-                        <div class="agent-section">
-                            <h3>🧠 知识沉淀</h3>
-                            <div class="knowledge-tabs">
-                                <button class="tab-btn active" data-tab="skill" onclick="switchKnowledgeTab('skill')">技能库</button>
-                                <button class="tab-btn" data-tab="memory" onclick="switchKnowledgeTab('memory')">记忆</button>
-                            </div>
-                            <div id="agent-skill-panel" style="display: block;">
-                                <button class="btn-add" onclick="showAddSkillDialog()">+ 手动技能</button>
-                                <button class="btn-add" onclick="document.getElementById('agent-skill-doc-input').click()">📄 从手册生成</button>
-                                <input type="file" id="agent-skill-doc-input" style="display:none"
-                                       accept=".txt,.md,.pdf,.docx,.html,.doc"
-                                       onchange="uploadDocSkill(this)">
-                                <div id="agent-skill-list" class="connection-list"></div>
-                            </div>
-                            <div id="agent-memory-panel" style="display: none;">
-                                <button class="btn-add" onclick="showAddMemoryDialog()">+ 记录</button>
-                                <div id="agent-memory-list" class="connection-list"></div>
-                            </div>
+                        <div id="agent-manage-memory" style="display: none;">
+                            <button class="btn-add" onclick="showAddMemoryDialog()">+ 记录</button>
+                            <div id="agent-memory-list" class="connection-list"></div>
                         </div>
-                    </div>
-
-                    <!-- 右侧主区域 -->
-                    <div class="agent-main">
-                        <!-- 顶部工具栏：连接状态 | 会话页签 | 操作按钮 -->
-                        <div class="agent-toolbar">
-                            <div class="connection-status">
-                                <span id="agent-ssh-status">🔴 SSH未连接</span>
-                                <span id="agent-db-status">🔴 DB未连接</span>
-                            </div>
-                            <div class="agent-tabs" id="agent-tabs"></div>
-                            <div class="agent-actions">
-                                <button class="btn btn-primary" onclick="newAgentSession()">📝 新会话</button>
-                                <button class="btn btn-secondary" onclick="clearAgentChat(agentCurrentSession)">🗑️ 清空</button>
-                                <button class="btn btn-danger" id="agent-stop-btn" onclick="stopAgent(agentCurrentSession)" style="display:none;">⏹ 停止</button>
-                            </div>
-                        </div>
-
-                        <!-- 会话页签内容（每会话一个 pane，JS 创建；各视图完全隔离） -->
-                        <div class="agent-tab-panes" id="agent-tab-panes"></div>
                     </div>
                 </div>
             </div>

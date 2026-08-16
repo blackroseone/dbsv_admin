@@ -18,7 +18,7 @@
 | `topo_resource_pools` | 资源池信息 | id, name, db_type, environment, description |
 | `topo_clusters` | 集群信息（属于某个资源池） | id, resource_pool_id, name, description |
 | `topo_servers` | 物理机/节点 | id, resource_pool_id, cluster_id, name, sn, host, datacenter, node_role, hardware_type, cpu, memory, description |
-| `topo_instances` | 实例 | id, server_id, tenant_id, name, port, cpu, memory, role, tenant_role, description |
+| `topo_instances` | 实例 | id, server_id, tenant_id, name, port, cpu, memory, role, tenant_role, description, database, sid, service_name |
 | `topo_tenants` | 租户（实例集群） | id, resource_pool_id, name, topology_type, spec, description |
 | `topo_instance_relations` | 实例间关系 | from_instance_id, to_instance_id, relation_type |
 | `kb_embeddings` | 文本块向量嵌入（**RAG + 知识图谱关联**） | file_id, chunk_index, chunk_text, embedding |
@@ -29,9 +29,9 @@
 | `sys_feature_config` | 功能配置（模块开关） | module_id, module_name, module_icon, is_enabled, sort_order |
 | `log_analysis_tasks` | 日志分析任务 | id, name, question, db_type, status, current_stage, stages, report, created_at, completed_at |
 | `log_analysis_files` | 日志分析文件 | id, task_id, filename, file_path, file_size, content_text, is_key_log |
-| `agent_ssh_connections` | SSH连接配置 | id, name, host, port, username, auth_type, db_type, os_type, status |
-| `agent_db_connections` | 数据库连接配置 | id, name, ssh_connection_id, db_type, host, port, username, database, sid, service_name |
-| `agent_sessions` | Agent会话 | id, title, ssh_connection_id, db_connection_id, status, current_step, max_steps |
+| `agent_ssh_connections` | SSH连接配置 | id, name, host, port, username, auth_type, db_type, os_type, status, topo_server_id |
+| `agent_db_connections` | 数据库连接配置 | id, name, ssh_connection_id, db_type, host, port, username, database, sid, service_name, topo_instance_id |
+| `agent_sessions` | Agent会话 | id, title, ssh_connection_id, db_connection_id, scope_type, scope_json, status, current_step, max_steps |
 | `agent_steps` | Agent执行步骤 | id, session_id, step_number, phase, thought, action, observation, knowledge_refs |
 | `agent_skills` | Agent技能 | id, name, db_type, category, description, prompt_template, required_tools, knowledge_tags |
 
@@ -535,6 +535,10 @@ CREATE TABLE IF NOT EXISTS log_analysis_files (
 | agent_db_connections | 全部 | 2026-07-24 | 新增（Agent数据库连接配置） |
 | agent_sessions | 全部 | 2026-07-24 | 新增（Agent会话管理） |
 | agent_steps | 全部 | 2026-07-24 | 新增（Agent执行步骤记录） |
+| agent_sessions | scope_type, scope_json | 2026-08-16 | 新增（v4.0 会话范围：多节点批量） |
+| agent_ssh_connections | topo_server_id | 2026-08-16 | 新增（v4.0 拓扑节点钉定） |
+| agent_db_connections | topo_instance_id | 2026-08-16 | 新增（v4.0 拓扑节点钉定） |
+| topo_instances | database, sid, service_name | 2026-08-16 | 新增（v4.0 同机多库解析消歧） |
 | agent_skills | 全部 | 2026-07-24 | 新增（Agent领域技能） |
 | kg_entities | 全部 | 2026-07-29 | 新增（知识图谱实体表，**44,467条实体**） |
 | kg_relationships | 全部 | 2026-07-29 | 新增（知识图谱关系表，**12,549条关系**） |

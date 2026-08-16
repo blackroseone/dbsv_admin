@@ -15,7 +15,7 @@ def list_sessions():
     """获取Agent会话列表"""
     conn = get_db()
     rows = conn.execute(
-        "SELECT id, title, ssh_connection_id, db_connection_id, "
+        "SELECT id, title, ssh_connection_id, db_connection_id, scope_type, scope_json, "
         "status, current_step, created_at, updated_at "
         "FROM agent_sessions ORDER BY created_at DESC"
     ).fetchall()
@@ -24,11 +24,18 @@ def list_sessions():
 
 @agent_bp.route('/api/agent/sessions', methods=['POST'])
 def create_session():
-    """创建Agent会话"""
+    """创建Agent会话
+
+    body 可选：scope=[{type,topo_id,conn_id,name}...]（v4.0 多节点范围），
+    或 legacy ssh_connection_id/db_connection_id。两者都缺则按旧行为创建。
+    """
+    from db.database import set_session_scope, get_session_scope
+
     data = request.get_json()
 
     session_id = str(uuid.uuid4())
     title = data.get('title', '新会话')
+    scope = data.get('scope')
     ssh_conn_id = data.get('ssh_connection_id')
     db_conn_id = data.get('db_connection_id')
 
@@ -41,16 +48,58 @@ def create_session():
     )
     conn.commit()
 
+    # v4.0：带 scope 的会话写入范围（set_session_scope 同步旧列）；无 scope 走 legacy
+    if isinstance(scope, list) and scope:
+        set_session_scope(session_id, 'scope', scope)
+
     add_operation_log('Agent', '创建会话', title)
 
+    sc = get_session_scope(session_id)
     return jsonify({
         'message': '创建成功',
         'session': {
             'id': session_id,
             'title': title,
-            'status': 'idle'
+            'status': 'idle',
+            'scope_type': sc['scope_type'],
+            'scope_json': json.dumps(sc['targets'], ensure_ascii=False),
         }
     })
+
+
+@agent_bp.route('/api/agent/sessions/<session_id>/scope', methods=['GET', 'PUT'])
+def session_scope(session_id):
+    """获取/更新会话范围（v4.0）
+
+    GET: 返回解析后的 targets + 会话状态（范围面板徽标/编辑回显用）。
+    PUT: 更新范围；会话执行中拒绝（409）。scope 原样存储（含未配置节点，
+    引擎运行时可分辨并跳过）。
+    """
+    from db.database import get_session_scope, set_session_scope
+    from agent.scope import resolve_scope
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT id, status FROM agent_sessions WHERE id=?", (session_id,)).fetchone()
+    if not row:
+        return jsonify({'error': '会话不存在'}), 404
+
+    if request.method == 'GET':
+        sc = get_session_scope(session_id)
+        return jsonify({
+            'scope_type': sc['scope_type'],
+            'targets': resolve_scope(sc['targets']),
+            'status': row['status'],
+        })
+
+    if row['status'] == 'running':
+        return jsonify({'error': '会话执行中，禁止修改范围'}), 409
+    data = request.get_json() or {}
+    scope = data.get('scope')
+    if not isinstance(scope, list):
+        return jsonify({'error': 'scope 必须是列表'}), 400
+    set_session_scope(session_id, 'scope', scope)
+    return jsonify({'message': '范围已更新', 'scope': resolve_scope(scope)})
 
 
 @agent_bp.route('/api/agent/sessions/<session_id>', methods=['GET'])
@@ -91,6 +140,28 @@ def delete_session(session_id):
     return jsonify({'message': '删除成功'})
 
 
+# ==================== Agent会话范围（v4.0 多节点批量） ====================
+
+@agent_bp.route('/api/agent/scope/resolve', methods=['POST'])
+def scope_resolve():
+    """批量解析拓扑节点 → 连接的可用状态（范围面板渲染 ✅/⚠️ + 混型警示）
+
+    body: {"targets": [{"type":"ssh"|"db", "topo_id":...|"conn_id":..., "name":...}]}
+    resp: {"nodes":[...resolve_target...], "db_types":[...], "mixed": bool}
+    """
+    from agent.scope import resolve_scope, scope_db_types
+
+    data = request.get_json() or {}
+    targets = data.get('targets') or []
+    nodes = resolve_scope(targets)
+    types = scope_db_types(nodes)
+    return jsonify({
+        'nodes': nodes,
+        'db_types': types['db_types'],
+        'mixed': types['mixed'],
+    })
+
+
 # ==================== Agent执行（核心）====================
 
 @agent_bp.route('/api/agent/run', methods=['POST'])
@@ -101,6 +172,7 @@ def run_agent():
     session_id = data.get('session_id')
     question = data.get('question')
     model_id = data.get('model_id')
+    skill_name = data.get('skill_name')  # 可选：手动指定技能（v4.0）
 
     if not session_id or not question:
         return jsonify({'error': '缺少session_id或question'}), 400
@@ -118,6 +190,12 @@ def run_agent():
     ssh_conn_id = row['ssh_connection_id']
     db_conn_id = row['db_connection_id']
 
+    # v4.0：会话范围（多节点批量）。请求显式 scope 优先，否则从会话读取。
+    from db.database import get_session_scope
+    scope = data.get('scope')
+    if scope is None:
+        scope = get_session_scope(session_id).get('targets', [])
+
     # 会话标题自动命名：默认「新会话」用首问句替换，便于会话列表区分
     if not row['title'] or row['title'].strip() in ('', '新会话'):
         new_title = ' '.join(question.split())[:24].strip() or '新会话'
@@ -132,6 +210,8 @@ def run_agent():
             session_id=session_id,
             ssh_conn_id=ssh_conn_id,
             db_conn_id=db_conn_id,
+            scope=scope,
+            manual_skill_name=skill_name,
             model_id=model_id
         )
 

@@ -9,6 +9,53 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v4.0.0 (2026-08-16)
+
+### 🎯 Agent 会话范围化 + 多节点批量执行 + 前端重构
+
+> 里程碑版本：Agent 从「一次会话 = 单一 SSH/DB 连接」升级为「一次会话 = 拓扑资源池内的多节点范围」，
+> 支持跨节点批量查询与批量变更。方案经高能力模型批判性重审（v4-pro），承重设计已并入实现。
+
+**范围模型**（`db/database.py` + `agent/scope.py` + `routes/agent.py`）：
+- `agent_sessions` 新增 `scope_type`/`scope_json`（targets: `[{type:'ssh'|'db', topo_id, conn_id, name}]`），`set_session_scope` 写范围并同步 `ssh_connection_id`/`db_connection_id` 旧列（兼容所有只读单连接的旧消费方）；既有会话自动回填为 legacy 单连接范围（`WHERE scope_json IS NULL` 幂等守卫）。
+- `agent_ssh_connections`/`agent_db_connections` 新增 `topo_server_id`/`topo_instance_id` 钉定列；`topo_instances` 补 `database`/`sid`/`service_name`（同机同端口多库解析消歧）。
+- 新增 `agent/scope.py`：拓扑节点 → 连接的解析（钉定优先 → 主机[+端口+db_type+库]自动匹配 → ambiguous 置多匹配，绝不随意取）；`POST /api/agent/scope/resolve` 供前端渲染 ✅/⚠️ + 混型警示。
+- 会话 API：`create_session` 接受 `scope` payload；`GET/PUT /api/agent/sessions/<id>/scope`（running 时 PUT 409）。
+
+**批量执行（引擎 fan-out，`agent/tools.py` + `agent/engine.py`）**：
+- 模型**只写一次**命令/SQL，引擎并发（上限 4）fan-out 到范围内该类型已解析节点：`query_database`/`get_schema_info`/`get_performance_metrics` 只跑 db 节点、`execute_command` 只跑 ssh 节点，按 conn_id 去重，节点间感知停止（M5）。
+- **逐节点用该节点 db_type 重新过 Harness 校验**（H1）；`get_schema_info`/`get_performance_metrics` 按各节点 db_type 构造 SQL；混型范围 prompt 注入逐节点 db_type（H2）。
+- 占位符替换 `{host}/{port}/{instance}/{node}`（值仅来自拓扑白名单，**替换后重新校验**，H5）。
+- 批量结果结构化经 `executing_end.result`（`batch_result`）传前端渲染表格；`observing` 只带紧凑摘要（防历史爆炸）。
+
+**批量变更 + 范围扩展审批（H4/M1）**：
+- 计划 op 支持可选 `targets`，`_execute_plan_operations` 逐 op 按 targets fan-out、逐节点 `plan_operation_result`（含 node+status）、**continue-on-error 收集**；失败节点记入 `_plan_failed_nodes`，结论列出失败节点，前端给「仅重试失败节点」入口。
+- **范围扩展审批**：工具 `target` 指向范围外节点 → 自动生成 `kind:'scope'` 审批计划（DBA 批准后扩展范围并持久化，原动作本回合重投续跑，M1）；目标未配置连接则不弹审批、发 `executing_warning` 指引一键补配。
+- 手动技能：`run` 携带 `skill_name`，引擎注入**完整** `prompt_template`（绕开自动匹配 200 字截断；同名自动匹配去重，M7）。
+
+**前端重构（`templates/index.html` + `static/js/agent.js` + `static/css/style.css`）**：
+- **范围面板**取代连接列表成为主侧栏：拓扑资源池树（池→服务器→实例）复选框，节点显示连接状态 ✅/⚠️，未配置一键补配（host/端口/db_type 预填）；勾选 localStorage 持久化，勾选结果 = 新会话默认范围（无勾选回退 legacy 单连接）。
+- **收纳**：会话历史收进「🗂 历史」抽屉，连接/技能/记忆收进「⚙️ 管理」抽屉（子标签），主视图只留范围面板 + 会话区。
+- **范围徽标**：工具栏/页签/会话列表显示「范围: N 节点 · M 实例」。
+- **技能 chips**：输入框上方按会话 db_type 过滤，选中注入完整操作指南。
+- **批量结果表格**：多节点结果渲染为逐节点卡片（错误在前、成功折叠、可展开全部）。
+- 审批条：范围会话显示「将应用到 N 节点」；`kind:'scope'` 范围扩展计划用专用卡；`scope_extended` 事件更新徽标。
+
+**修复（H3）**：`get_topology_text()` 四处键名错位（`topo_clusters`/`topo_servers`/`topo_instances`/`topo_tenants` → `clusters`/`servers`/`instances`/`tenants`），拓扑→知识库同步此前永远为空。
+
+**安全边界不变**：批量只扩大「作用域」，不扩大「权限」——DML/DCL 硬拒、注入硬拒、命令白名单分级、变更审批全部保留；fan-out 逐节点校验。
+
+## v3.0.22 (2026-08-16)
+
+### 📝 结论按需生成 + 审批框自适应高度
+
+**结论按需生成**（`agent/engine.py` + `static/js/agent.js`）：
+- **未执行任何工具时**（Agent 直接回答/向你征求意见）：思考即对用户的回应，**不再发起独立结论调用**（根治「思考里问了问题、分析结论却空白」）——发 `final_thinking` 事件，前端把最后思考块展开为可见的「Agent 回复」。
+- **执行过诊断/变更**：仍生成「分析结论」汇总结果（工具/变更才有汇总价值）。
+- 顺带加固：结论为空（LLM 失败/空响应）时用最近一次观察兜底，保证结论永不为空；`_stream_llm` 失败时打服务器日志 `[Agent] LLM …失败`，便于区分「LLM 失败」与「前端未渲染」。
+
+**审批框自适应高度**（`static/css/style.css`）：`.agent-approval-slot` 移除 `max-height:45%` 与内部滚动，多条命令全量可见、无需上下滚动。
+
 ## v3.0.21 (2026-08-16)
 
 ### 📑 Agent 会话页签化 + 审批即时收起

@@ -13,14 +13,324 @@ let agentCurrentDBConn = null;
 let agentOpenTabs = [];
 // 每会话视图状态：{sid: {running, controller, thinkingText, conclusionText, lastPlan, loaded}}
 let agentSessionViews = {};
+// v4.0 操作范围：勾选的拓扑节点 targets + 解析结果缓存 + 拓扑树缓存
+let agentScopeTargets = [];            // [{type:'ssh'|'db', topo_id, conn_id, name}]
+let agentScopeTree = [];               // /api/topology/clusters 返回的池树
+let agentScopeResolve = {};            // {`${type}:${topo_id}`: resolvedNode}
+let agentScopeMixed = false;           // 勾选是否混型 db_type
 
 // ==================== 模块初始化 ====================
 function initAgentModule() {
+    restoreAgentScopeTargets();
+    loadAgentScopeTree();
     loadAgentSSHConnections();
     loadAgentDBConnections();
     loadAgentSessions();
     loadAgentSkills();
     loadAgentMemory();
+}
+
+// ==================== 操作范围面板（v4.0 多节点批量） ====================
+function restoreAgentScopeTargets() {
+    try {
+        const saved = localStorage.getItem('agentScopeTargets');
+        agentScopeTargets = saved ? (JSON.parse(saved) || []) : [];
+    } catch (e) {
+        agentScopeTargets = [];
+    }
+}
+
+async function loadAgentScopeTree() {
+    const panel = document.getElementById('agent-scope-panel');
+    if (!panel) return;
+    try {
+        const resp = await fetch('/api/topology/clusters');
+        const data = await resp.json();
+        agentScopeTree = (data.clusters || []) || [];
+    } catch (e) {
+        console.error('加载拓扑资源池失败:', e);
+        agentScopeTree = [];
+    }
+    renderAgentScopeTree();
+    refreshAgentScopeResolve();
+}
+
+// 批量解析范围内所有拓扑节点的连接状态，刷新 ✅/⚠️ 徽标
+async function refreshAgentScopeResolve() {
+    const targets = [];
+    (agentScopeTree || []).forEach(pool => {
+        (pool.servers || []).forEach(s => {
+            targets.push({ type: 'ssh', topo_id: s.id, name: s.name });
+            (s.instances || []).forEach(i => targets.push({ type: 'db', topo_id: i.id, name: i.name }));
+        });
+    });
+    if (targets.length === 0) return;
+    try {
+        const resp = await fetch('/api/agent/scope/resolve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ targets })
+        });
+        const data = await resp.json();
+        agentScopeResolve = {};
+        (data.nodes || []).forEach(n => {
+            if (n.topo_id) agentScopeResolve[n.type + ':' + n.topo_id] = n;
+        });
+        agentScopeMixed = !!data.mixed;
+    } catch (e) {
+        agentScopeResolve = {};
+    }
+    renderAgentScopeTree();
+    updateAgentScopeCount();
+}
+
+function renderAgentScopeTree() {
+    const panel = document.getElementById('agent-scope-panel');
+    if (!panel) return;
+    if (!agentScopeTree || agentScopeTree.length === 0) {
+        panel.innerHTML = '<div class="empty-message">暂无资源池，请先在「拓扑」模块添加</div>';
+        return;
+    }
+
+    panel.innerHTML = agentScopeTree.map(pool => {
+        const servers = (pool.servers || []).map(s => {
+            const sKey = 'ssh:' + s.id;
+            const st = agentScopeTargets.find(t => t.type === 'ssh' && t.topo_id === s.id);
+            const status = agentScopeResolve[sKey];
+            const badge = scopeBadgeHtml(status);
+            const cfg = badge && (!status || !status.resolved)
+                ? `<button class="scope-config-btn" onclick="quickConfigAgentNode('${escapeJsAttr(s.id)}','ssh')">配置</button>` : '';
+            const instances = (s.instances || []).map(i => {
+                const iKey = 'db:' + i.id;
+                const it = agentScopeTargets.find(t => t.type === 'db' && t.topo_id === i.id);
+                const ist = agentScopeResolve[iKey];
+                const ibadge = scopeBadgeHtml(ist);
+                const icfg = ibadge && (!ist || !ist.resolved)
+                    ? `<button class="scope-config-btn" onclick="quickConfigAgentNode('${escapeJsAttr(i.id)}','db')">配置</button>` : '';
+                return `<label class="scope-node scope-instance">
+                    <input type="checkbox" data-target-key="${iKey}" ${it ? 'checked' : ''}>
+                    <span class="scope-node-name">${escapeHtml(i.name)}</span>
+                    <span class="scope-node-meta">:${escapeHtml(i.port || '')}</span>${ibadge}${icfg}
+                </label>`;
+            }).join('');
+            return `<div class="scope-server">
+                <label class="scope-node scope-server-row">
+                    <input type="checkbox" data-target-key="${sKey}" ${st ? 'checked' : ''}>
+                    <span class="scope-node-name">${escapeHtml(s.name)}</span>
+                    <span class="scope-node-meta">${escapeHtml(s.host || '')}</span>${badge}${cfg}
+                </label>
+                ${instances ? `<div class="scope-instances">${instances}</div>` : ''}
+            </div>`;
+        }).join('');
+
+        const poolServers = (pool.servers || []);
+        const checkedServers = poolServers.filter(s =>
+            agentScopeTargets.find(t => t.type === 'ssh' && t.topo_id === s.id)).length;
+        const poolAll = poolServers.length > 0 && checkedServers === poolServers.length;
+        return `<div class="scope-pool">
+            <label class="scope-pool-header">
+                <input type="checkbox" data-pool-key="pool:${pool.id}" ${poolAll ? 'checked' : ''}>
+                <span class="scope-pool-name">${escapeHtml(pool.name)}</span>
+                <span class="scope-pool-dbtype">${escapeHtml(pool.db_type || '')}</span>
+            </label>
+            <div class="scope-servers">${servers}</div>
+        </div>`;
+    }).join('') + (agentScopeMixed
+        ? '<div class="scope-mixed-warning">⚠️ 已选混合数据库类型，批量 SQL 需按各节点方言适配</div>'
+        : '');
+
+    panel.onchange = onAgentScopeChange;
+}
+
+// 根据解析状态生成徽标 HTML（resolved→✅；ambiguous→多匹配；未配置→未配置）
+function scopeBadgeHtml(status) {
+    if (!status) return '';
+    if (status.resolved) return '<span class="scope-badge ok">✅</span>';
+    return status.ambiguous
+        ? '<span class="scope-badge warn">⚠️多匹配</span>'
+        : '<span class="scope-badge warn">⚠️未配置</span>';
+}
+
+function onAgentScopeChange(e) {
+    const cb = e.target;
+    const poolKey = cb.dataset.poolKey;
+    const targetKey = cb.dataset.targetKey;
+    if (poolKey) {
+        const poolId = poolKey.split(':')[1];
+        const pool = (agentScopeTree || []).find(p => p.id === poolId);
+        if (!pool) return;
+        (pool.servers || []).forEach(s => {
+            setScopeTarget('ssh:' + s.id, cb.checked);
+            (s.instances || []).forEach(i => setScopeTarget('db:' + i.id, cb.checked));
+        });
+    } else if (targetKey) {
+        setScopeTarget(targetKey, cb.checked);
+    }
+    persistAgentScopeTargets();
+    renderAgentScopeTree();
+    updateAgentScopeCount();
+}
+
+function setScopeTarget(key, checked) {
+    const [type, topoId] = key.split(':');
+    const idx = agentScopeTargets.findIndex(t => t.type === type && t.topo_id === topoId);
+    if (checked && idx === -1) {
+        agentScopeTargets.push({ type, topo_id: topoId, conn_id: null, name: scopeTargetName(type, topoId) });
+    } else if (!checked && idx !== -1) {
+        agentScopeTargets.splice(idx, 1);
+    }
+}
+
+function scopeTargetName(type, topoId) {
+    for (const pool of agentScopeTree || []) {
+        for (const s of pool.servers || []) {
+            if (type === 'ssh' && s.id === topoId) return s.name;
+            const i = (s.instances || []).find(x => x.id === topoId);
+            if (type === 'db' && i) return i.name;
+        }
+    }
+    return '';
+}
+
+function persistAgentScopeTargets() {
+    try { localStorage.setItem('agentScopeTargets', JSON.stringify(agentScopeTargets)); } catch (e) {}
+}
+
+function updateAgentScopeCount() {
+    const el = document.getElementById('agent-scope-count');
+    if (!el) return;
+    const ssh = agentScopeTargets.filter(t => t.type === 'ssh').length;
+    const db = agentScopeTargets.filter(t => t.type === 'db').length;
+    el.textContent = (ssh || db) ? `已选 ${ssh} 节点 · ${db} 实例` : '';
+}
+
+// 未配置连接的拓扑节点一键补配：预填 host/port/db_type/库，复用现有添加连接对话框
+function quickConfigAgentNode(topoId, type) {
+    const status = agentScopeResolve[type + ':' + topoId];
+    const suggest = (status && status.suggest) || {};
+    const nodeName = (status && status.name) || '';
+    if (type === 'ssh') {
+        if (suggest.host) document.getElementById('agent-ssh-host').value = suggest.host;
+        if (suggest.port) document.getElementById('agent-ssh-port').value = suggest.port;
+        if (suggest.db_type) document.getElementById('agent-ssh-db-type').value = suggest.db_type;
+        document.getElementById('agent-ssh-name').value = nodeName ? nodeName + '-ssh' : '';
+        showAddSSHDialog();
+    } else {
+        if (suggest.host) document.getElementById('agent-db-host').value = suggest.host;
+        if (suggest.port) document.getElementById('agent-db-port').value = suggest.port;
+        if (suggest.db_type) document.getElementById('agent-db-type').value = suggest.db_type;
+        if (suggest.database) document.getElementById('agent-db-database').value = suggest.database || '';
+        if (suggest.sid) document.getElementById('agent-db-sid').value = suggest.sid || '';
+        if (suggest.service_name) document.getElementById('agent-db-service-name').value = suggest.service_name || '';
+        document.getElementById('agent-db-name').value = nodeName || '';
+        showAddDBDialog();
+    }
+}
+
+// ==================== 收纳抽屉 + 管理页签（v4.0 信息层级精简） ====================
+function toggleAgentHistoryDrawer() {
+    const drawer = document.getElementById('agent-history-drawer');
+    if (!drawer) return;
+    const show = drawer.classList.toggle('open');
+    const mgmt = document.getElementById('agent-manage-drawer');
+    if (mgmt) mgmt.classList.remove('open');
+    if (show) loadAgentSessions();
+}
+
+function toggleAgentManageDrawer() {
+    const drawer = document.getElementById('agent-manage-drawer');
+    if (!drawer) return;
+    const show = drawer.classList.toggle('open');
+    const hist = document.getElementById('agent-history-drawer');
+    if (hist) hist.classList.remove('open');
+    if (show) {
+        loadAgentSSHConnections();
+        loadAgentDBConnections();
+        loadAgentSkills();
+        loadAgentMemory();
+    }
+}
+
+function switchManageTab(tab) {
+    document.querySelectorAll('.manage-tabs .tab-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.tab === tab);
+    });
+    ['conn', 'skill', 'memory'].forEach(t => {
+        const el = document.getElementById(`agent-manage-${t}`);
+        if (el) el.style.display = t === tab ? 'block' : 'none';
+    });
+}
+
+// 工具栏范围徽标：当前激活会话是范围会话时显示「范围: N 节点 · M 实例」，否则回退 SSH/DB 状态
+function updateAgentScopeBadge(sid) {
+    const badge = document.getElementById('agent-scope-badge');
+    const sshStatus = document.getElementById('agent-ssh-status');
+    const dbStatus = document.getElementById('agent-db-status');
+    if (!badge || !sshStatus || !dbStatus) return;
+    const sc = sessionScopeCount(agentSessions.find(x => x.id === sid));
+    if (sc.ssh + sc.db > 0) {
+        badge.textContent = `🎯 范围: ${sc.ssh} 节点 · ${sc.db} 实例`;
+        badge.style.display = '';
+        sshStatus.style.display = 'none';
+        dbStatus.style.display = 'none';
+    } else {
+        badge.style.display = 'none';
+        sshStatus.style.display = '';
+        dbStatus.style.display = '';
+    }
+}
+
+function sessionScopeCount(session) {
+    const out = { ssh: 0, db: 0 };
+    if (!session || !session.scope_json) return out;
+    try {
+        (JSON.parse(session.scope_json) || []).forEach(t => {
+            if (t.type === 'ssh') out.ssh++;
+            else if (t.type === 'db') out.db++;
+        });
+    } catch (e) {}
+    return out;
+}
+
+// ==================== 技能 chips（v4.0 手动技能选择） ====================
+function sessionDbType(sid) {
+    const s = agentSessions.find(x => x.id === sid);
+    if (s && s.scope_json) {
+        try {
+            const targets = JSON.parse(s.scope_json) || [];
+            const db = targets.find(t => t.type === 'db' && t.conn_id);
+            if (db) {
+                const c = agentDBConnections.find(x => x.id === db.conn_id);
+                if (c) return c.db_type;
+            }
+        } catch (e) {}
+    }
+    const c = agentDBConnections.find(x => x.id === agentCurrentDBConn);
+    return c ? c.db_type : '';
+}
+
+async function loadAgentSkillChips(sid) {
+    const chips = document.getElementById(`agent-skill-chips-${sid}`);
+    if (!chips) return;
+    const dbType = sessionDbType(sid);
+    let skills = [];
+    try {
+        const resp = await fetch(`/api/agent/skills${dbType ? '?db_type=' + encodeURIComponent(dbType) : ''}`);
+        const data = await resp.json();
+        skills = data.skills || [];
+    } catch (e) {}
+    const view = agentView(sid);
+    const items = [{ name: '' }].concat(skills).map(sk => {
+        const active = (view.selectedSkill || '') === (sk.name || '');
+        return `<button class="skill-chip${active ? ' active' : ''}"
+                onclick="selectAgentSkill('${escapeJsAttr(sid)}','${escapeJsAttr(sk.name || '')}')">${escapeHtml(sk.name || '自由对话')}</button>`;
+    }).join('');
+    chips.innerHTML = `<span class="chip-label">技能:</span>${items}`;
+}
+
+function selectAgentSkill(sid, name) {
+    agentView(sid).selectedSkill = name || '';
+    loadAgentSkillChips(sid);
 }
 
 // ==================== 连接管理 ====================
@@ -165,19 +475,24 @@ function renderAgentSessions() {
         return;
     }
 
-    container.innerHTML = agentSessions.map(session => `
+    container.innerHTML = agentSessions.map(session => {
+        const sc = sessionScopeCount(session);
+        const scBadge = (sc.ssh + sc.db > 0)
+            ? `<span class="session-scope">范围:${sc.ssh}节点${sc.db ? `·${sc.db}实例` : ''}</span>` : '';
+        return `
         <div class="session-item ${agentCurrentSession === session.id ? 'active' : ''}">
             <div class="session-main" onclick="openAgentTab('${escapeJsAttr(session.id)}')">
                 <div class="session-title">${escapeHtml(session.title)}</div>
                 <div class="session-meta">
                     <span class="session-status ${escapeHtml(session.status)}">${getStatusIcon(session.status)}</span>
+                    ${scBadge}
                     <span class="session-time">${formatTime(session.created_at)}</span>
                 </div>
             </div>
             <button class="session-delete" title="删除会话"
                     onclick="event.stopPropagation(); deleteAgentSession('${escapeJsAttr(session.id)}')">&times;</button>
-        </div>
-    `).join('');
+        </div>`;
+    }).join('');
 }
 
 async function deleteAgentSession(sessionId) {
@@ -218,7 +533,8 @@ function agentView(sid) {
         agentSessionViews[sid] = {
             running: false, controller: null,
             thinkingText: '', conclusionText: '',
-            lastPlan: null, loaded: false
+            lastPlan: null, loaded: false,
+            failedNodes: new Set(), selectedSkill: ''
         };
     }
     return agentSessionViews[sid];
@@ -256,18 +572,20 @@ function createAgentPane(sid) {
         <div class="agent-chat" id="agent-chat-${sid}"></div>
         <div class="agent-approval-slot" id="agent-approval-slot-${sid}"></div>
         <div class="agent-input-area" id="agent-input-area-${sid}">
+            <div class="skill-chips" id="agent-skill-chips-${sid}"></div>
             <div class="input-wrapper">
-                <input type="text" id="agent-input-${sid}" placeholder="输入指令，如：检查Oracle集群状态"
+                <input type="text" id="agent-input-${sid}" placeholder="输入指令，如：对所选节点批量查询参数"
                        onkeypress="if(event.key==='Enter')sendAgentQuestion('${escapeJsAttr(sid)}')">
                 <button class="btn btn-primary" onclick="sendAgentQuestion('${escapeJsAttr(sid)}')">发送</button>
             </div>
             <div class="input-hints">
-                <span>💡 试试：查看慢查询 | 检查集群状态 | 分析AWR报告</span>
+                <span>💡 试试：对所选节点批量查询 max_connections | 检查集群状态 | 分析慢 SQL</span>
             </div>
         </div>
     `;
     panes.appendChild(pane);
     clearAgentChat(sid);
+    loadAgentSkillChips(sid);
 }
 
 async function loadAgentSessionHistory(sid) {
@@ -293,6 +611,8 @@ function activateAgentTab(sid) {
     renderAgentTabs();
     renderAgentSessions();
     updateAgentStopButton();
+    updateAgentScopeBadge(sid);
+    loadAgentSkillChips(sid);
     const input = document.getElementById(`agent-input-${sid}`);
     if (input) input.focus();
 }
@@ -325,10 +645,12 @@ function renderAgentTabs() {
     if (!bar) return;
     bar.innerHTML = agentOpenTabs.map(sid => {
         const active = sid === agentCurrentSession ? ' active' : '';
+        const sc = sessionScopeCount(agentSessions.find(x => x.id === sid));
+        const scBadge = (sc.ssh + sc.db > 0) ? ` <span class="tab-scope">${sc.ssh + sc.db}</span>` : '';
         return `
             <div class="agent-tab${active}" title="${escapeHtml(agentSessionTitle(sid))}"
                  onclick="activateAgentTab('${escapeJsAttr(sid)}')">
-                <span class="agent-tab-title">${escapeHtml(agentSessionTitle(sid))}</span>
+                <span class="agent-tab-title">${escapeHtml(agentSessionTitle(sid))}${scBadge}</span>
                 <span class="agent-tab-close" title="关闭页签"
                       onclick="event.stopPropagation(); closeAgentTab('${escapeJsAttr(sid)}')">&times;</span>
             </div>`;
@@ -343,15 +665,19 @@ function updateAgentStopButton() {
 }
 
 async function newAgentSession() {
+    // v4.0：范围面板有勾选则建「范围会话」（多节点批量）；否则回退 legacy 单连接
+    const body = { title: '新会话' };
+    if (agentScopeTargets.length > 0) {
+        body.scope = agentScopeTargets;
+    } else {
+        body.ssh_connection_id = agentCurrentSSHConn;
+        body.db_connection_id = agentCurrentDBConn;
+    }
     try {
         const response = await fetch('/api/agent/sessions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                title: '新会话',
-                ssh_connection_id: agentCurrentSSHConn,
-                db_connection_id: agentCurrentDBConn
-            })
+            body: JSON.stringify(body)
         });
         const data = await response.json();
         if (data.session) {
@@ -388,13 +714,18 @@ async function sendAgentQuestion(sid) {
 
     view.running = true;
     view.controller = new AbortController();
+    view.failedNodes = new Set();   // 新一轮执行，重置失败节点收集
     updateAgentStopButton();
 
     try {
         const response = await fetch('/api/agent/run', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: sid, question }),
+            body: JSON.stringify({
+                session_id: sid,
+                question,
+                skill_name: view.selectedSkill || null   // v4.0 手动技能
+            }),
             signal: view.controller.signal
         });
 
@@ -517,14 +848,33 @@ function handleAgentEvent(event, sid) {
         case 'concluding_end':
             finalizeAgentConclusion(sid);
             break;
+        case 'final_thinking':
+            // 未执行任何工具：最后的思考块即对用户的回应，展开为可见回复
+            showAgentFinalThinking(sid);
+            break;
         case 'error':
             renderAgentError(sid, event.message);
+            break;
+        case 'scope_extended':
+            renderScopeExtended(sid, event.targets);
             break;
         case 'done':
             removeAgentLoading(sid);
             clearApprovalSlot(sid);
+            maybeRenderRetryButton(sid);
+            updateAgentScopeBadge(sid);
             break;
     }
+}
+
+// v4.0 范围扩展：审批通过后引擎发 scope_extended，前端提示 + 刷新范围徽标
+function renderScopeExtended(sid, targets) {
+    const names = (targets || []).map(t => t.name || t).filter(Boolean);
+    if (names.length) {
+        addAgentMessage(sid, 'assistant', `🎯 操作范围已扩展: +${names.join(', ')}`);
+    }
+    loadAgentSessions();   // 刷新会话列表/页签的范围徽标（范围已持久化）
+    updateAgentScopeBadge(sid);
 }
 
 // ==================== 消息渲染（均按会话路由） ====================
@@ -691,6 +1041,12 @@ function renderAgentResult(sid, result) {
     const contentDiv = toolDiv.querySelector('.message-content');
     if (!contentDiv) return;
 
+    // v4.0 批量结果（多节点）：逐节点卡片（错误在前、成功折叠、可展开全部）
+    if (result.type === 'batch_result') {
+        renderBatchResult(sid, contentDiv, result);
+        return;
+    }
+
     // 表格：查询 / schema / 性能指标
     if (result.rows && result.columns) {
         contentDiv.appendChild(buildResultTable(result.columns, result.rows));
@@ -717,6 +1073,44 @@ function renderAgentResult(sid, result) {
             : '<div class="empty-message">无检索结果</div>';
         contentDiv.appendChild(list);
     }
+}
+
+// v4.0 批量执行结果：错误在前、成功折叠的逐节点卡片
+function renderBatchResult(sid, container, result) {
+    const results = result.results || [];
+    const okCount = results.filter(r => r.ok).length;
+    const failCount = results.length - okCount;
+    const wrap = document.createElement('div');
+    wrap.className = 'batch-result';
+
+    const errors = results.filter(r => !r.ok);
+    const oks = results.filter(r => r.ok);
+
+    const nodeHtml = node => {
+        const isErr = !node.ok;
+        const cls = isErr ? 'batch-node error' : 'batch-node ok';
+        let body;
+        if (isErr) {
+            body = `<div class="batch-node-error">${escapeHtml(node.error || '失败')}</div>`;
+        } else if (node.columns && node.rows) {
+            body = buildResultTable(node.columns, node.rows).outerHTML;
+        } else {
+            body = `<pre class="tool-output">${escapeHtml(node.output || '(无输出)')}</pre>`;
+        }
+        return `<div class="${cls}">
+            <div class="batch-node-head">${isErr ? '❌' : '✅'} <span class="batch-node-name">${escapeHtml(node.node || '?')}</span></div>
+            ${body}
+        </div>`;
+    };
+
+    wrap.innerHTML = `<div class="batch-summary">📡 批量执行结果（${results.length} 节点，✅${okCount} / ❌${failCount}）</div>`;
+    errors.concat(oks).forEach(n => {
+        const temp = document.createElement('div');
+        temp.innerHTML = nodeHtml(n);
+        wrap.appendChild(temp.firstChild);
+    });
+    container.appendChild(wrap);
+    scrollAgentChatIfNearBottom(sid);
 }
 
 function buildResultTable(columns, rows) {
@@ -782,11 +1176,12 @@ function appendAgentConclusion(sid, content) {
     const chat = document.getElementById(`agent-chat-${sid}`);
     const view = agentSessionViews[sid];
     if (!chat || !view) return;
-    const conclusionDiv = chat.querySelector(`#agent-conclusion-${sid}`);
+    let conclusionDiv = chat.querySelector(`#agent-conclusion-${sid}`);
+    if (!conclusionDiv) conclusionDiv = chat.querySelector('.agent-message.conclusion:last-child');
     if (conclusionDiv) {
         view.conclusionText += content;
-        conclusionDiv.querySelector('.markdown-content').innerHTML =
-            formatMarkdown(view.conclusionText) + '<span class="typing-cursor">▊</span>';
+        const md = conclusionDiv.querySelector('.markdown-content');
+        if (md) md.innerHTML = formatMarkdown(view.conclusionText) + '<span class="typing-cursor">▊</span>';
     }
 }
 
@@ -794,13 +1189,29 @@ function finalizeAgentConclusion(sid) {
     const chat = document.getElementById(`agent-chat-${sid}`);
     const view = agentSessionViews[sid];
     if (!chat || !view) return;
-    const conclusionDiv = chat.querySelector(`#agent-conclusion-${sid}`);
+    let conclusionDiv = chat.querySelector(`#agent-conclusion-${sid}`);
+    if (!conclusionDiv) conclusionDiv = chat.querySelector('.agent-message.conclusion:last-child');
     if (conclusionDiv) {
         // 保留 sid 作用域的 id（供 showAgentFeedback 查询；sid 唯一，无冲突）
-        const content = conclusionDiv.querySelector('.markdown-content');
-        if (content) content.innerHTML = formatMarkdown(view.conclusionText);  // 移除光标
+        const md = conclusionDiv.querySelector('.markdown-content');
+        if (md) md.innerHTML = formatMarkdown(view.conclusionText);  // 移除光标
         showAgentFeedback(sid);
     }
+}
+
+function showAgentFinalThinking(sid) {
+    // 未执行任何工具时，最后一步思考即对用户的回应（回答/提问）：
+    // 展开使其直接可见，并把「思考中」标签改为「Agent 回复」
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    if (!chat) return;
+    const thinking = chat.querySelector('.agent-message.thinking:last-child');
+    if (!thinking) return;
+    const details = thinking.querySelector('details.agent-collapse');
+    if (details) details.open = true;
+    const label = thinking.querySelector('.label');
+    if (label) label.textContent = 'Agent 回复';
+    const indicator = thinking.querySelector('.thinking-indicator');
+    if (indicator) indicator.style.display = 'none';
 }
 
 // ==================== 变更类操作审批（Claude Code 形态：审批槽 + 竖向选项 + 批准即收起） ====================
@@ -822,7 +1233,28 @@ function renderAgentApproval(event, sid) {
         if ((riskOrder[r] || 2) > (riskOrder[maxRisk] || 1)) maxRisk = r;
     });
 
-    const target = agentApprovalTarget();
+    const target = agentApprovalTarget(sid);
+
+    // v4.0 范围扩展计划（kind:'scope'）：专用卡片，无命令/SQL
+    if (plan.kind === 'scope') {
+        const tgt = (plan.targets || []).map(t => t.name || t).join(', ');
+        slot.innerHTML = `
+            <div class="approval-bar" id="agent-approval-${event.plan_id}" data-planId="${event.plan_id}">
+                <div class="approval-header">
+                    <span class="approval-title">🎯 ${escapeHtml(plan.title || '扩展操作范围')}</span>
+                </div>
+                ${plan.scope ? `<div class="approval-scope">${escapeHtml(plan.scope)}</div>` : ''}
+                <div class="scope-extension-target">将纳入范围：<strong>${escapeHtml(tgt)}</strong></div>
+                <div class="approval-actions">
+                    <button class="btn btn-primary approval-btn" onclick="approvePlan('${escapeJsAttr(sid)}', ${event.plan_id})">✅ 批准</button>
+                    <button class="btn btn-danger approval-btn" onclick="rejectPlan('${escapeJsAttr(sid)}', ${event.plan_id})">❌ 拒绝</button>
+                </div>
+                <div class="approval-status" id="approval-status-${event.plan_id}"></div>
+            </div>`;
+        const inputArea = document.getElementById(`agent-input-area-${sid}`);
+        if (inputArea) inputArea.style.display = 'none';
+        return;
+    }
     const riskBadge = ops.length
         ? `<span class="risk-badge risk-${maxRisk}">${riskLabel(maxRisk)}</span>`
         : '';
@@ -875,8 +1307,12 @@ function renderAgentApproval(event, sid) {
     if (inputArea) inputArea.style.display = 'none';
 }
 
-function agentApprovalTarget() {
-    // 审批留痕：展示本次操作的目标主机/数据库连接
+function agentApprovalTarget(sid) {
+    // 审批留痕：v4.0 范围会话显示「范围: N 节点 · M 实例」；legacy 回退连接名
+    const sc = sessionScopeCount(agentSessions.find(x => x.id === sid));
+    if (sc.ssh + sc.db > 0) {
+        return `🎯 范围: ${sc.ssh} 节点 · ${sc.db} 实例`;
+    }
     const parts = [];
     if (agentCurrentSSHConn) {
         const c = agentSSHConnections.find(x => x.id === agentCurrentSSHConn);
@@ -946,7 +1382,13 @@ async function submitPlanDecision(sid, planId, action, comment) {
             // 批准：审批框即刻消失、返回输入框；执行结果以 chat 记录呈现
             clearApprovalSlot(sid);
             if (view && view.lastPlan) {
-                renderPlanExecRecord(sid, planId, view.lastPlan);
+                if (view.lastPlan.kind === 'scope') {
+                    // 范围扩展计划：无命令/SQL，仅提示
+                    const t = (view.lastPlan.targets || []).map(x => x.name || x).join(', ');
+                    addAgentMessage(sid, 'assistant', `✅ 已批准，扩展操作范围至节点 ${t}，继续执行中...`);
+                } else {
+                    renderPlanExecRecord(sid, planId, view.lastPlan);
+                }
             }
         } else {
             const bar = document.getElementById(`agent-approval-${planId}`);
@@ -1073,6 +1515,26 @@ function renderPlanOperationResult(event, sid) {
     const statusEl = opRow.querySelector('.op-status');
     const result = event.result || {};
 
+    // v4.0 批量变更：逐节点结果追加在 op 行内（同一 index 多条）
+    if (event.node) {
+        const view = agentView(sid);
+        if (event.status === 'error') {
+            if (view && view.failedNodes) view.failedNodes.add(event.node);
+        }
+        const line = document.createElement('div');
+        line.className = 'op-node-result ' + (event.status === 'success' ? 'ok' : 'error');
+        let detail = '';
+        if (event.status === 'success') {
+            if (result.row_count !== undefined) detail = `（${result.row_count} 行）`;
+            else if (result.stdout !== undefined) detail = ' 已执行';
+        } else {
+            detail = event.error ? `：${event.error}` : '';
+        }
+        line.textContent = `${event.status === 'success' ? '✅' : '❌'} ${event.node}${detail}`;
+        opRow.insertAdjacentElement('beforeend', line);
+        return;
+    }
+
     if (event.status === 'success') {
         opRow.classList.add('op-success');
         if (statusEl) statusEl.textContent = '✅';
@@ -1094,6 +1556,36 @@ function renderPlanOperationResult(event, sid) {
             opRow.insertAdjacentHTML('beforeend', `<div class="op-error-msg">${escapeHtml(event.error)}</div>`);
         }
     }
+}
+
+// v4.0 批量变更失败节点：会话结束（done）时若有失败节点，给出「仅重试失败节点」入口
+function maybeRenderRetryButton(sid) {
+    const view = agentView(sid);
+    if (!view || !view.failedNodes || view.failedNodes.size === 0) return;
+    const chat = document.getElementById(`agent-chat-${sid}`);
+    if (!chat) return;
+    const names = [...view.failedNodes].join(', ');
+    const div = document.createElement('div');
+    div.className = 'agent-message retry-block';
+    div.innerHTML = `
+        <div class="message-header">
+            <span class="icon">🔁</span>
+            <span class="label">批量变更部分失败</span>
+        </div>
+        <div class="message-content">失败节点: <strong>${escapeHtml(names)}</strong></div>
+        <button class="btn btn-primary retry-btn" onclick="retryFailedNodes('${escapeJsAttr(sid)}')">🔁 仅重试失败节点</button>`;
+    chat.appendChild(div);
+    scrollAgentChatIfNearBottom(sid);
+}
+
+function retryFailedNodes(sid) {
+    const view = agentView(sid);
+    if (!view || !view.failedNodes || view.failedNodes.size === 0) return;
+    const names = [...view.failedNodes].join('、');
+    const input = document.getElementById(`agent-input-${sid}`);
+    if (!input) return;
+    input.value = `仅对失败节点 ${names} 重试上一个已批准计划的相同操作，其他节点不要重复执行`;
+    input.focus();
 }
 
 // ==================== DBA 反馈闭环 ====================

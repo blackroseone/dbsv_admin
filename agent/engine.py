@@ -4,7 +4,7 @@ import uuid
 import re
 import time
 import threading
-from typing import Dict, List, Optional, Generator, Tuple
+from typing import Dict, List, Optional, Generator, Tuple, Any
 from datetime import datetime, timedelta
 
 from db.database import get_db
@@ -56,7 +56,9 @@ class SmartOpsAgent:
     HISTORY_SUMMARY_MAX_CHARS = 1500
 
     def __init__(self, session_id: str, ssh_conn_id: Optional[str] = None,
-                 db_conn_id: Optional[str] = None, model_id: Optional[str] = None):
+                 db_conn_id: Optional[str] = None, model_id: Optional[str] = None,
+                 scope: Optional[List[Dict]] = None,
+                 manual_skill_name: Optional[str] = None):
         self.session_id = session_id
         self.ssh_conn_id = ssh_conn_id
         self.db_conn_id = db_conn_id
@@ -64,6 +66,28 @@ class SmartOpsAgent:
         self.embedder = Embedder()
         self.skill_manager = SkillManager()
         self.harness = Harness()
+
+        # v4.0 会话范围（多节点批量）：
+        # - 有 scope 时解析为 targets（含未配置节点，resolved=False）；
+        # - 无 scope（legacy 单连接）时退化为 ssh/db 连接对。
+        # targets 供工具 fan-out 逐节点执行；scope_labels 供范围外 target 检测。
+        from agent.scope import resolve_scope, scope_labels
+        if scope:
+            self.targets = resolve_scope(scope)
+        else:
+            legacy = []
+            if ssh_conn_id:
+                legacy.append({'type': 'ssh', 'topo_id': None,
+                               'conn_id': ssh_conn_id, 'name': ''})
+            if db_conn_id:
+                legacy.append({'type': 'db', 'topo_id': None,
+                               'conn_id': db_conn_id, 'name': ''})
+            self.targets = resolve_scope(legacy)
+        self.scope_labels = scope_labels(self.targets)
+
+        # 手动指定技能（v4.0）：注入完整 prompt_template（绕开自动匹配的截断预览）
+        self.manual_skill = (self.skill_manager.get_skill(manual_skill_name)
+                             if manual_skill_name else None)
         # 命令安全融合判定：静态判拒绝/未知的命令挂载独立 LLM 审查钩子（第二意见）。
         # 钩子在 harness 内部，引擎 _validate_action 与 tools.py 双重校验共用同一目标
         # + 同一 TTL 缓存，保证不会出现"引擎放行、工具层拦截"。
@@ -84,6 +108,8 @@ class SmartOpsAgent:
 
         # 是否执行过变更类操作（审批计划），决定结论采用简洁/分析两种格式
         self._executed_change_plan = False
+        # 批量变更失败节点集合（continue-on-error 收集，供结论与前端重试）
+        self._plan_failed_nodes = set()
 
     def run_stream(self, user_question: str) -> Generator[Dict, None, None]:
         """ReAct主循环（流式输出），带状态持久化与异常兜底"""
@@ -123,6 +149,11 @@ class SmartOpsAgent:
         matched_skills = self.skill_manager.match_skills_by_intent(
             user_question, self._get_db_type()
         )
+        # v4.0 M7：手动指定技能时跳过同名自动匹配，避免同一技能模板重复注入
+        if self.manual_skill:
+            manual_name = self.manual_skill.get('name')
+            matched_skills = [s for s in matched_skills
+                              if s.get('name') != manual_name]
 
         # 2.5 长期记忆召回（环境上下文）
         memory_refs = self._recall_memory(user_question)
@@ -218,7 +249,19 @@ class SmartOpsAgent:
             expired = False
             for action, reason in approval_actions:
                 plan = self._build_approval_plan(action, reason)
+                if plan is None:
+                    # 范围扩展目标未配置连接/拓扑中不存在：不弹审批，指引补配
+                    target = (action.get('parameters', {}).get('target') or '').strip()
+                    yield {"type": "executing_warning",
+                           "warning": f"节点 {target} 未配置连接，需先在范围面板一键配置后重试"}
+                    continue
                 plan_result = yield from self._handle_plan_approval(plan)
+                if plan_result == 'scope_approved':
+                    # M1：范围已扩展，原动作重投本回合继续执行（目标现已在范围）
+                    orig = plan.get('_original_action')
+                    if orig and self._classify_action(orig)[0] == 'safe':
+                        safe_actions.append(orig)
+                    continue
                 if plan_result == 'expired':
                     expired = True
                     break
@@ -253,23 +296,36 @@ class SmartOpsAgent:
 
             self.state.next_step()
 
-        # Conclusion（DBA 停止时跳过结论，直接收尾置 cancelled）
+        # Conclusion（按需生成）：
+        # - 未执行任何工具（直接回答/征求意见）：思考即对用户的回应，不再发起独立结论调用，
+        #   发 final_thinking 事件让前端把最后思考展开为可见回复（避免空结论/重复）；
+        # - 执行过诊断/变更：生成「分析结论」汇总结果；
+        # - DBA 停止：跳过结论直接收尾置 cancelled。
         if not cancelled:
-            yield {"type": "concluding_start"}
-            conclusion = yield from self._conclude_stream(knowledge_refs)
-            yield {"type": "concluding_end"}
+            tool_steps = [s for s in self.state.steps
+                          if s.action and isinstance(s.action, dict) and s.action.get('tool')]
+            has_conclusion = bool(tool_steps) or self._executed_change_plan
+            conclusion = ''
+            if has_conclusion:
+                yield {"type": "concluding_start"}
+                conclusion = yield from self._conclude_stream(knowledge_refs)
+                yield {"type": "concluding_end"}
 
-            step = self.state.add_step(AgentPhase.CONCLUDING, thought=conclusion)
-            self._persist_step(step)
+                step = self.state.add_step(AgentPhase.CONCLUDING, thought=conclusion)
+                self._persist_step(step)
+            else:
+                yield {"type": "final_thinking"}
+                conclusion = self.state.steps[-1].thought if self.state.steps else ''
             self.state.set_status(AgentStatus.COMPLETED)
             self._persist_session(AgentStatus.COMPLETED)
 
             # 学习闭环：成功诊断 → 后台沉淀技能 + 写长期记忆（不阻塞流式返回）
-            threading.Thread(
-                target=self._crystallize_after_success,
-                args=(user_question, conclusion, knowledge_refs),
-                daemon=True,
-            ).start()
+            if has_conclusion:
+                threading.Thread(
+                    target=self._crystallize_after_success,
+                    args=(user_question, conclusion, knowledge_refs),
+                    daemon=True,
+                ).start()
         else:
             yield {"type": "cancelled", "message": "⏹ 已取消"}
             self.state.set_status(AgentStatus.CANCELLED)
@@ -391,6 +447,28 @@ class SmartOpsAgent:
 如果不需要工具，直接给出分析结论。
 """
 
+        # v4.0 会话操作范围注入（多节点批量；各节点 db_type 逐点列出，混型时按方言分别写 SQL）
+        if self.targets:
+            scope_lines = []
+            for t in self.targets:
+                tag = '✅' if t.get('resolved') else '⚠️未配置连接'
+                dbtype = t.get('db_type') or ''
+                host = t.get('host') or ''
+                scope_lines.append(
+                    f"- {t.get('name') or t.get('conn_id')} "
+                    f"(主机: {host}, 类型: {t.get('type')}/{dbtype}) {tag}")
+            prompt += (f"\n## 会话操作范围（当前 {len(self.targets)} 个节点，批量执行）\n"
+                       + "\n".join(scope_lines)
+                       + """
+
+- 批量：query_database/get_schema_info/get_performance_metrics 只作用于范围内「数据库实例」节点，execute_command 只作用于「服务器」节点；不指定 target 时自动对范围内所有可用节点批量执行。
+- target：工具参数 target 可指定单个节点（用节点名或主机名）。
+- 占位符：命令/SQL 中可用 {host}/{port}/{instance}/{node}，引擎按各节点替换后再执行。
+- 方言：范围内各节点 db_type 可能不同，SQL/命令必须匹配目标节点的数据库方言；跨混型范围时分别处理或注明差异。
+- 范围外节点：若需操作范围外的节点，先用自然语言请求「扩展操作范围至节点 X」（将弹出审批），不要直接使用范围外节点名。
+- ⚠️未配置连接的节点不会执行，请提醒 DBA 先配置连接。
+""")
+
         # 注入知识库引用
         if knowledge_refs:
             prompt += "\n## 参考知识库文档\n"
@@ -419,6 +497,11 @@ class SmartOpsAgent:
                         prompt += f"  操作指南: {template[:200]}...\n"
                 elif template:
                     prompt += f"  操作指南: {template[:200]}...\n"
+
+        # v4.0 手动指定技能：注入完整操作指南（绕开自动匹配的截断预览）
+        if self.manual_skill and self.manual_skill.get('prompt_template'):
+            prompt += (f"\n## 指定技能操作指南（必须严格遵循）\n"
+                       f"{self.manual_skill['prompt_template']}\n")
 
         # 注入长期记忆（环境上下文，含图谱补充）
         if memory_refs:
@@ -470,7 +553,9 @@ class SmartOpsAgent:
         full = ''
 
         def fallback():
-            response, _ = call_llm(messages, model_id=self.model_id)
+            response, err = call_llm(messages, model_id=self.model_id)
+            if err:
+                print(f"[Agent] LLM 非流式回退失败: {err}")
             text = response or ''
             yield {"type": event_type, "content": text}
             return text
@@ -484,7 +569,8 @@ class SmartOpsAgent:
                 if delta:
                     full += delta
                     yield {"type": event_type, "content": delta}
-        except Exception:
+        except Exception as e:
+            print(f"[Agent] LLM 流式调用异常（回退非流式）: {e}")
             if not full:
                 return (yield from fallback())
         return full
@@ -696,35 +782,53 @@ class SmartOpsAgent:
             time.sleep(2)
 
         yield {"type": "approval_granted", "plan_id": plan_id}
+        if plan.get('kind') == 'scope':
+            # v4.0 范围扩展计划：无命令/SQL，批准后直接扩展范围并返回 'scope_approved'
+            # （React 循环据此把原动作重投本回合继续执行，避免二次审批）
+            self._apply_scope_extension(plan.get('targets') or [])
+            yield {"type": "scope_extended", "plan_id": plan_id,
+                   "targets": plan.get('targets') or []}
+            return 'scope_approved'
         self.state.add_message('user', "操作计划已批准。开始执行已批准的操作。")
         yield from self._execute_plan_operations(plan)
         return 'approved'
 
     def _execute_plan_operations(self, plan: Dict) -> Generator[Dict, None, None]:
-        """按计划确定性执行已批准的变更操作（会话现有连接）。遇错即停。
+        """按计划确定性执行已批准的变更操作（会话范围多节点，continue-on-error）。
 
-        逐 op：Harness 变更白名单二次校验 → load 连接 → run_sql/run_ssh_command →
-        流式结果 + 记录 AgentStep + 观察回流历史。失败即停止剩余操作，交给模型自分析。
+        逐 op：Harness 计划级二次校验（只挡注入/绕过，策略级拒绝放行）→ 选定目标节点
+        （默认全范围该类型节点；op.targets 可限定）→ 逐节点执行（并发上限 4）→
+        plan_operation_result 逐节点流式（含 node+status）→ 遇错收集继续剩余操作。
+        失败节点记入 self._plan_failed_nodes，供结论与前端「仅重试失败节点」。
         """
-        from agent.connectors import load_db_conn, load_ssh_conn, run_sql, run_ssh_command
+        from agent.connectors import run_sql, run_ssh_command
+        from agent.tools import _select_nodes, _substitute_placeholders, _node_label, _fan_out
         operations = plan.get('operations') or []
         db_type = self._get_db_type()
 
         # 标记已执行变更类操作，最终结论改用简洁格式
         self._executed_change_plan = True
+        self._plan_failed_nodes = set()
 
         for i, op in enumerate(operations, 1):
             tool = op.get('tool')
             params = op.get('parameters') or {}
+            op_targets = op.get('targets')  # 可选：计划操作限定的目标节点名列表
+
             if tool == 'query_database':
                 cls, err = Harness.classify_sql(params.get('sql', ''))
-                ok = cls != 'reject'
+                conn_type = 'db'
+                if cls == 'reject':
+                    ok = False
+                else:
+                    ok = True
             elif tool == 'execute_command':
-                # DBA 已批准：计划级校验（只挡注入/绕过，策略级拒绝放行）
                 ok, err = Harness.validate_plan_operation(
                     params.get('command', ''), db_type)
+                conn_type = 'ssh'
             else:
                 ok, err = False, f'计划操作不支持的工具: {tool}'
+                conn_type = None
 
             if not ok:
                 observation = f"❌ 计划操作 {i} 校验失败: {err}"
@@ -732,31 +836,69 @@ class SmartOpsAgent:
                        "parameters": params, "status": "rejected", "error": err}
                 self.state.add_message('user', observation)
                 self._persist_plan_step(i, op, observation, None)
-                break  # 遇错即停
+                continue  # 收集语义：校验失败也继续剩余操作
 
-            if tool == 'query_database':
-                conn_info, load_err = load_db_conn(self.db_conn_id)
-                if load_err:
-                    result = {"error": load_err}
+            # 选定目标节点（默认全范围该类型；op.targets 限定子集）
+            ctx = ToolContext(db_conn_id=self.db_conn_id, ssh_conn_id=self.ssh_conn_id,
+                              db_type=db_type, targets=self.targets,
+                              session_id=self.session_id)
+            nodes, _ = _select_nodes(ctx, conn_type, None)
+            if op_targets:
+                names = {str(n).strip() for n in op_targets}
+                nodes = [t for t in (nodes or [])
+                         if (t.get('name') or '') in names or (t.get('host') or '') in names]
+            if not nodes:
+                observation = f"❌ 计划操作 {i} 无可用执行节点"
+                yield {"type": "plan_operation_result", "index": i, "tool": tool,
+                       "parameters": params, "status": "error", "error": observation}
+                self.state.add_message('user', observation)
+                self._persist_plan_step(i, op, observation, None)
+                continue
+
+            def node_exec(t: Dict, conn_info: Dict) -> Dict:
+                if tool == 'query_database':
+                    node_sql = _substitute_placeholders(params.get('sql', ''), t)
+                    cls2, _ = Harness.classify_sql(node_sql)
+                    if cls2 == 'reject':
+                        return {"node": _node_label(t), "ok": False,
+                                "error": "SQL 注入拦截（替换后）"}
+                    result = run_sql(conn_info, node_sql,
+                                     max_rows=params.get('max_rows', 100))
                 else:
-                    result = run_sql(conn_info, params.get('sql', ''))
-            else:
-                conn_info, load_err = load_ssh_conn(self.ssh_conn_id)
-                if load_err:
-                    result = {"error": load_err}
-                else:
-                    result = run_ssh_command(conn_info, params.get('command', ''),
+                    node_cmd = _substitute_placeholders(params.get('command', ''), t)
+                    ok2, err2 = Harness.validate_plan_operation(
+                        node_cmd, conn_info.get('db_type') or db_type)
+                    if not ok2:
+                        return {"node": _node_label(t), "ok": False,
+                                "error": f"注入拦截: {err2}"}
+                    result = run_ssh_command(conn_info, node_cmd,
                                              timeout=params.get('timeout', 30))
+                if 'error' in result:
+                    return {"node": _node_label(t), "ok": False, "error": result['error']}
+                return {"node": _node_label(t), "ok": True, "result": result}
 
-            observation = self._format_result(result)
-            is_error = 'error' in result
-            yield {"type": "plan_operation_result", "index": i, "tool": tool,
-                   "parameters": params, "status": "error" if is_error else "success",
-                   "result": result}
-            self.state.add_message('user', f"计划操作 {i} 观察结果:\n{observation}")
-            self._persist_plan_step(i, op, observation, result)
-            if is_error:
-                break  # 遇错即停，交给模型自分析
+            batch = _fan_out(ToolContext(targets=nodes, session_id=self.session_id,
+                                         db_type=db_type), conn_type, node_exec)
+            results = batch.get('results') if batch.get('type') == 'batch_result' else [batch]
+
+            node_obs = []
+            for r in results:
+                label = r.get('node') or '?'
+                if r.get('ok'):
+                    yield {"type": "plan_operation_result", "index": i, "tool": tool,
+                           "parameters": params, "node": label,
+                           "status": "success", "result": r.get('result') or {}}
+                    node_obs.append(f"✅ {label}")
+                else:
+                    self._plan_failed_nodes.add(label)
+                    yield {"type": "plan_operation_result", "index": i, "tool": tool,
+                           "parameters": params, "node": label,
+                           "status": "error", "error": r.get('error')}
+                    node_obs.append(f"❌ {label}: {r.get('error')}")
+
+            observation = f"计划操作 {i} 执行结果（{len(results)} 节点）:\n" + "\n".join(node_obs)
+            self.state.add_message('user', f"{observation}")
+            self._persist_plan_step(i, op, observation, results)
 
     def _persist_plan_step(self, index: int, op: Dict,
                            observation: str, result: Optional[Dict]) -> None:
@@ -774,6 +916,13 @@ class SmartOpsAgent:
         tool = action.get("tool")
         params = action.get("parameters", {})
 
+        # v4.0 范围外 target：转审批（扩展操作范围后本回合重投执行）
+        target = params.get("target")
+        if target and tool in ('execute_command', 'query_database'):
+            tname = str(target).strip()
+            if tname and tname not in self.scope_labels:
+                return 'approval', f"目标节点不在会话范围: {tname}（需扩展操作范围）"
+
         if tool == "query_database":
             return self.harness.classify_sql(params.get("sql", ""))
         elif tool == "execute_command":
@@ -782,10 +931,34 @@ class SmartOpsAgent:
         # 其余工具（schema/性能/监控/检查项/知识检索）均为只读
         return 'safe', None
 
-    def _build_approval_plan(self, action: Dict, reason: str = '') -> Dict:
-        """把单个待审批动作包装成操作计划，走审批流"""
+    def _build_approval_plan(self, action: Dict, reason: str = '') -> Optional[Dict]:
+        """把单个待审批动作包装成操作计划，走审批流。
+
+        v4.0 范围扩展：reason 以「目标节点不在会话范围」开头时返回 kind:'scope' 计划
+        （嵌入原动作，批准后由 React 循环重投执行）；目标节点未配置连接或拓扑中不存在
+        则返回 None，调用方改发 executing_warning 指引补配，不弹审批。
+        """
         tool = action.get("tool")
         params = action.get("parameters", {})
+        if reason and reason.startswith('目标节点不在会话范围'):
+            target = (params.get('target') or '').strip()
+            node = self._find_topo_node(target)
+            if not node:
+                return None  # 拓扑中找不到该节点
+            from agent.scope import resolve_target
+            resolved = resolve_target({'type': node['type'], 'topo_id': node['id'],
+                                       'name': node['name']})
+            if not resolved or not resolved.get('resolved'):
+                return None  # 节点未配置连接，不弹审批
+            return {
+                'kind': 'scope',
+                'title': f"扩展操作范围至节点 {target}",
+                'scope': f"批准后将节点 {target} 加入会话范围并继续执行该操作",
+                'targets': [{'name': target}],
+                'operations': [],
+                'rollback': '',
+                '_original_action': action,  # 批准后本回合重投（M1）
+            }
         if tool == 'execute_command':
             title = f"执行命令: {params.get('command', '')[:40]}"
         elif tool == 'query_database':
@@ -823,6 +996,62 @@ class SmartOpsAgent:
         """
         for op in (plan.get('operations') or []):
             op['risk'] = self._estimate_op_risk(op.get('tool', ''), op.get('parameters') or {})
+
+    def _find_topo_node(self, name: str) -> Optional[Dict]:
+        """在拓扑资源池树中按 name/host 查找服务器或实例节点。
+
+        返回 {type:'ssh'|'db', id, name}；未找到返回 None。
+        """
+        from db.database import get_topology_data
+        name = (name or '').strip()
+        if not name:
+            return None
+        try:
+            data = get_topology_data()
+        except Exception:
+            return None
+        for pool in data.get('clusters', []):
+            for s in pool.get('servers', []):
+                if name == (s.get('name') or '') or name == (s.get('host') or ''):
+                    return {'type': 'ssh', 'id': s['id'], 'name': s.get('name') or name}
+                for i in s.get('instances', []):
+                    if name == (i.get('name') or ''):
+                        return {'type': 'db', 'id': i['id'], 'name': i.get('name') or name}
+        return None
+
+    def _apply_scope_extension(self, names: List[Any]) -> None:
+        """把范围外节点加入会话范围并持久化（范围扩展审批批准后调用）。
+
+        names 元素可为字符串或 {'name':...} 字典（兼容两类调用方）。
+        仅加入拓扑中可解析的节点；未配置连接或找不到的跳过。
+        """
+        from agent.scope import resolve_target
+        from db.database import get_session_scope, set_session_scope
+        added = []
+        for item in names or []:
+            name = item.strip() if isinstance(item, str) \
+                else ((item or {}).get('name') or '').strip()
+            if not name or name in self.scope_labels:
+                continue
+            node = self._find_topo_node(name)
+            if not node:
+                continue
+            target = {'type': node['type'], 'topo_id': node['id'], 'name': node['name']}
+            resolved = resolve_target(target)
+            if resolved and resolved.get('resolved'):
+                self.targets.append(resolved)
+                for key in ('name', 'conn_name', 'host'):
+                    val = resolved.get(key)
+                    if val:
+                        self.scope_labels.add(val)
+                added.append(target)
+        if added:
+            cur = get_session_scope(self.session_id).get('targets') or []
+            for t in added:
+                if not any(x.get('type') == t['type'] and x.get('topo_id') == t['topo_id']
+                           for x in cur):
+                    cur.append(t)
+            set_session_scope(self.session_id, 'scope', cur)
 
     def _validate_action(self, action: Dict) -> Tuple[bool, str]:
         """验证动作安全性"""
@@ -870,20 +1099,40 @@ class SmartOpsAgent:
             print(f"[Agent] 会话状态持久化失败: {e}")
 
     def _execute_action(self, action: Dict) -> Dict:
-        """执行工具（注入连接上下文）"""
+        """执行工具（注入连接上下文 + 会话范围 targets，v4.0 批量）"""
         tool = action["tool"]
         params = action.get("parameters", {})
         ctx = ToolContext(
             db_conn_id=self.db_conn_id,
             ssh_conn_id=self.ssh_conn_id,
             db_type=self._get_db_type(),
-            operation_level=self.operation_level
+            operation_level=self.operation_level,
+            targets=self.targets,
+            session_id=self.session_id
         )
         # 使用工具注册表执行
         return execute_tool(tool, params, ctx)
 
     def _format_result(self, result: Dict) -> str:
         """格式化执行结果为文本"""
+        if result.get('type') == 'batch_result':
+            # 批量结果：逐节点紧凑摘要（结构化数据经 SSE result 传前端，不落历史）
+            results = result.get('results', [])
+            ok_count = sum(1 for r in results if r.get('ok'))
+            fail_count = len(results) - ok_count
+            lines = [f"📡 批量执行结果 ({len(results)} 节点, ✅{ok_count}/❌{fail_count}):"]
+            for r in results:
+                label = r.get('node') or '?'
+                if r.get('ok'):
+                    if 'row_count' in r:
+                        out_str = f"{r.get('row_count', 0)} 行"
+                    else:
+                        out_str = str(r.get('output') or 'ok')[:120].replace('\n', ' ')
+                    lines.append(f"- ✅ {label}: {out_str}")
+                else:
+                    lines.append(f"- ❌ {label}: {r.get('error', '失败')}")
+            return "\n".join(lines)
+
         if "error" in result:
             return f"❌ 执行出错: {result['error']}"
 
@@ -903,6 +1152,13 @@ class SmartOpsAgent:
             text = f"💻 命令输出:\n{result['stdout']}"
             if result.get("stderr"):
                 text += f"\n[stderr] {result['stderr']}"
+            return text
+
+        # 单目标/单节点执行：{node, ok, output} 包装（v4.0 逐节点执行返回形态）
+        if "output" in result and "node" in result:
+            text = f"💻 {result['node']} 命令输出:\n{result['output']}"
+            if result.get('ok') is False and result.get('error'):
+                text = f"❌ {result['node']}: {result['error']}"
             return text
 
         if "results" in result and isinstance(result["results"], list):
@@ -938,6 +1194,7 @@ class SmartOpsAgent:
 
         if self._executed_change_plan:
             # 变更类操作：聚焦操作结果，简洁明了，不展开长篇分析
+            failed_nodes = ', '.join(sorted(self._plan_failed_nodes)) or '无'
             prompt = f"""以下是本次变更操作的执行记录，请给出简洁的操作结论：
 
 操作步骤:
@@ -946,22 +1203,24 @@ class SmartOpsAgent:
 执行结果:
 {chr(10).join(observations)}
 
+批量变更失败节点: {failed_nodes}
+
 请用简洁语言给出（2-4 句即可）：
-1. 操作是否成功（一句话）
+1. 操作是否成功（一句话，含失败节点，如有）
 2. 关键结果（如新状态、进程、配置生效等）
-3. 如有必要，仅保留 1-2 条后续验证建议
+3. 如有必要，仅保留 1-2 条后续验证建议（失败节点需提示重试）
 
 要求：只讲操作结果和必要提醒，不要长篇分析、不要罗列通用建议、不要展开置信度说明。"""
             system = "你是一个数据库运维专家，请基于操作执行结果给出简洁结论，避免冗长。"
         elif not tool_steps:
-            # 未执行任何工具（如仅提出澄清问题/等待用户补充信息）：极简收尾，
-            # 不套分析报告模板，避免"等个信息还要输出四段式诊断报告"
-            prompt = f"""以下是本次对话的思考过程，尚未执行任何工具操作：
+            # 未调用任何工具（直接作答/仅澄清）：极简收尾，不套分析报告模板。
+            # 注意：思考中可能已给出答案（简单任务直接回答），需明确区分两种收尾。
+            prompt = f"""以下是本次对话的分析过程（未调用任何工具）：
 
-{chr(10).join(thoughts) or '(无思考内容)'}
+{chr(10).join(thoughts) or '(无分析内容)'}
 
-当前处于等待澄清/补充信息阶段。请用 1-3 句话直接收尾：
-1. 若指令已明确且可执行，说明接下来将做什么；
+请用 1-3 句话直接给出最终回应：
+1. 若已在分析中给出答案/可直接回答，用一两句话复述结论要点，直接结束；
 2. 若缺少关键信息，明确指出缺什么、需要用户提供什么，然后停止；
 3. 不要展开分析、不要罗列通用建议、不要标注置信度、不要输出章节标题。"""
             system = "你是一个数据库运维专家，回答务必简短直接，避免冗长。"
@@ -991,7 +1250,7 @@ class SmartOpsAgent:
 1. 问题诊断结论（2-4 句，直接说问题与依据）
 2. 具体建议（与本次观察/操作直接相关；若建议下一步操作，直接给，不要泛泛而谈）
 
-要求：不要罗列通用最佳实践（监控建设、流程规范等）、不要展开置信度说明、不要重复分析过程。若本次只执行了单次查询且答案已在结果中，直接用一两句话回答即可，不要展开分析、不要罗列建议。"""
+要求：不要罗列通用最佳实践（监控建设、流程规范等）、不要展开置信度说明、不要重复分析过程。若本次只执行了单次查询，直接给出一两句话的结论并包含关键结果，不要展开分析、不要罗列建议。"""
             system = "你是一个数据库运维专家，请基于分析结果给出专业建议，保持简洁，避免冗余。"
 
         messages = [
@@ -1007,9 +1266,21 @@ class SmartOpsAgent:
         return response
 
     def _conclude_stream(self, knowledge_refs: List[Dict]) -> Generator[Dict, None, str]:
-        """生成最终结论（流式）：逐 token 产出 concluding_chunk"""
+        """生成最终结论（流式）：逐 token 产出 concluding_chunk。
+
+        LLM 未产出结论（调用失败/空响应）时，用最近一次观察作确定性兜底，
+        保证「分析结论」块永不为空。
+        """
         messages = self._build_conclude_messages(knowledge_refs)
-        return (yield from self._stream_llm(messages, 'concluding_chunk'))
+        text = yield from self._stream_llm(messages, 'concluding_chunk')
+        if not (text or '').strip():
+            last_obs = next((o for o in reversed(
+                [s.observation for s in self.state.steps if s.observation])), '')
+            fallback = f"执行完成。{last_obs[:200]}" if last_obs else "本次执行已完成。"
+            yield {"type": "concluding_chunk", "content": fallback}
+            print(f"[Agent] 结论为空，已用观察兜底: {fallback[:60]}")
+            return fallback
+        return text
 
     def _recall_memory(self, question: str) -> List[Dict]:
         """召回长期记忆：语义优先，关键词兜底；对主机/实例/集群记忆做图谱补充。

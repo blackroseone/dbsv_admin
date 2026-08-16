@@ -675,6 +675,63 @@ def init_db():
     conn.execute("DROP TABLE IF EXISTS node_connections")
     conn.commit()
 
+    # 数据库迁移（v4.0 会话范围化）：agent_sessions 增加 scope 列
+    for col, ddl in [
+        ('scope_type', "ADD COLUMN scope_type TEXT DEFAULT 'legacy'"),
+        ('scope_json', "ADD COLUMN scope_json TEXT"),
+    ]:
+        try:
+            conn.execute(f"SELECT {col} FROM agent_sessions LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute(f"ALTER TABLE agent_sessions {ddl}")
+            conn.commit()
+
+    # 数据库迁移（v4.0）：SSH/DB 连接增加拓扑钉定列（节点→连接显式关联）
+    for table, col in [('agent_ssh_connections', 'topo_server_id'),
+                       ('agent_db_connections', 'topo_instance_id')]:
+        try:
+            conn.execute(f"SELECT {col} FROM {table} LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+            conn.commit()
+
+    # 数据库迁移（v4.0）：topo_instances 增加 database/sid/service_name
+    # （同机同端口多数据库实例的解析消歧，见 agent/scope.py）
+    for col in ('database', 'sid', 'service_name'):
+        try:
+            conn.execute(f"SELECT {col} FROM topo_instances LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute(f"ALTER TABLE topo_instances ADD COLUMN {col} TEXT")
+            conn.commit()
+
+    # 回填既有会话范围：legacy 单连接对。WHERE scope_json IS NULL 保证幂等，
+    # 不覆盖后续会话范围编辑结果。
+    try:
+        legacy_rows = conn.execute(
+            "SELECT id, ssh_connection_id, db_connection_id FROM agent_sessions "
+            "WHERE scope_json IS NULL OR scope_json = ''").fetchall()
+    except sqlite3.OperationalError:
+        legacy_rows = []
+    if legacy_rows:
+        ssh_names = {r['id']: r['name'] for r in conn.execute(
+            "SELECT id, name FROM agent_ssh_connections").fetchall()}
+        db_names = {r['id']: r['name'] for r in conn.execute(
+            "SELECT id, name FROM agent_db_connections").fetchall()}
+        for row in legacy_rows:
+            targets = []
+            if row['ssh_connection_id']:
+                targets.append({'type': 'ssh', 'topo_id': None,
+                                'conn_id': row['ssh_connection_id'],
+                                'name': ssh_names.get(row['ssh_connection_id'], '')})
+            if row['db_connection_id']:
+                targets.append({'type': 'db', 'topo_id': None,
+                                'conn_id': row['db_connection_id'],
+                                'name': db_names.get(row['db_connection_id'], '')})
+            conn.execute(
+                "UPDATE agent_sessions SET scope_type='legacy', scope_json=? WHERE id=?",
+                (json.dumps(targets, ensure_ascii=False), row['id']))
+        conn.commit()
+
     # 数据库迁移：删除 topo_servers 表的 cpu 和 memory 字段（数据迁移到 description）
     # 注意：SQLite 不支持直接删除列，这里只是标记，实际删除需要重建表
     # 暂时保留，通过前端不再使用这些字段
@@ -1317,9 +1374,14 @@ get_topology_data = get_clusters
 
 
 def get_topology_text():
-    """将集群拓扑数据格式化为结构化文本"""
+    """将集群拓扑数据格式化为结构化文本（同步进知识库，供 Agent/RAG 检索）
+
+    注意：get_topology_data() 返回结构为 {'clusters': [...]}，cluster 含 servers/tenants，
+    server/tenant 含 instances —— 键名必须是 clusters/servers/tenants/instances，
+    历史上曾误用 topo_* 前缀导致序列化全空（H3）。
+    """
     data = get_topology_data()
-    topo_clusters = data.get('topo_clusters', [])
+    topo_clusters = data.get('clusters', [])
 
     if not topo_clusters:
         return ""
@@ -1339,7 +1401,7 @@ def get_topology_text():
         lines.append("")
 
         # 物理机
-        topo_servers = cluster.get('topo_servers', [])
+        topo_servers = cluster.get('servers', [])
         if topo_servers:
             lines.append("物理机列表：")
             for server in topo_servers:
@@ -1349,13 +1411,9 @@ def get_topology_text():
 
                 if server.get('datacenter'):
                     lines.append(f"    数据中心：{server['datacenter']}")
-                if server.get('cpu'):
-                    lines.append(f"    CPU：{server['cpu']}")
-                if server.get('memory'):
-                    lines.append(f"    内存：{server['memory']}")
 
                 # 实例
-                topo_instances = server.get('topo_instances', [])
+                topo_instances = server.get('instances', [])
                 if topo_instances:
                     lines.append("    实例：")
                     for inst in topo_instances:
@@ -1370,7 +1428,7 @@ def get_topology_text():
             lines.append("")
 
         # 租户
-        topo_tenants = cluster.get('topo_tenants', [])
+        topo_tenants = cluster.get('tenants', [])
         if topo_tenants:
             lines.append("租户列表：")
             for tenant in topo_tenants:
@@ -1378,7 +1436,7 @@ def get_topology_text():
                 if tenant.get('description'):
                     lines.append(f"    描述：{tenant['description']}")
 
-                topo_instances = tenant.get('topo_instances', [])
+                topo_instances = tenant.get('instances', [])
                 if topo_instances:
                     lines.append("    实例：")
                     for inst in topo_instances:
@@ -2194,3 +2252,51 @@ def list_plans(session_id):
         "SELECT * FROM agent_plans WHERE session_id=? ORDER BY id DESC", (session_id,)
     ).fetchall()
     return [_plan_from_row(r) for r in rows]
+
+
+# ==================== Agent会话范围 CRUD（v4.0 多节点批量） ====================
+
+def get_session_scope(session_id) -> dict:
+    """获取会话范围：{scope_type, targets}。
+
+    targets: [{type:'ssh'|'db', topo_id, conn_id, name}, ...]。
+    scope_json 为空/损坏时返回空 targets。
+    """
+    conn = get_db()
+    row = conn.execute(
+        "SELECT scope_type, scope_json FROM agent_sessions WHERE id=?",
+        (session_id,)).fetchone()
+    if not row:
+        return {'scope_type': 'legacy', 'targets': []}
+    try:
+        targets = json.loads(row['scope_json'] or '[]')
+        if not isinstance(targets, list):
+            targets = []
+    except (TypeError, ValueError):
+        targets = []
+    return {'scope_type': row['scope_type'] or 'legacy', 'targets': targets}
+
+
+def set_session_scope(session_id, scope_type, targets) -> None:
+    """写入会话范围并同步旧列（兼容所有只读单连接的旧消费方）。
+
+    scope_type: 'legacy'（单连接对）或 'scope'（多节点拓扑范围）。
+    targets: [{type, topo_id, conn_id, name}, ...]，conn_id 可为空（未配置连接）。
+    同步 ssh_connection_id/db_connection_id：取各类型首个非空 conn_id。
+    主 db_type（引擎 _get_db_type）取首个 db target 的 conn —— 多目标会话只落第一个，
+    属预期降级，注释在 agent/engine.py 对应位置。
+    """
+    conn = get_db()
+    conn.execute(
+        "UPDATE agent_sessions SET scope_type=?, scope_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        (scope_type, json.dumps(targets, ensure_ascii=False), session_id))
+    # 旧列同步用解析后的 conn_id：拓扑节点勾选的 target 无 conn_id，需先解析出
+    # 匹配的连接。延迟导入避免 db↔agent 循环依赖。
+    from agent.scope import resolve_scope
+    resolved = resolve_scope(targets)
+    ssh_ids = [t['conn_id'] for t in resolved if t.get('type') == 'ssh' and t.get('conn_id')]
+    db_ids = [t['conn_id'] for t in resolved if t.get('type') == 'db' and t.get('conn_id')]
+    conn.execute(
+        "UPDATE agent_sessions SET ssh_connection_id=?, db_connection_id=? WHERE id=?",
+        (ssh_ids[0] if ssh_ids else None, db_ids[0] if db_ids else None, session_id))
+    conn.commit()
