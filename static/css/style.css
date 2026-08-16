@@ -5168,6 +5168,7 @@ body {
 
 /* ==================== Agent 模块 ==================== */
 .agent-layout {
+    position: relative;   /* 抽屉在此容器内定位（修复抽屉脱离模块、贴屏幕边缘） */
     display: flex;
     gap: 12px;
     height: calc(100vh - 130px);
@@ -5180,7 +5181,19 @@ body {
     display: flex;
     flex-direction: column;
     gap: 12px;
-    overflow-y: auto;
+    overflow: hidden;   /* 滚动收敛到范围面板内部 */
+}
+
+/* 范围区块占满侧栏高度，树形列表在面板内滚动 */
+.agent-sidebar > .agent-section:first-child {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.agent-sidebar-hint {
+    flex-shrink: 0;
 }
 
 .agent-section {
@@ -5207,8 +5220,24 @@ body {
     display: flex;
     flex-direction: column;
     gap: 6px;
-    max-height: 42vh;
-    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;   /* 树形列表超长时面板内滚动 */
+    padding-right: 2px;
+}
+
+/* 池/服务器树形折叠 */
+.scope-toggle {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    border: none;
+    background: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: .7rem;
+    padding: 0;
+    line-height: 1;
 }
 
 .scope-pool {
@@ -5220,12 +5249,20 @@ body {
 .scope-pool-header {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     padding: 7px 8px;
     background: var(--bg-card);
-    cursor: pointer;
     font-size: 0.85rem;
     font-weight: 600;
+}
+
+.scope-pool-label {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    min-width: 0;
 }
 
 .scope-pool-name {
@@ -5270,6 +5307,20 @@ body {
 .scope-server-row {
     padding-left: 10px;
     font-weight: 500;
+}
+
+.scope-node-label {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+}
+
+.scope-node-label input[type="checkbox"] {
+    flex-shrink: 0;
+    accent-color: var(--primary-color);
 }
 
 .scope-instance {
@@ -5332,32 +5383,45 @@ body {
 }
 
 .agent-drawer {
-    position: fixed;
+    position: absolute;   /* 相对 .agent-layout 定位（修复相对 body 导致贴屏幕边缘/顶栏遮挡） */
     top: 0;
     bottom: 0;
     width: 300px;
     background: var(--bg-module);
-    border-right: 1px solid var(--border-color);
+    border: 1px solid var(--border-color);
     box-shadow: 0 0 12px rgba(0,0,0,.15);
     z-index: 90;
     display: flex;
     flex-direction: column;
     padding: 12px;
     gap: 10px;
+    overflow: hidden;
     transition: transform .18s ease;
 }
 
+/* 历史抽屉：从模块侧边栏右侧滑出（侧栏 260px） */
 .drawer-left { left: 0; transform: translateX(-100%); }
-.drawer-left.open { transform: translateX(0); }
+.drawer-left.open { transform: translateX(260px); }
 .drawer-right { right: 0; transform: translateX(100%); }
 .drawer-right.open { transform: translateX(0); }
 
 .agent-drawer .drawer-header {
+    flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: space-between;
 }
 .agent-drawer .drawer-header h3 { margin: 0; font-size: 1rem; }
+
+/* 抽屉内容独立滚动（修复无滚动条、滚动落到页面） */
+.drawer-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
 
 .manage-tabs {
     display: flex;
@@ -5439,6 +5503,82 @@ body {
     background: var(--primary-color);
     border-color: var(--primary-color);
     color: #fff;
+}
+
+/* ==================== 技能栏（/ 召唤，v4.0） ==================== */
+.skill-palette-wrap {
+    position: relative;
+    flex-shrink: 0;
+}
+
+.skill-palette {
+    position: absolute;
+    bottom: 100%;          /* 输入框上方弹出 */
+    left: 0;
+    right: 0;
+    max-height: 220px;
+    overflow-y: auto;      /* 可上下滚动 */
+    background: var(--bg-module);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    box-shadow: 0 -2px 12px rgba(0,0,0,.15);
+    z-index: 60;
+    margin-bottom: 6px;
+    padding: 6px;
+}
+
+.skill-palette-header {
+    font-size: .72rem;
+    color: var(--text-secondary);
+    padding: 2px 4px 6px;
+}
+
+.skill-palette-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.skill-palette-item:hover { background: var(--bg-chat); }
+
+.sp-name { font-size: .82rem; font-weight: 500; }
+.sp-desc {
+    font-size: .72rem;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 60%;
+}
+.skill-palette-empty { font-size: .78rem; color: var(--text-secondary); padding: 8px; }
+
+/* 已选技能小标签（可清除） */
+.skill-active-tag {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: .76rem;
+    color: var(--primary-color);
+    background: var(--bg-chat);
+    border: 1px solid var(--primary-color);
+    border-radius: 12px;
+    padding: 2px 8px;
+    margin: 0 2px 6px;
+    width: fit-content;
+}
+
+.skill-tag-close {
+    border: none;
+    background: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: .9rem;
+    padding: 0 2px;
 }
 
 /* ==================== 批量执行结果（v4.0） ==================== */

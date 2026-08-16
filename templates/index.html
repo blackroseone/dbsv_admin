@@ -467,47 +467,51 @@
                     <div class="agent-drawer drawer-left" id="agent-history-drawer">
                         <div class="drawer-header">
                             <h3>📋 会话历史</h3>
-                            <button class="btn btn-secondary" onclick="toggleAgentHistoryDrawer()">×</button>
+                            <button class="btn btn-secondary" title="关闭" onclick="toggleAgentHistoryDrawer()">×</button>
                         </div>
-                        <div id="agent-session-list" class="session-list"></div>
+                        <div class="drawer-body">
+                            <div id="agent-session-list" class="session-list"></div>
+                        </div>
                     </div>
 
                     <!-- 管理抽屉：连接 / 技能 / 记忆 -->
                     <div class="agent-drawer drawer-right" id="agent-manage-drawer">
                         <div class="drawer-header">
                             <h3>⚙️ 管理</h3>
-                            <button class="btn btn-secondary" onclick="toggleAgentManageDrawer()">×</button>
+                            <button class="btn btn-secondary" title="关闭" onclick="toggleAgentManageDrawer()">×</button>
                         </div>
                         <div class="manage-tabs">
                             <button class="tab-btn active" data-tab="conn" onclick="switchManageTab('conn')">连接</button>
                             <button class="tab-btn" data-tab="skill" onclick="switchManageTab('skill')">技能</button>
                             <button class="tab-btn" data-tab="memory" onclick="switchManageTab('memory')">记忆</button>
                         </div>
-                        <div id="agent-manage-conn" style="display: block;">
-                            <div class="connection-tabs">
-                                <button class="tab-btn active" data-tab="ssh" onclick="switchAgentTab('ssh')">SSH</button>
-                                <button class="tab-btn" data-tab="db" onclick="switchAgentTab('db')">数据库</button>
+                        <div class="drawer-body">
+                            <div id="agent-manage-conn" style="display: block;">
+                                <div class="connection-tabs">
+                                    <button class="tab-btn active" data-tab="ssh" onclick="switchAgentTab('ssh')">SSH</button>
+                                    <button class="tab-btn" data-tab="db" onclick="switchAgentTab('db')">数据库</button>
+                                </div>
+                                <div id="agent-ssh-connections" class="tab-content active">
+                                    <button class="btn-add" onclick="showAddSSHDialog()">+ 添加SSH</button>
+                                    <div id="agent-ssh-conn-list" class="connection-list"></div>
+                                </div>
+                                <div id="agent-db-connections" class="tab-content" style="display: none;">
+                                    <button class="btn-add" onclick="showAddDBDialog()">+ 添加DB</button>
+                                    <div id="agent-db-conn-list" class="connection-list"></div>
+                                </div>
                             </div>
-                            <div id="agent-ssh-connections" class="tab-content active">
-                                <button class="btn-add" onclick="showAddSSHDialog()">+ 添加SSH</button>
-                                <div id="agent-ssh-conn-list" class="connection-list"></div>
+                            <div id="agent-manage-skill" style="display: none;">
+                                <button class="btn-add" onclick="showAddSkillDialog()">+ 手动技能</button>
+                                <button class="btn-add" onclick="document.getElementById('agent-skill-doc-input').click()">📄 从手册生成</button>
+                                <input type="file" id="agent-skill-doc-input" style="display:none"
+                                       accept=".txt,.md,.pdf,.docx,.html,.doc"
+                                       onchange="uploadDocSkill(this)">
+                                <div id="agent-skill-list" class="connection-list"></div>
                             </div>
-                            <div id="agent-db-connections" class="tab-content" style="display: none;">
-                                <button class="btn-add" onclick="showAddDBDialog()">+ 添加DB</button>
-                                <div id="agent-db-conn-list" class="connection-list"></div>
+                            <div id="agent-manage-memory" style="display: none;">
+                                <button class="btn-add" onclick="showAddMemoryDialog()">+ 记录</button>
+                                <div id="agent-memory-list" class="connection-list"></div>
                             </div>
-                        </div>
-                        <div id="agent-manage-skill" style="display: none;">
-                            <button class="btn-add" onclick="showAddSkillDialog()">+ 手动技能</button>
-                            <button class="btn-add" onclick="document.getElementById('agent-skill-doc-input').click()">📄 从手册生成</button>
-                            <input type="file" id="agent-skill-doc-input" style="display:none"
-                                   accept=".txt,.md,.pdf,.docx,.html,.doc"
-                                   onchange="uploadDocSkill(this)">
-                            <div id="agent-skill-list" class="connection-list"></div>
-                        </div>
-                        <div id="agent-manage-memory" style="display: none;">
-                            <button class="btn-add" onclick="showAddMemoryDialog()">+ 记录</button>
-                            <div id="agent-memory-list" class="connection-list"></div>
                         </div>
                     </div>
                 </div>

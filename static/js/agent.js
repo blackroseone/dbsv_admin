@@ -18,6 +18,8 @@ let agentScopeTargets = [];            // [{type:'ssh'|'db', topo_id, conn_id, n
 let agentScopeTree = [];               // /api/topology/clusters 返回的池树
 let agentScopeResolve = {};            // {`${type}:${topo_id}`: resolvedNode}
 let agentScopeMixed = false;           // 勾选是否混型 db_type
+let agentScopeCollapsed = new Set();   // 树形折叠的 pool/server 键
+let agentSkillList = null;             // / 技能栏的懒加载技能列表缓存
 
 // ==================== 模块初始化 ====================
 function initAgentModule() {
@@ -93,6 +95,9 @@ function renderAgentScopeTree() {
     }
 
     panel.innerHTML = agentScopeTree.map(pool => {
+        const poolKey = 'pool:' + pool.id;
+        const poolCollapsed = agentScopeCollapsed.has(poolKey);
+        const poolArrow = poolCollapsed ? '▸' : '▾';
         const servers = (pool.servers || []).map(s => {
             const sKey = 'ssh:' + s.id;
             const st = agentScopeTargets.find(t => t.type === 'ssh' && t.topo_id === s.id);
@@ -100,7 +105,11 @@ function renderAgentScopeTree() {
             const badge = scopeBadgeHtml(status);
             const cfg = badge && (!status || !status.resolved)
                 ? `<button class="scope-config-btn" onclick="quickConfigAgentNode('${escapeJsAttr(s.id)}','ssh')">配置</button>` : '';
-            const instances = (s.instances || []).map(i => {
+            const instances = (s.instances || []);
+            const hasInst = instances.length > 0;
+            const sCollapsed = agentScopeCollapsed.has(sKey);
+            const sArrow = hasInst ? (sCollapsed ? '▸' : '▾') : '';
+            const instHtml = instances.map(i => {
                 const iKey = 'db:' + i.id;
                 const it = agentScopeTargets.find(t => t.type === 'db' && t.topo_id === i.id);
                 const ist = agentScopeResolve[iKey];
@@ -114,12 +123,16 @@ function renderAgentScopeTree() {
                 </label>`;
             }).join('');
             return `<div class="scope-server">
-                <label class="scope-node scope-server-row">
-                    <input type="checkbox" data-target-key="${sKey}" ${st ? 'checked' : ''}>
-                    <span class="scope-node-name">${escapeHtml(s.name)}</span>
-                    <span class="scope-node-meta">${escapeHtml(s.host || '')}</span>${badge}${cfg}
-                </label>
-                ${instances ? `<div class="scope-instances">${instances}</div>` : ''}
+                <div class="scope-node scope-server-row">
+                    ${hasInst ? `<button class="scope-toggle" title="展开/折叠" onclick="toggleScopeCollapse(event,'server','${escapeJsAttr(s.id)}')">${sArrow}</button>` : ''}
+                    <label class="scope-node-label">
+                        <input type="checkbox" data-target-key="${sKey}" ${st ? 'checked' : ''}>
+                        <span class="scope-node-name">${escapeHtml(s.name)}</span>
+                        <span class="scope-node-meta">${escapeHtml(s.host || '')}</span>
+                    </label>
+                    ${badge}${cfg}
+                </div>
+                ${hasInst ? `<div class="scope-instances" style="${sCollapsed ? 'display:none;' : ''}">${instHtml}</div>` : ''}
             </div>`;
         }).join('');
 
@@ -128,18 +141,31 @@ function renderAgentScopeTree() {
             agentScopeTargets.find(t => t.type === 'ssh' && t.topo_id === s.id)).length;
         const poolAll = poolServers.length > 0 && checkedServers === poolServers.length;
         return `<div class="scope-pool">
-            <label class="scope-pool-header">
-                <input type="checkbox" data-pool-key="pool:${pool.id}" ${poolAll ? 'checked' : ''}>
-                <span class="scope-pool-name">${escapeHtml(pool.name)}</span>
-                <span class="scope-pool-dbtype">${escapeHtml(pool.db_type || '')}</span>
-            </label>
-            <div class="scope-servers">${servers}</div>
+            <div class="scope-pool-header">
+                <button class="scope-toggle" title="展开/折叠" onclick="toggleScopeCollapse(event,'pool','${escapeJsAttr(pool.id)}')">${poolArrow}</button>
+                <label class="scope-pool-label">
+                    <input type="checkbox" data-pool-key="pool:${pool.id}" ${poolAll ? 'checked' : ''}>
+                    <span class="scope-pool-name">${escapeHtml(pool.name)}</span>
+                    <span class="scope-pool-dbtype">${escapeHtml(pool.db_type || '')}</span>
+                </label>
+            </div>
+            <div class="scope-servers" style="${poolCollapsed ? 'display:none;' : ''}">${servers}</div>
         </div>`;
     }).join('') + (agentScopeMixed
         ? '<div class="scope-mixed-warning">⚠️ 已选混合数据库类型，批量 SQL 需按各节点方言适配</div>'
         : '');
 
     panel.onchange = onAgentScopeChange;
+}
+
+// 树形折叠/展开池或服务器（不改动勾选状态）
+function toggleScopeCollapse(event, kind, id) {
+    event.preventDefault();
+    event.stopPropagation();
+    const key = (kind === 'pool' ? 'pool:' : 'ssh:') + id;
+    if (agentScopeCollapsed.has(key)) agentScopeCollapsed.delete(key);
+    else agentScopeCollapsed.add(key);
+    renderAgentScopeTree();
 }
 
 // 根据解析状态生成徽标 HTML（resolved→✅；ambiguous→多匹配；未配置→未配置）
@@ -292,7 +318,7 @@ function sessionScopeCount(session) {
     return out;
 }
 
-// ==================== 技能 chips（v4.0 手动技能选择） ====================
+// ==================== 技能栏（/ 召唤，v4.0） ====================
 function sessionDbType(sid) {
     const s = agentSessions.find(x => x.id === sid);
     if (s && s.scope_json) {
@@ -309,28 +335,68 @@ function sessionDbType(sid) {
     return c ? c.db_type : '';
 }
 
-async function loadAgentSkillChips(sid) {
-    const chips = document.getElementById(`agent-skill-chips-${sid}`);
-    if (!chips) return;
-    const dbType = sessionDbType(sid);
-    let skills = [];
-    try {
-        const resp = await fetch(`/api/agent/skills${dbType ? '?db_type=' + encodeURIComponent(dbType) : ''}`);
-        const data = await resp.json();
-        skills = data.skills || [];
-    } catch (e) {}
-    const view = agentView(sid);
-    const items = [{ name: '' }].concat(skills).map(sk => {
-        const active = (view.selectedSkill || '') === (sk.name || '');
-        return `<button class="skill-chip${active ? ' active' : ''}"
-                onclick="selectAgentSkill('${escapeJsAttr(sid)}','${escapeJsAttr(sk.name || '')}')">${escapeHtml(sk.name || '自由对话')}</button>`;
-    }).join('');
-    chips.innerHTML = `<span class="chip-label">技能:</span>${items}`;
+// 输入框以 / 开头时，在输入框上方弹出技能栏（可上下滚动）
+async function onAgentSkillInput(sid) {
+    const input = document.getElementById(`agent-input-${sid}`);
+    if (!input) return;
+    const val = input.value;
+    if (val.startsWith('/')) {
+        await openSkillPalette(sid, val.slice(1).trim().toLowerCase());
+    } else {
+        closeSkillPalette(sid);
+    }
 }
 
-function selectAgentSkill(sid, name) {
-    agentView(sid).selectedSkill = name || '';
-    loadAgentSkillChips(sid);
+async function openSkillPalette(sid, query) {
+    const wrap = document.getElementById(`agent-skill-palette-wrap-${sid}`);
+    const box = document.getElementById(`agent-skill-palette-${sid}`);
+    if (!wrap || !box) return;
+    if (!agentSkillList) {
+        const dbType = sessionDbType(sid);
+        try {
+            const resp = await fetch(`/api/agent/skills${dbType ? '?db_type=' + encodeURIComponent(dbType) : ''}`);
+            const data = await resp.json();
+            agentSkillList = data.skills || [];
+        } catch (e) { agentSkillList = []; }
+    }
+    const items = agentSkillList.filter(s =>
+        !query
+        || (s.name || '').toLowerCase().includes(query)
+        || (s.description || '').toLowerCase().includes(query));
+    box.innerHTML = `<div class="skill-palette-header">选择技能（注入完整操作指南）</div>`
+        + (items.length ? items.map(s => `
+            <div class="skill-palette-item" onclick="selectSkillPalette('${escapeJsAttr(sid)}','${escapeJsAttr(s.name)}')">
+                <span class="sp-name">${escapeHtml(s.name)}</span>
+                <span class="sp-desc">${escapeHtml((s.description || '').slice(0, 20))}</span>
+            </div>`).join('')
+          : '<div class="skill-palette-empty">无匹配技能</div>');
+    wrap.style.display = 'block';
+}
+
+function closeSkillPalette(sid) {
+    const wrap = document.getElementById(`agent-skill-palette-wrap-${sid}`);
+    if (wrap) wrap.style.display = 'none';
+}
+
+// 选中技能：清空 / 前缀、显示已选标签
+function selectSkillPalette(sid, name) {
+    const view = agentView(sid);
+    view.selectedSkill = name;
+    const input = document.getElementById(`agent-input-${sid}`);
+    if (input) input.value = '';
+    const tag = document.getElementById(`agent-skill-active-${sid}`);
+    if (tag) {
+        tag.innerHTML = `⚡ ${escapeHtml(name)} <button class="skill-tag-close" title="取消技能" onclick="clearSelectedSkill('${escapeJsAttr(sid)}')">×</button>`;
+        tag.style.display = 'inline-flex';
+    }
+    closeSkillPalette(sid);
+    if (input) input.focus();
+}
+
+function clearSelectedSkill(sid) {
+    agentView(sid).selectedSkill = '';
+    const tag = document.getElementById(`agent-skill-active-${sid}`);
+    if (tag) tag.style.display = 'none';
 }
 
 // ==================== 连接管理 ====================
@@ -572,20 +638,23 @@ function createAgentPane(sid) {
         <div class="agent-chat" id="agent-chat-${sid}"></div>
         <div class="agent-approval-slot" id="agent-approval-slot-${sid}"></div>
         <div class="agent-input-area" id="agent-input-area-${sid}">
-            <div class="skill-chips" id="agent-skill-chips-${sid}"></div>
+            <div class="skill-palette-wrap" id="agent-skill-palette-wrap-${sid}" style="display:none;">
+                <div class="skill-palette" id="agent-skill-palette-${sid}"></div>
+            </div>
+            <div class="skill-active-tag" id="agent-skill-active-${sid}" style="display:none;"></div>
             <div class="input-wrapper">
-                <input type="text" id="agent-input-${sid}" placeholder="输入指令，如：对所选节点批量查询参数"
+                <input type="text" id="agent-input-${sid}" placeholder="输入指令，或 / 调用技能与指令"
+                       oninput="onAgentSkillInput('${escapeJsAttr(sid)}')"
                        onkeypress="if(event.key==='Enter')sendAgentQuestion('${escapeJsAttr(sid)}')">
                 <button class="btn btn-primary" onclick="sendAgentQuestion('${escapeJsAttr(sid)}')">发送</button>
             </div>
             <div class="input-hints">
-                <span>💡 试试：对所选节点批量查询 max_connections | 检查集群状态 | 分析慢 SQL</span>
+                <span>💡 / 调用技能与指令 · 试试：对所选节点批量查询 max_connections</span>
             </div>
         </div>
     `;
     panes.appendChild(pane);
     clearAgentChat(sid);
-    loadAgentSkillChips(sid);
 }
 
 async function loadAgentSessionHistory(sid) {
@@ -612,9 +681,22 @@ function activateAgentTab(sid) {
     renderAgentSessions();
     updateAgentStopButton();
     updateAgentScopeBadge(sid);
-    loadAgentSkillChips(sid);
+    restoreSkillActiveTag(sid);
     const input = document.getElementById(`agent-input-${sid}`);
     if (input) input.focus();
+}
+
+// 激活页签时恢复已选技能标签（若该会话此前选择了技能）
+function restoreSkillActiveTag(sid) {
+    const view = agentView(sid);
+    const tag = document.getElementById(`agent-skill-active-${sid}`);
+    if (!tag) return;
+    if (view.selectedSkill) {
+        tag.innerHTML = `⚡ ${escapeHtml(view.selectedSkill)} <button class="skill-tag-close" title="取消技能" onclick="clearSelectedSkill('${escapeJsAttr(sid)}')">×</button>`;
+        tag.style.display = 'inline-flex';
+    } else {
+        tag.style.display = 'none';
+    }
 }
 
 async function closeAgentTab(sid) {
@@ -698,12 +780,13 @@ async function sendAgentQuestion(sid) {
     const input = document.getElementById(`agent-input-${sid}`);
     if (!input) return;
     const question = input.value.trim();
-    if (!question) return;
+    if (!question || question === '/') return;   // 单独 / 仅为召唤技能栏，不发
     const view = agentView(sid);
     if (view.running) {
         showToast('该会话正在执行中，请等待', 'warning');
         return;
     }
+    closeSkillPalette(sid);
 
     // 开始对话后移除欢迎语
     const welcome = document.querySelector(`#agent-chat-${sid} .agent-welcome`);
@@ -1905,19 +1988,19 @@ function renderAgentSkills(skills) {
         return;
     }
     container.innerHTML = skills.map(s => `
-        <div class="connection-item">
-            <div class="conn-name">${escapeHtml(s.name)}
-                <span class="conn-type">${escapeHtml(s.db_type || '通用')}</span>
-                <span class="tag-badge">${escapeHtml(s.category || 'diagnosis')}</span>
+        <div class="session-item">
+            <div class="session-main">
+                <div class="session-title">${escapeHtml(s.name)}
+                    <span class="conn-type">${escapeHtml(s.db_type || '通用')}</span>
+                    <span class="tag-badge">${escapeHtml(s.category || 'diagnosis')}</span>
+                </div>
+                <div class="session-meta">
+                    <span class="conn-host">${escapeHtml((s.description || '').slice(0, 24))}</span>
+                    <span class="session-status">使用${s.usage_count || 0}次 ${s.status === 'deprecated' ? '⚪已停用' : '🟢'}</span>
+                </div>
             </div>
-            <div class="conn-info">
-                <span class="conn-host">${escapeHtml((s.description || '').slice(0, 24))}</span>
-                <span class="conn-type">使用${s.usage_count || 0}次</span>
-                <span class="conn-status">${s.status === 'deprecated' ? '⚪已停用' : '🟢'}</span>
-            </div>
-            <div class="conn-info">
-                <span class="conn-host" style="color:#e74c3c;cursor:pointer" onclick="deleteAgentSkill('${escapeJsAttr(s.name)}')">🗑 删除</span>
-            </div>
+            <button class="session-delete" title="删除技能"
+                    onclick="deleteAgentSkill('${escapeJsAttr(s.name)}')">&times;</button>
         </div>
     `).join('');
 }
@@ -2033,19 +2116,19 @@ function renderAgentMemory(memory) {
         return;
     }
     container.innerHTML = memory.map(m => `
-        <div class="connection-item">
-            <div class="conn-name">${escapeHtml(m.entity_name || '通用')}
-                <span class="conn-type">${escapeHtml(m.entity_type || 'general')}</span>
-                <span class="tag-badge">${Math.round((m.confidence || 0) * 100)}%</span>
+        <div class="session-item">
+            <div class="session-main">
+                <div class="session-title">${escapeHtml(m.entity_name || '通用')}
+                    <span class="conn-type">${escapeHtml(m.entity_type || 'general')}</span>
+                    <span class="tag-badge">${Math.round((m.confidence || 0) * 100)}%</span>
+                </div>
+                <div class="session-meta">
+                    <span class="conn-host">${escapeHtml((m.fact || '').slice(0, 30))}</span>
+                    <span class="session-status">${escapeHtml(m.source || '')} · 使用${m.usage_count || 0}次</span>
+                </div>
             </div>
-            <div class="conn-info">
-                <span class="conn-host">${escapeHtml((m.fact || '').slice(0, 30))}</span>
-            </div>
-            <div class="conn-info">
-                <span class="conn-host" style="opacity:0.6">${escapeHtml(m.source || '')}</span>
-                <span class="conn-type">使用${m.usage_count || 0}次</span>
-                <span class="conn-host" style="color:#e74c3c;cursor:pointer" onclick="deleteAgentMemory(${m.id})">🗑 删除</span>
-            </div>
+            <button class="session-delete" title="删除记忆"
+                    onclick="deleteAgentMemory(${m.id})">&times;</button>
         </div>
     `).join('');
 }
