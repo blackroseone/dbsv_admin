@@ -93,6 +93,10 @@ function renderAgentScopeTree() {
         panel.innerHTML = '<div class="empty-message">暂无资源池，请先在「拓扑」模块添加</div>';
         return;
     }
+    // 默认全部折叠：节点多时一屏只看池列表，点开池再看服务器/实例
+    if (agentScopeCollapsed.size === 0 && agentScopeTree.length > 0) {
+        agentScopeTree.forEach(p => agentScopeCollapsed.add('pool:' + p.id));
+    }
 
     panel.innerHTML = agentScopeTree.map(pool => {
         const poolKey = 'pool:' + pool.id;
@@ -399,6 +403,43 @@ function clearSelectedSkill(sid) {
     if (tag) tag.style.display = 'none';
 }
 
+// 输入框自适应高度（1-5 行，约 120px 上限）
+function autoGrowAgentInput(sid) {
+    const el = document.getElementById(`agent-input-${sid}`);
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+// 输入框按键：回车发送 / Shift+回车换行 / ↑↓ 历史导航
+function onAgentInputKeydown(sid, e) {
+    const view = agentView(sid);
+    const input = e.target;
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendAgentQuestion(sid);
+        return;
+    }
+    if (e.key === 'ArrowUp' && view.inputHistory && view.inputHistory.length > 0) {
+        e.preventDefault();
+        if (view.historyIndex < view.inputHistory.length - 1) {
+            view.historyIndex = (view.historyIndex || -1) + 1;
+            input.value = view.inputHistory[view.inputHistory.length - 1 - view.historyIndex];
+            setTimeout(() => input.setSelectionRange(input.value.length, input.value.length), 0);
+        }
+    } else if (e.key === 'ArrowDown' && view.inputHistory) {
+        e.preventDefault();
+        if (view.historyIndex > 0) {
+            view.historyIndex--;
+            input.value = view.inputHistory[view.inputHistory.length - 1 - view.historyIndex];
+        } else {
+            view.historyIndex = -1;
+            input.value = '';
+        }
+    }
+    autoGrowAgentInput(sid);
+}
+
 // ==================== 连接管理 ====================
 async function loadAgentSSHConnections() {
     try {
@@ -516,6 +557,14 @@ function switchAgentTab(tab) {
 }
 
 // ==================== 会话列表（侧栏） ====================
+let _sessionSearchTimer = null;
+
+// 会话搜索输入防抖（150ms，避免每次击键全量渲染）
+function onSessionSearchInput() {
+    clearTimeout(_sessionSearchTimer);
+    _sessionSearchTimer = setTimeout(() => renderAgentSessions(), 150);
+}
+
 async function loadAgentSessions() {
     try {
         const response = await fetch('/api/agent/sessions');
@@ -536,23 +585,38 @@ function renderAgentSessions() {
     const container = document.getElementById('agent-session-list');
     if (!container) return;
 
+    // 标题搜索过滤（搜索框在会话历史抽屉顶部）
+    const searchEl = document.getElementById('agent-session-search');
+    const keyword = searchEl ? searchEl.value.trim().toLowerCase() : '';
+    const filtered = keyword
+        ? agentSessions.filter(s => (s.title || '').toLowerCase().includes(keyword))
+        : agentSessions;
+
     if (agentSessions.length === 0) {
         container.innerHTML = '<div class="empty-message">暂无会话</div>';
         return;
     }
+    if (filtered.length === 0) {
+        container.innerHTML = '<div class="empty-message">无匹配会话</div>';
+        return;
+    }
 
-    container.innerHTML = agentSessions.map(session => {
+    container.innerHTML = filtered.map(session => {
         const sc = sessionScopeCount(session);
         const scBadge = (sc.ssh + sc.db > 0)
             ? `<span class="session-scope">范围:${sc.ssh}节点${sc.db ? `·${sc.db}实例` : ''}</span>` : '';
+        const view = agentSessionViews[session.id];
+        const running = view && view.running;
+        const runBadge = running ? '<span class="session-running">🔄 执行中</span>' : '';
         return `
         <div class="session-item ${agentCurrentSession === session.id ? 'active' : ''}">
             <div class="session-main" onclick="openAgentTab('${escapeJsAttr(session.id)}')">
                 <div class="session-title">${escapeHtml(session.title)}</div>
                 <div class="session-meta">
                     <span class="session-status ${escapeHtml(session.status)}">${getStatusIcon(session.status)}</span>
+                    ${runBadge}
                     ${scBadge}
-                    <span class="session-time">${formatTime(session.created_at)}</span>
+                    <span class="session-time">${formatRelativeTime(session.created_at)}</span>
                 </div>
             </div>
             <button class="session-delete" title="删除会话"
@@ -600,7 +664,9 @@ function agentView(sid) {
             running: false, controller: null,
             thinkingText: '', conclusionText: '',
             lastPlan: null, loaded: false,
-            failedNodes: new Set(), selectedSkill: ''
+            failedNodes: new Set(), selectedSkill: '',
+            inputHistory: [], historyIndex: -1,
+            lastQuestion: '', regenerated: false
         };
     }
     return agentSessionViews[sid];
@@ -643,9 +709,9 @@ function createAgentPane(sid) {
             </div>
             <div class="skill-active-tag" id="agent-skill-active-${sid}" style="display:none;"></div>
             <div class="input-wrapper">
-                <input type="text" id="agent-input-${sid}" placeholder="输入指令，或 / 调用技能与指令"
-                       oninput="onAgentSkillInput('${escapeJsAttr(sid)}')"
-                       onkeypress="if(event.key==='Enter')sendAgentQuestion('${escapeJsAttr(sid)}')">
+                <textarea id="agent-input-${sid}" rows="1" placeholder="输入指令，或 / 调用技能与指令（回车发送，Shift+回车换行）"
+                       oninput="onAgentSkillInput('${escapeJsAttr(sid)}'); autoGrowAgentInput('${escapeJsAttr(sid)}')"
+                       onkeydown="onAgentInputKeydown('${escapeJsAttr(sid)}', event)"></textarea>
                 <button class="btn btn-primary" onclick="sendAgentQuestion('${escapeJsAttr(sid)}')">发送</button>
             </div>
             <div class="input-hints">
@@ -727,12 +793,16 @@ function renderAgentTabs() {
     if (!bar) return;
     bar.innerHTML = agentOpenTabs.map(sid => {
         const active = sid === agentCurrentSession ? ' active' : '';
+        const view = agentSessionViews[sid];
+        const running = view && view.running;
+        const runCls = running ? ' running' : '';
+        const runDot = running ? '<span class="tab-running-dot" title="执行中"></span>' : '';
         const sc = sessionScopeCount(agentSessions.find(x => x.id === sid));
         const scBadge = (sc.ssh + sc.db > 0) ? ` <span class="tab-scope">${sc.ssh + sc.db}</span>` : '';
         return `
-            <div class="agent-tab${active}" title="${escapeHtml(agentSessionTitle(sid))}"
+            <div class="agent-tab${active}${runCls}" title="${escapeHtml(agentSessionTitle(sid))}"
                  onclick="activateAgentTab('${escapeJsAttr(sid)}')">
-                <span class="agent-tab-title">${escapeHtml(agentSessionTitle(sid))}${scBadge}</span>
+                ${runDot}<span class="agent-tab-title">${escapeHtml(agentSessionTitle(sid))}${scBadge}</span>
                 <span class="agent-tab-close" title="关闭页签"
                       onclick="event.stopPropagation(); closeAgentTab('${escapeJsAttr(sid)}')">&times;</span>
             </div>`;
@@ -744,6 +814,7 @@ function updateAgentStopButton() {
     if (!stopBtn) return;
     const view = agentSessionViews[agentCurrentSession];
     stopBtn.style.display = (view && view.running) ? 'inline-block' : 'none';
+    renderAgentTabs();  // 运行态变化时同步页签上的运行指示点
 }
 
 async function newAgentSession() {
@@ -787,6 +858,7 @@ async function sendAgentQuestion(sid) {
         return;
     }
     closeSkillPalette(sid);
+    view.lastQuestion = question;   // 供「重新生成」使用
 
     // 开始对话后移除欢迎语
     const welcome = document.querySelector(`#agent-chat-${sid} .agent-welcome`);
@@ -794,6 +866,14 @@ async function sendAgentQuestion(sid) {
 
     addAgentMessage(sid, 'user', question);
     input.value = '';
+
+    // 记录输入历史（去重，供 ↑↓ 导航）
+    if (!view.inputHistory) view.inputHistory = [];
+    if (view.inputHistory[view.inputHistory.length - 1] !== question) {
+        view.inputHistory.push(question);
+    }
+    view.historyIndex = -1;
+    autoGrowAgentInput(sid);   // 发送后收起输入框高度
 
     view.running = true;
     view.controller = new AbortController();
@@ -811,6 +891,11 @@ async function sendAgentQuestion(sid) {
             }),
             signal: view.controller.signal
         });
+
+        // 首问后立即刷新会话列表拿新标题（后端已自动命名），不阻塞 SSE 读取
+        loadAgentSessions();
+        // 兜底：1.5s 后仍叫「新会话」则前端用首问前 20 字符临时更新
+        setTimeout(() => applyFallbackTitle(sid, question), 1500);
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -849,6 +934,16 @@ async function sendAgentQuestion(sid) {
         updateAgentStopButton();
         clearApprovalSlot(sid);  // 任何结束（done/取消/断开）都恢复输入框、清空审批槽
         loadAgentSessions();     // 刷新会话状态
+    }
+}
+
+// 首问后若后端命名未及时回写，前端用首问前 20 字符临时更新标题
+function applyFallbackTitle(sid, question) {
+    const s = agentSessions.find(x => x.id === sid);
+    if (s && (!s.title || s.title === '新会话')) {
+        s.title = question.replace(/\s+/g, ' ').slice(0, 20) || '新会话';
+        renderAgentTabs();
+        renderAgentSessions();
     }
 }
 
@@ -1045,11 +1140,15 @@ function showAgentThinking(sid, step) {
     const div = document.createElement('div');
     div.className = 'agent-message thinking';
     div.id = `agent-thinking-${sid}-${step}`;
+    // 步骤序号徽标：让用户感知 ReAct 循环进度
+    const stepBadge = step ? `<span class="step-badge">第 ${step} 步</span>` : '';
+    // open：流式输出期间默认展开（内容逐步出现），结束后由 finalize 收起
     div.innerHTML = `
-        <details class="agent-collapse">
+        <details class="agent-collapse" open>
             <summary class="message-header">
                 <span class="icon">🤔</span>
                 <span class="label">思考中</span>
+                ${stepBadge}
                 <span class="thinking-indicator"></span>
             </summary>
             <div class="message-content">
@@ -1079,22 +1178,58 @@ function finalizeAgentThinking(sid) {
     if (!chat || !view) return;
     const thinkingDiv = chat.querySelector('.agent-message.thinking:last-child');
     if (thinkingDiv) {
-        thinkingDiv.querySelector('.thinking-indicator').style.display = 'none';
+        const indicator = thinkingDiv.querySelector('.thinking-indicator');
+        if (indicator) indicator.style.display = 'none';
+        const label = thinkingDiv.querySelector('.label');
+        if (label) label.textContent = '思考过程';
         const content = thinkingDiv.querySelector('.thinking-content');
         if (content) content.innerHTML = formatMarkdown(view.thinkingText);  // 移除光标
+        // 流式结束后自动收起，保持对话区整洁（用户仍可展开回顾）
+        const details = thinkingDiv.querySelector('details.agent-collapse');
+        if (details) details.open = false;
     }
+}
+
+// 在消息 header 右侧追加复制按钮（复制 raw 文本，clipboard + execCommand 降级）
+function addCopyButton(headerEl, getText) {
+    if (!headerEl) return;
+    const btn = document.createElement('button');
+    btn.className = 'msg-copy-btn';
+    btn.title = '复制';
+    btn.innerHTML = '📋';
+    btn.onclick = async (e) => {
+        e.stopPropagation();
+        const text = getText();
+        try {
+            await navigator.clipboard.writeText(text);
+            showToast('已复制到剪贴板', 'success');
+        } catch (err) {
+            const ta = document.createElement('textarea');
+            ta.value = text; document.body.appendChild(ta);
+            ta.select(); document.execCommand('copy'); ta.remove();
+            showToast('已复制到剪贴板', 'success');
+        }
+    };
+    headerEl.appendChild(btn);
 }
 
 function renderAgentToolCall(sid, tool, params) {
     const chat = document.getElementById(`agent-chat-${sid}`);
     if (!chat) return;
+    const view = agentView(sid);
+    const startedAt = Date.now();
+    view.lastToolStartedAt = startedAt;
+    // 工具参数摘要：SQL/命令提取首行展示在标题，参数详情折叠
+    const summary = toolParamSummary(tool, params);
     const div = document.createElement('div');
     div.className = 'agent-message tool';
+    div.dataset.startedAt = startedAt;
     div.innerHTML = `
         <details class="agent-collapse" open>
             <summary class="message-header">
                 <span class="icon">🔧</span>
                 <span class="label">执行: ${escapeHtml(tool)}</span>
+                ${summary ? `<span class="tool-summary">${escapeHtml(summary)}</span>` : ''}
                 <span class="tool-status">执行中...</span>
             </summary>
             <div class="message-content">
@@ -1105,7 +1240,22 @@ function renderAgentToolCall(sid, tool, params) {
         </details>
     `;
     chat.appendChild(div);
+    addCopyButton(div.querySelector('.message-header'), () => JSON.stringify(params, null, 2));
     scrollAgentChatIfNearBottom(sid);
+}
+
+// 工具参数摘要：在消息标题展示关键内容（SQL 首行 / 命令），避免展开才能看到干了什么
+function toolParamSummary(tool, params) {
+    if (!params) return '';
+    let text = '';
+    if (params.sql) text = params.sql;
+    else if (params.command) text = params.command;
+    else if (params.query) text = params.query;
+    else if (params.metric_type) text = '指标: ' + params.metric_type;
+    else if (params.table_name) text = '表: ' + params.table_name;
+    if (!text) return '';
+    text = String(text).replace(/\s+/g, ' ').trim();
+    return text.length > 60 ? text.slice(0, 60) + '…' : text;
 }
 
 function renderAgentResult(sid, result) {
@@ -1115,10 +1265,14 @@ function renderAgentResult(sid, result) {
     if (!toolDiv) return;
 
     const statusDiv = toolDiv.querySelector('.tool-status');
+    // 耗时统计：从 renderAgentToolCall 记录的开始时间计算
+    const startedAt = parseInt(toolDiv.dataset.startedAt || '0', 10);
+    const elapsed = startedAt ? ((Date.now() - startedAt) / 1000) : 0;
+    const elapsedText = elapsed >= 0.1 ? ` · ${elapsed.toFixed(1)}s` : '';
     if (result.error) {
-        statusDiv.innerHTML = '<span class="status-error">❌ 失败</span>';
+        statusDiv.innerHTML = `<span class="status-error">❌ 失败${elapsedText}</span>`;
     } else {
-        statusDiv.innerHTML = '<span class="status-success">✅ 完成</span>';
+        statusDiv.innerHTML = `<span class="status-success">✅ 完成${elapsedText}</span>`;
     }
 
     const contentDiv = toolDiv.querySelector('.message-content');
@@ -1186,7 +1340,10 @@ function renderBatchResult(sid, container, result) {
         </div>`;
     };
 
-    wrap.innerHTML = `<div class="batch-summary">📡 批量执行结果（${results.length} 节点，✅${okCount} / ❌${failCount}）</div>`;
+    wrap.innerHTML = `<div class="batch-summary">📡 批量执行结果（${results.length} 节点，✅${okCount} / ❌${failCount}）
+        <button class="btn btn-xs btn-secondary" onclick="expandAllBatchResults(this.closest('.batch-result'), true)">展开全部</button>
+        <button class="btn btn-xs btn-secondary" onclick="expandAllBatchResults(this.closest('.batch-result'), false)">折叠全部</button>
+    </div>`;
     errors.concat(oks).forEach(n => {
         const temp = document.createElement('div');
         temp.innerHTML = nodeHtml(n);
@@ -1194,6 +1351,12 @@ function renderBatchResult(sid, container, result) {
     });
     container.appendChild(wrap);
     scrollAgentChatIfNearBottom(sid);
+}
+
+// 批量结果「展开/折叠全部」
+function expandAllBatchResults(container, open) {
+    if (!container) return;
+    container.querySelectorAll('details').forEach(d => d.open = open);
 }
 
 function buildResultTable(columns, rows) {
@@ -1207,8 +1370,9 @@ function buildResultTable(columns, rows) {
         .map(r => '| ' + r.map(c => esc(c)).join(' | ') + ' |')
         .join('\n');
     const md = [header, sep, body].join('\n');
+    const openAttr = rows.length <= 10 ? ' open' : '';   // 小结果默认展开
     div.innerHTML = `
-        <details>
+        <details${openAttr}>
             <summary>查看结果 (${rows.length} 行)</summary>
             <div class="result-table-wrapper markdown-content">
                 ${formatMarkdown(md)}
@@ -1233,6 +1397,7 @@ function renderAgentObservation(sid, observation) {
         </div>
     `;
     chat.appendChild(div);
+    addCopyButton(div.querySelector('.message-header'), () => observation);
     scrollAgentChatIfNearBottom(sid);
 }
 
@@ -1278,7 +1443,9 @@ function finalizeAgentConclusion(sid) {
         // 保留 sid 作用域的 id（供 showAgentFeedback 查询；sid 唯一，无冲突）
         const md = conclusionDiv.querySelector('.markdown-content');
         if (md) md.innerHTML = formatMarkdown(view.conclusionText);  // 移除光标
+        addCopyButton(conclusionDiv.querySelector('.message-header'), () => view.conclusionText);
         showAgentFeedback(sid);
+        maybeRenderRegenerateButton(sid);
     }
 }
 
@@ -1434,6 +1601,8 @@ async function approvePlan(sid, planId) {
 }
 
 async function rejectPlan(sid, planId) {
+    // 拒绝是不可逆决策，确认防误点
+    if (!confirm('确定拒绝该操作计划？Agent 将中止本次变更。')) return;
     await submitPlanDecision(sid, planId, 'reject', '');
 }
 
@@ -1449,6 +1618,10 @@ async function revisePlan(sid, planId) {
 
 async function submitPlanDecision(sid, planId, action, comment) {
     const view = agentSessionViews[sid];
+    // 防重复提交：提交期间禁用审批按钮
+    const bar = document.getElementById(`agent-approval-${planId}`);
+    const btns = bar ? bar.querySelectorAll('.approval-btn') : [];
+    btns.forEach(b => { b.disabled = true; });
     try {
         const response = await fetch('/api/agent/approve', {
             method: 'POST',
@@ -1458,6 +1631,7 @@ async function submitPlanDecision(sid, planId, action, comment) {
         const data = await response.json();
         if (!response.ok) {
             showToast(data.error || '审批提交失败', 'error');
+            btns.forEach(b => { b.disabled = false; });
             return;
         }
         showToast(data.message || '审批已提交', 'success');
@@ -1488,6 +1662,7 @@ async function submitPlanDecision(sid, planId, action, comment) {
         }
     } catch (error) {
         showToast('审批提交失败', 'error');
+        btns.forEach(b => { b.disabled = false; });
     }
 }
 
@@ -1671,6 +1846,30 @@ function retryFailedNodes(sid) {
     input.focus();
 }
 
+// 结论后「重新生成」：带上下文重新跑一遍，最多 1 次
+function maybeRenderRegenerateButton(sid) {
+    const view = agentView(sid);
+    if (!view || !view.lastQuestion || view.regenerated) return;
+    const conclusionDiv = document.getElementById(`agent-conclusion-${sid}`);
+    if (!conclusionDiv) return;
+    const bar = document.createElement('div');
+    bar.className = 'regenerate-bar';
+    bar.innerHTML = `<button class="btn btn-secondary btn-xs" title="将携带历史上下文重新生成（最多 1 次）"
+        onclick="regenerateAgent('${escapeJsAttr(sid)}')">🔄 重新生成</button>
+        <span class="regenerate-hint">会带上历史上下文，最多 1 次</span>`;
+    conclusionDiv.appendChild(bar);
+}
+
+function regenerateAgent(sid) {
+    const view = agentView(sid);
+    if (!view || !view.lastQuestion || view.regenerated) return;
+    view.regenerated = true;
+    const conclusionDiv = document.getElementById(`agent-conclusion-${sid}`);
+    if (conclusionDiv) conclusionDiv.classList.add('regenerated-archived');  // 旧结论灰显归档
+    const input = document.getElementById(`agent-input-${sid}`);
+    if (input) { input.value = view.lastQuestion; sendAgentQuestion(sid); }
+}
+
 // ==================== DBA 反馈闭环 ====================
 
 function showAgentFeedback(sid) {
@@ -1716,7 +1915,11 @@ async function submitAgentFeedback(sid, feedback) {
             showToast(data.message || '反馈已记录', 'success');
             const conclusionDiv = document.getElementById(`agent-conclusion-${sid}`);
             if (conclusionDiv) {
-                conclusionDiv.querySelectorAll('.agent-feedback .feedback-btn').forEach(b => b.disabled = true);
+                // 替换为确认态：比禁用按钮更明确的反馈闭环
+                const fbRow = conclusionDiv.querySelector('.agent-feedback');
+                if (fbRow) {
+                    fbRow.innerHTML = `<div class="feedback-done">${feedback === 'up' ? '👍 感谢反馈，已记录' : '📝 已记录纠正，将用于改进后续诊断'}</div>`;
+                }
             }
         } else {
             showToast(data.error || '反馈失败', 'error');
@@ -1785,14 +1988,58 @@ function removeAgentLoading(sid) {
 
 // ==================== 工具函数 ====================
 
-// 仅当用户接近底部时才自动滚动到底（用户上翻看历史时不被拉回）
+// 仅当用户接近底部时才自动滚动到底（用户上翻看历史时不被拉回）；
+// 若用户已上翻，显示"回到底部"悬浮按钮提示有新内容
 function scrollAgentChatIfNearBottom(sid) {
     const chat = document.getElementById(`agent-chat-${sid}`);
     if (!chat) return;
     const threshold = 60;
-    if (chat.scrollHeight - chat.scrollTop - chat.clientHeight < threshold) {
+    const nearBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < threshold;
+    if (nearBottom) {
         chat.scrollTop = chat.scrollHeight;
+        hideScrollToBottom(sid);
+    } else {
+        showScrollToBottom(sid);
     }
+}
+
+function ensureScrollToBottomBtn(sid) {
+    const pane = document.querySelector(`.agent-tab-pane[data-session-id="${sid}"]`);
+    if (!pane) return null;
+    let btn = pane.querySelector('.scroll-to-bottom');
+    if (!btn) {
+        btn = document.createElement('button');
+        btn.className = 'scroll-to-bottom';
+        btn.style.display = 'none';
+        btn.innerHTML = '↓ 回到底部';
+        btn.onclick = () => {
+            const chat = document.getElementById(`agent-chat-${sid}`);
+            if (chat) chat.scrollTo({ top: chat.scrollHeight, behavior: 'smooth' });
+            hideScrollToBottom(sid);
+        };
+        pane.style.position = 'relative';
+        pane.appendChild(btn);
+        // 用户手动滚到底部时隐藏按钮
+        const chat = document.getElementById(`agent-chat-${sid}`);
+        if (chat) {
+            chat.addEventListener('scroll', () => {
+                const nearBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 60;
+                if (nearBottom) hideScrollToBottom(sid);
+            });
+        }
+    }
+    return btn;
+}
+
+function showScrollToBottom(sid) {
+    const btn = ensureScrollToBottomBtn(sid);
+    if (btn) btn.style.display = 'block';
+}
+
+function hideScrollToBottom(sid) {
+    const pane = document.querySelector(`.agent-tab-pane[data-session-id="${sid}"]`);
+    const btn = pane && pane.querySelector('.scroll-to-bottom');
+    if (btn) btn.style.display = 'none';
 }
 
 function clearAgentChat(sid) {
@@ -1825,7 +2072,7 @@ function renderAgentStep(sid, step) {
         }
     }
 
-    // 渲染历史步骤（按会话路由）
+    // 渲染历史步骤（按会话路由）；历史回放均为完成态，内容默认折叠
     switch (step.phase) {
         case 'thinking':
             showAgentThinking(sid, step.step_number);
@@ -1835,6 +2082,15 @@ function renderAgentStep(sid, step) {
         case 'executing':
             if (step.action) {
                 renderAgentToolCall(sid, step.action.tool, step.action.parameters || {});
+                // 历史回放：工具块标记完成并折叠（无实时 result 事件）
+                const chat = document.getElementById(`agent-chat-${sid}`);
+                const toolDiv = chat && chat.querySelector('.agent-message.tool:last-child');
+                if (toolDiv) {
+                    const statusDiv = toolDiv.querySelector('.tool-status');
+                    if (statusDiv) statusDiv.innerHTML = '<span class="status-success">✅ 完成</span>';
+                    const details = toolDiv.querySelector('details.agent-collapse');
+                    if (details) details.open = false;
+                }
             }
             if (step.observation) {
                 renderAgentObservation(sid, step.observation);
@@ -1844,6 +2100,10 @@ function renderAgentStep(sid, step) {
             showAgentConclusion(sid);
             appendAgentConclusion(sid, step.thought || '');
             finalizeAgentConclusion(sid);
+            // 历史回放的结论不显示反馈按钮（反馈只对当次实时结论有意义）
+            const chat2 = document.getElementById(`agent-chat-${sid}`);
+            const fb = chat2 && chat2.querySelector('.agent-message.conclusion:last-child .agent-feedback');
+            if (fb) fb.remove();
             break;
     }
 }
@@ -1947,6 +2207,23 @@ function formatTime(timestamp) {
     if (!timestamp) return '';
     const date = new Date(timestamp);
     return date.toLocaleString('zh-CN');
+}
+
+// 相对时间：会话列表更友好（刚刚 / N分钟前 / N小时前 / 昨天 / 更早显示日期）
+function formatRelativeTime(timestamp) {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    if (isNaN(date.getTime())) return formatTime(timestamp);
+    const diff = Date.now() - date.getTime();
+    const min = Math.floor(diff / 60000);
+    if (min < 1) return '刚刚';
+    if (min < 60) return `${min} 分钟前`;
+    const hours = Math.floor(min / 60);
+    if (hours < 24) return `${hours} 小时前`;
+    const days = Math.floor(hours / 24);
+    if (days === 1) return '昨天';
+    if (days < 7) return `${days} 天前`;
+    return date.toLocaleDateString('zh-CN');
 }
 
 // ==================== 知识沉淀（技能库 + 长期记忆） ====================

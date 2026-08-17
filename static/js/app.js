@@ -80,6 +80,13 @@ function updateThemeUI(isDark) {
         themeIcon.textContent = isDark ? '☀️' : '🌙';
         themeText.textContent = isDark ? '亮色模式' : '暗色模式';
     }
+    // 联动 highlight.js 亮/暗代码主题
+    const hlLight = document.getElementById('hljs-light');
+    const hlDark = document.getElementById('hljs-dark');
+    if (hlLight && hlDark) {
+        hlLight.disabled = isDark;
+        hlDark.disabled = !isDark;
+    }
 }
 
 // ==================== 初始化 ====================

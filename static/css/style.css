@@ -5171,8 +5171,9 @@ body {
     position: relative;   /* 抽屉在此容器内定位（修复抽屉脱离模块、贴屏幕边缘） */
     display: flex;
     gap: 12px;
-    height: calc(100vh - 130px);
+    height: calc(100vh - 220px);   /* 对齐实际占位(content+module padding+h2)，消除右侧恒滚动条 */
     min-height: 480px;
+    overflow: hidden;              /* 裁剪滑出容器的抽屉，收起状态不可见 */
 }
 
 .agent-sidebar {
@@ -5287,9 +5288,10 @@ body {
 
 .scope-node {
     display: flex;
-    align-items: center;
+    flex-wrap: wrap;        /* 名称独占一行 + meta/徽标第二行 */
+    align-items: flex-start;
     gap: 6px;
-    padding: 5px 8px;
+    padding: 6px 8px;
     cursor: pointer;
     font-size: 0.82rem;
     color: var(--text-primary);
@@ -5310,7 +5312,7 @@ body {
 }
 
 .scope-node-label {
-    flex: 1;
+    flex: 1 1 100%;          /* 占满整行：名称 + meta 一行内排列 */
     min-width: 0;
     display: flex;
     align-items: center;
@@ -5323,8 +5325,22 @@ body {
     accent-color: var(--primary-color);
 }
 
+/* meta（host/port）右对齐，不截断 */
+.scope-node-meta {
+    margin-left: auto;
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: none;
+}
+
+/* 实例层级引导线 */
 .scope-instance {
-    padding-left: 26px;
+    margin-left: 14px;
+    border-left: 2px solid var(--border-color-light);
+    padding-left: 8px;
     font-size: 0.78rem;
 }
 
@@ -5334,14 +5350,12 @@ body {
     white-space: nowrap;
 }
 
-.scope-node-meta {
-    color: var(--text-secondary);
-    font-size: 0.72rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 70px;
-}
+/* 徽标/配置按钮在 wrap 换行后右对齐 */
+.scope-node .scope-badge { margin-left: auto; }
+
+/* 细滚动条 */
+.scope-panel::-webkit-scrollbar { width: 6px; }
+.scope-panel::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
 
 .scope-badge {
     font-size: 0.7rem;
@@ -5386,7 +5400,6 @@ body {
     position: absolute;   /* 相对 .agent-layout 定位（修复相对 body 导致贴屏幕边缘/顶栏遮挡） */
     top: 0;
     bottom: 0;
-    width: 300px;
     background: var(--bg-module);
     border: 1px solid var(--border-color);
     box-shadow: 0 0 12px rgba(0,0,0,.15);
@@ -5399,10 +5412,11 @@ body {
     transition: transform .18s ease;
 }
 
-/* 历史抽屉：从模块侧边栏右侧滑出（侧栏 260px） */
-.drawer-left { left: 0; transform: translateX(-100%); }
-.drawer-left.open { transform: translateX(260px); }
-.drawer-right { right: 0; transform: translateX(100%); }
+/* 历史抽屉：覆盖在操作范围栏上（与侧栏同宽 260px，打开时不位移） */
+.drawer-left { left: 0; width: 260px; transform: translateX(-100%); }
+.drawer-left.open { transform: translateX(0); }
+/* 管理抽屉：加宽到 380px */
+.drawer-right { right: 0; width: 380px; transform: translateX(100%); }
 .drawer-right.open { transform: translateX(0); }
 
 .agent-drawer .drawer-header {
@@ -5631,6 +5645,32 @@ body {
 
 /* 失败节点重试 */
 .retry-block .retry-btn { margin-top: 6px; }
+
+/* 消息复制按钮（hover 显示，复制 raw 文本） */
+.msg-copy-btn {
+    margin-left: auto;
+    border: none;
+    background: none;
+    cursor: pointer;
+    font-size: 0.85rem;
+    opacity: 0;
+    transition: opacity .15s;
+    padding: 0 4px;
+}
+.agent-message:hover .msg-copy-btn { opacity: 0.7; }
+.msg-copy-btn:hover { opacity: 1 !important; }
+
+/* 结论「重新生成」条 */
+.regenerate-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-top: 1px dashed var(--border-color);
+}
+.regenerate-hint { font-size: 0.72rem; color: var(--text-muted); }
+.regenerated-archived { opacity: 0.55; }
+.btn-xs { padding: 3px 10px; font-size: 0.78rem; }
 
 .connection-tabs {
     display: flex;
@@ -6410,7 +6450,7 @@ body {
     gap: 8px;
 }
 
-.input-wrapper input {
+.input-wrapper input, .input-wrapper textarea {
     flex: 1;
     padding: 9px 12px;
     border: 1px solid var(--border-color);
@@ -6418,9 +6458,12 @@ body {
     background: var(--bg-input);
     color: var(--text-primary);
     font-size: 0.9rem;
+    font-family: inherit;
+    resize: none;
+    line-height: 1.5;
 }
 
-.input-wrapper input:focus {
+.input-wrapper input:focus, .input-wrapper textarea:focus {
     outline: none;
     border-color: var(--border-focus);
 }
@@ -6802,4 +6845,127 @@ textarea:disabled {
     .content.sidebar-collapsed {
         margin-left: 60px;
     }
+}
+
+/* ==================== Agent 体验优化（v4.0+ UX 增强） ==================== */
+
+/* ReAct 步骤序号徽标 */
+.step-badge {
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: var(--primary-color);
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 1px 8px;
+    margin-left: 4px;
+}
+
+/* 工具参数摘要（标题内联展示 SQL/命令首行） */
+.tool-summary {
+    font-size: 0.75rem;
+    font-weight: normal;
+    color: var(--text-muted);
+    font-family: monospace;
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* "回到底部"悬浮按钮（长对话上翻后出现） */
+.scroll-to-bottom {
+    position: absolute;
+    bottom: 90px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 6px 16px;
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+    z-index: 20;
+    transition: all 0.2s ease;
+}
+
+.scroll-to-bottom:hover {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+}
+
+/* 页签运行状态指示点 */
+.tab-running-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--primary-color);
+    animation: tab-pulse 1.2s ease-in-out infinite;
+    flex-shrink: 0;
+}
+
+@keyframes tab-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.8); }
+}
+
+.agent-tab.running {
+    border-color: var(--primary-color);
+}
+
+/* 会话列表运行态标记 */
+.session-running {
+    font-size: 0.75rem;
+    color: var(--primary-color);
+    animation: tab-pulse 1.2s ease-in-out infinite;
+}
+
+/* 反馈提交后的确认态 */
+.feedback-done {
+    padding: 6px 10px;
+    font-size: 0.82rem;
+    color: var(--text-status-success);
+    background: var(--bg-card);
+    border-radius: 6px;
+}
+
+/* 消息卡片悬停态（提升可交互感知） */
+.agent-message {
+    transition: box-shadow 0.2s ease;
+}
+
+.agent-message:hover {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+/* 会话历史抽屉搜索框 */
+.session-search {
+    width: 100%;
+    padding: 7px 10px;
+    margin-bottom: 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-input, var(--bg-card));
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    box-sizing: border-box;
+}
+
+.session-search:focus {
+    outline: none;
+    border-color: var(--border-focus);
+}
+
+/* 思考块完成后折叠，内容保持次级色以区分正式结论 */
+.agent-message.thinking .message-content {
+    border-top: 1px dashed var(--border-color);
+}
+
+/* 工具执行结果状态徽标间距微调 */
+.tool-status .status-success,
+.tool-status .status-error {
+    white-space: nowrap;
 }

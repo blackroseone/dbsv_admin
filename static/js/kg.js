@@ -570,15 +570,3 @@ function useEntityInQA(entityId, entityName) {
     }, 300);
 }
 
-// ==================== 辅助函数 ====================
-
-function showToast(message) {
-    const toast = document.getElementById('toast');
-    if (toast) {
-        toast.textContent = message;
-        toast.style.display = 'block';
-        setTimeout(() => {
-            toast.style.display = 'none';
-        }, 3000);
-    }
-}

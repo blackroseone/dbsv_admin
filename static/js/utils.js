@@ -46,7 +46,34 @@ function formatFileSize(bytes) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
+// marked + highlight.js 版 Markdown 渲染（v4.1.0，全站通用）。
+// 安全：marked 默认原样放行 raw HTML，故先 escapeHtml 再解析，保持与旧实现一致的注入防护。
 function formatMarkdown(text) {
+    if (!text) return '';
+    if (typeof marked !== 'undefined') {
+        try {
+            marked.setOptions({ headerIds: false, breaks: true, gfm: true });
+            // 先转义再解析：模型输出/文档中的 <script>、<img onerror> 等原样转义，不注入
+            let html = marked.parse(escapeHtml(text));
+            // 兼容现有表格样式
+            html = html.replace(/<table>/g, '<table class="md-table">');
+            // 代码高亮（rAF 异步，避免阻塞流式渲染）
+            if (typeof hljs !== 'undefined') {
+                requestAnimationFrame(() => {
+                    document.querySelectorAll('pre code:not([data-hl])').forEach(el => {
+                        try { hljs.highlightElement(el); el.dataset.hl = '1'; } catch (e) {}
+                    });
+                });
+            }
+            return html;
+        } catch (e) {
+            console.warn('marked 解析失败，回退正则实现:', e);
+        }
+    }
+    return formatMarkdownLegacy(text);
+}
+
+function formatMarkdownLegacy(text) {
     if (!text) return '';
 
     let html = escapeHtml(text);

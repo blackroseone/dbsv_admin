@@ -6,6 +6,9 @@
     <title>DBSV admin</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛠️</text></svg>">
     <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
+    <!-- highlight.js 亮/暗代码主题（marked 渲染代码高亮用，随主题切换） -->
+    <link rel="stylesheet" id="hljs-light" href="/static/vendor/styles/github.min.css?v={{ version }}">
+    <link rel="stylesheet" id="hljs-dark" href="/static/vendor/styles/github-dark.min.css?v={{ version }}" disabled>
     <!-- vis.js 用于拓扑图（本地化，避免离线服务器无法访问 CDN） -->
     <script src="/static/vendor/vis-network.min.js?v={{ version }}"></script>
 </head>
@@ -470,6 +473,8 @@
                             <button class="btn btn-secondary" title="关闭" onclick="toggleAgentHistoryDrawer()">×</button>
                         </div>
                         <div class="drawer-body">
+                            <input type="text" id="agent-session-search" class="session-search"
+                                   placeholder="搜索会话标题…" oninput="onSessionSearchInput()">
                             <div id="agent-session-list" class="session-list"></div>
                         </div>
                     </div>
@@ -1946,6 +1951,9 @@
     <!-- 消息提示 -->
     <div class="toast" id="toast"></div>
 
+    <!-- marked + highlight.js 必须先于 utils.js（formatMarkdown 依赖） -->
+    <script src="/static/vendor/marked.min.js?v={{ version }}"></script>
+    <script src="/static/vendor/highlight.min.js?v={{ version }}"></script>
     <script src="/static/js/utils.js?v={{ version }}"></script>
     <script src="/static/js/api.js?v={{ version }}"></script>
     <script src="/static/js/app.js?v={{ version }}"></script>
