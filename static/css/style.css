@@ -2381,10 +2381,12 @@ body {
     opacity: 0;
     transition: opacity 0.3s ease, background-color 0.3s ease;
     z-index: 1001;
+    pointer-events: none;   /* 隐形时不拦截点击（避免盖住右上角抽屉关闭按钮） */
 }
 
 .toast.show {
     opacity: 1;
+    pointer-events: auto;   /* 显示时正常交互 */
 }
 
 .toast.success {
