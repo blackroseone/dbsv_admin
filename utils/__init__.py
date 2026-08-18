@@ -317,7 +317,7 @@ def _build_api_headers(config):
     }
 
 
-def _build_api_data(config, messages, stream=False):
+def _build_api_data(config, messages, stream=False, max_tokens=None):
     """构建 API 请求数据"""
     model = config.get('model_name', 'gpt-3.5-turbo')
     # 优先使用模型配置的温度；未配置时回退：Moonshot kimi-k2.6 只支持 temperature=1，其它默认 0.7
@@ -327,12 +327,16 @@ def _build_api_data(config, messages, stream=False):
             temperature = 1
         else:
             temperature = 0.7
-    return {
+    data = {
         "model": model,
         "messages": messages,
         "temperature": temperature,
         "stream": stream
     }
+    # 显式 max_tokens 可防止弱模型被提供商默认上限截断长结论（默认不设，保持各调用方行为不变）
+    if max_tokens:
+        data['max_tokens'] = max_tokens
+    return data
 
 
 def _check_llm_config(config):
@@ -392,12 +396,13 @@ def call_llm(messages, model_id=None, temperature=None, timeout=120):
         return None, f"API响应格式错误: {str(e)}"
 
 
-def call_llm_stream(messages, model_id=None):
+def call_llm_stream(messages, model_id=None, max_tokens=None):
     """调用大模型API（流式输出，兼容OpenAI格式）
 
     Args:
         messages: 消息列表
         model_id: 指定模型ID，如果不指定则使用默认模型
+        max_tokens: 可选，限制生成 token 上限（防弱模型长结论被提供商默认上限截断）
     """
     config = load_llm_config(model_id)
 
@@ -408,7 +413,7 @@ def call_llm_stream(messages, model_id=None):
 
     api_url = _build_api_url(config)
     headers = _build_api_headers(config)
-    data = _build_api_data(config, messages, stream=True)
+    data = _build_api_data(config, messages, stream=True, max_tokens=max_tokens)
 
     try:
         response = requests.post(
@@ -431,8 +436,11 @@ def call_llm_stream(messages, model_id=None):
                         chunk = json.loads(line)
                         if 'choices' in chunk and len(chunk['choices']) > 0:
                             delta = chunk['choices'][0].get('delta', {})
-                            if 'content' in delta:
-                                yield delta['content'], None
+                            # 推理模型思考 token 走 reasoning_content，content 可能长时间为空；
+                            # 两者都累积，避免 thinking 阶段因 content 空而整段丢失
+                            text = delta.get('content') or delta.get('reasoning_content') or ''
+                            if text:
+                                yield text, None
                     except json.JSONDecodeError:
                         continue
     except requests.exceptions.RequestException as e:

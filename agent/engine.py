@@ -55,6 +55,9 @@ class SmartOpsAgent:
     HISTORY_KEEP_TAIL = 6
     HISTORY_SUMMARY_MAX_CHARS = 1500
 
+    # 思考/结论生成显式 max_tokens：防弱模型长结论被提供商默认上限截断
+    MAX_LLM_TOKENS = 4096
+
     def __init__(self, session_id: str, ssh_conn_id: Optional[str] = None,
                  db_conn_id: Optional[str] = None, model_id: Optional[str] = None,
                  scope: Optional[List[Dict]] = None,
@@ -96,9 +99,10 @@ class SmartOpsAgent:
             from functools import partial
             from agent.command_judge import judge_command
             Harness.command_judge_fn = partial(judge_command, model_id=self.model_id)
-        from config import AGENT_MAX_STEPS, AGENT_MAX_HISTORY_CHARS
+        from config import AGENT_MAX_STEPS, AGENT_MAX_HISTORY_CHARS, AGENT_MAX_WALL_CLOCK_SECONDS
         self.state = AgentState(session_id, max_steps=int(AGENT_MAX_STEPS))
         self.max_history_chars = int(AGENT_MAX_HISTORY_CHARS)
+        self.max_wall_clock_seconds = int(AGENT_MAX_WALL_CLOCK_SECONDS)
 
         # 最近动作指纹（死循环检测）
         self._recent_actions = []
@@ -110,6 +114,12 @@ class SmartOpsAgent:
         self._executed_change_plan = False
         # 批量变更失败节点集合（continue-on-error 收集，供结论与前端重试）
         self._plan_failed_nodes = set()
+        # 变更操作执行后待验证标记：模型想在验证前直接收敛时拦截一次，强制先做只读验证
+        self._pending_verification = False
+        # 验证拦截已重试一次（二次仍无验证动作才放行，避免死循环）
+        self._verification_nudge_done = False
+        # 工具调用 JSON 解析失败已回喂纠正的次数（限 1 次，防无限重试）
+        self._extract_failed_nudges = 0
 
     def run_stream(self, user_question: str) -> Generator[Dict, None, None]:
         """ReAct主循环（流式输出），带状态持久化与异常兜底"""
@@ -168,10 +178,16 @@ class SmartOpsAgent:
         self.state.add_message('user', user_question)
 
         cancelled = False  # 被 DBA 停止：跳过结论，会话置 cancelled
+        loop_start = time.monotonic()  # 墙钟起点：LLM 慢/某步阻塞时按时限收敛
         while self.state.current_step < self.state.max_steps:
             # 取消：DBA 点了停止 → 收敛退出（跳过结论）
             if _is_cancelled(self.session_id):
                 cancelled = True
+                break
+            # 墙钟超时：总时长超限 → 强制收敛到结论（不置 cancelled，保留部分结论）
+            if time.monotonic() - loop_start > self.max_wall_clock_seconds:
+                yield {"type": "executing_warning",
+                       "warning": f"⚠️ 执行已超过 {self.max_wall_clock_seconds}s 上限，收敛并给出当前结论"}
                 break
             # 迭代预算：对话历史字符超限 → 强制收敛
             if self._history_chars() > self.max_history_chars:
@@ -192,7 +208,29 @@ class SmartOpsAgent:
             # Decision: 提取工具调用（支持一次多个，只读工具并行执行）
             actions = self._extract_tool_calls(thought, max_calls=self.MAX_PARALLEL_CALLS)
             if not actions:
+                # 变更执行后待验证：模型想直接给结论 → 拦一次，注入验证引导后重试本轮
+                if self._pending_verification and not self._verification_nudge_done:
+                    self._verification_nudge_done = True
+                    yield {"type": "executing_warning",
+                           "warning": "⚠️ 已批准的操作已执行，请先验证执行结果再给结论"}
+                    self.state.add_message(
+                        'user', "已批准的操作已执行。写结论前请先用只读工具验证执行结果"
+                                "（tail 日志 / 检查进程 / 查询状态），确认无报错后再给最终结论。")
+                    continue
+                # 工具调用解析失败回喂：模型明显在输出工具 JSON 但无法解析 → 纠正一次后重试
+                if self._extract_failed_nudges < 1 and self._looks_like_tool_json(thought):
+                    self._extract_failed_nudges += 1
+                    yield {"type": "executing_warning",
+                           "warning": "⚠️ 工具调用格式无法解析，请重新输出"}
+                    self.state.add_message(
+                        'user', f"你的工具调用 JSON 无法解析（片段: {thought[:200]}）。"
+                                "请只输出合法的工具调用 JSON，格式: "
+                                '{"tool": "工具名", "parameters": {...}}。')
+                    continue
+                self._pending_verification = False
                 break
+            # 模型已产出工具调用（通常是验证动作），解除待验证标记
+            self._pending_verification = False
 
             # 死循环检测：连续相同动作指纹 ≥3 次 → 强制收敛
             self._recent_actions.append(self._action_fingerprint(actions))
@@ -291,8 +329,9 @@ class SmartOpsAgent:
                     # Observation
                     yield {"type": "observing", "observation": item['observation']}
 
-                    # 观察结果回流对话历史
-                    self.state.add_message('user', f"观察结果:\n{item['observation']}")
+                    # 观察结果回流对话历史（大结果只存摘要，全量仅经 SSE 展示）
+                    self.state.add_message(
+                        'user', f"观察结果:\n{self._history_observation(item['observation'])}")
 
             self.state.next_step()
 
@@ -428,6 +467,11 @@ class SmartOpsAgent:
 {"type": "plan", "plan": {"title": "计划标题", "scope": "影响范围", "operations": [{"tool": "execute_command", "parameters": {"command": "..."}, "impact": "影响说明", "risk": "high/medium/low"}], "rollback": "回滚方法"}}
 ```
 - 审批通过后引擎按计划执行；执行中遇问题请用只读工具自行分析探索，再追加新的操作计划等待审批，直至任务完成。
+- **变更操作执行后必须验证（覆盖"答案即止"）**：每项已批准操作执行后、写结论前，必须用只读工具验证执行结果——
+  1. 服务/实例启停 → systemctl status / ps / 实例状态查询，确认目标状态；
+  2. 有日志的操作（安装/备份/初始化/配置）→ tail 日志确认无 ERROR 级错误、出现成功标记；
+  3. 验证输出必须写入结论（"已确认 xxx"），不得仅凭命令返回码下结论。
+  "答案即止"不适用于变更操作：验证完成才能结束。
 - **禁止**：用散文（Markdown 表格/自然语言）输出计划、向用户提问"是否确认/是否同意"、拒绝执行已明确的变更指令。审批通过操作计划面板完成，无需征询用户文字确认。
 - 不得直接调用工具执行变更 SQL/命令（会被安全校验拦截）。
 
@@ -561,7 +605,9 @@ class SmartOpsAgent:
             return text
 
         try:
-            for delta, err in call_llm_stream(messages, model_id=self.model_id):
+            # 显式 max_tokens：防弱模型长结论被提供商默认上限截断（结论/思考类生成）
+            for delta, err in call_llm_stream(messages, model_id=self.model_id,
+                                              max_tokens=self.MAX_LLM_TOKENS):
                 if err:
                     if not full:
                         return (yield from fallback())
@@ -573,6 +619,10 @@ class SmartOpsAgent:
             print(f"[Agent] LLM 流式调用异常（回退非流式）: {e}")
             if not full:
                 return (yield from fallback())
+        if not full:
+            # 双失败（流式 + 非流式均空）：产出可感知警告，避免前端无任何反馈的静默空转
+            yield {"type": "executing_warning",
+                   "warning": "⚠️ LLM 调用失败或返回空，本次步骤无输出"}
         return full
 
     def _think(self, system_prompt: str) -> str:
@@ -627,10 +677,11 @@ class SmartOpsAgent:
         """
         if not thought:
             return []
-        # 剥离 ```json ... ``` 代码围栏（保留内部内容）
-        fenced = re.search(r'```(?:json)?\s*(.*?)```', thought, re.DOTALL)
-        if fenced:
-            thought = fenced.group(1)
+        # 剥离所有 ```json ... ``` 代码围栏标记、保留全文：
+        # 模型若分段各包一个 JSON，只取第一个 fence 会丢后续调用；
+        # 分两步删（开 fence 含可选 json 前缀 → 闭 fence），避免交替匹配在相邻 fence 间残留
+        thought = re.sub(r'```(?:json)?', '', thought)
+        thought = re.sub(r'```', '', thought)
 
         calls = []
         start = thought.find('{')
@@ -682,8 +733,24 @@ class SmartOpsAgent:
 
     @staticmethod
     def _action_fingerprint(actions: List[Dict]) -> str:
-        """动作指纹：tool + 参数规范化，用于死循环检测"""
-        return json.dumps(actions, sort_keys=True, ensure_ascii=False)
+        """动作指纹：工具名 + 参数键集合（参数值微变不视为新动作），用于死循环检测。
+
+        全参数 JSON 作为指纹过严：模型反复改 LIMIT/条件重查会因参数微变而无法触发检测。
+        """
+        def norm(a):
+            if not isinstance(a, dict):
+                return 'other'
+            if a.get('type') == 'plan':
+                return 'plan'
+            params = a.get('parameters')
+            keys = ','.join(sorted(params.keys())) if isinstance(params, dict) else ''
+            return f"{a.get('tool', '')}:{keys}"
+        return json.dumps([norm(a) for a in actions], ensure_ascii=False)
+
+    @staticmethod
+    def _looks_like_tool_json(thought: str) -> bool:
+        """判断思考文本是否明显在输出工具调用 JSON（带引号的键），用于解析失败时回喂纠正"""
+        return '"tool"' in thought and '"parameters"' in thought
 
     def _history_chars(self) -> int:
         """对话历史总字符数（迭代预算）"""
@@ -732,9 +799,15 @@ class SmartOpsAgent:
         if not item['is_safe']:
             return {**item, 'observation': f"❌ 安全验证失败: {item['error']}",
                     'result': None, 'warning': None}
-        result = self._execute_action(action)
-        return {**item, 'observation': self._format_result(result),
-                'result': result, 'warning': None}
+        try:
+            result = self._execute_action(action)
+            return {**item, 'observation': self._format_result(result),
+                    'result': result, 'warning': None}
+        except Exception as e:
+            # 单个工具异常兜底：转观察结果，避免并行线程内异常中断整个 ReAct 循环
+            return {**item,
+                    'observation': f"❌ 工具执行出错: {e}",
+                    'result': None, 'warning': None}
 
     # ==================== 变更类操作：审批流 ====================
 
@@ -791,6 +864,9 @@ class SmartOpsAgent:
             return 'scope_approved'
         self.state.add_message('user', "操作计划已批准。开始执行已批准的操作。")
         yield from self._execute_plan_operations(plan)
+        # 变更已执行：标记待验证，下一轮模型若想直接收敛会被拦一次，强制先做只读验证
+        self._pending_verification = True
+        self._verification_nudge_done = False
         return 'approved'
 
     def _execute_plan_operations(self, plan: Dict) -> Generator[Dict, None, None]:
@@ -872,7 +948,7 @@ class SmartOpsAgent:
                         return {"node": _node_label(t), "ok": False,
                                 "error": f"注入拦截: {err2}"}
                     result = run_ssh_command(conn_info, node_cmd,
-                                             timeout=params.get('timeout', 30))
+                                             timeout=params.get('timeout', 300))
                 if 'error' in result:
                     return {"node": _node_label(t), "ok": False, "error": result['error']}
                 return {"node": _node_label(t), "ok": True, "result": result}
@@ -897,7 +973,11 @@ class SmartOpsAgent:
                     node_obs.append(f"❌ {label}: {r.get('error')}")
 
             observation = f"计划操作 {i} 执行结果（{len(results)} 节点）:\n" + "\n".join(node_obs)
-            self.state.add_message('user', f"{observation}")
+            if self._plan_failed_nodes:
+                # 失败引导：避免模型只下"部分节点失败"结论了事，驱动其用只读工具定位原因
+                observation += ("\n⚠️ 存在失败节点，请用只读工具检查其日志/状态，"
+                                "定位原因后再决定下一步（如仅对失败节点重试）。")
+            self.state.add_message('user', self._history_observation(observation))
             self._persist_plan_step(i, op, observation, results)
 
     def _persist_plan_step(self, index: int, op: Dict,
@@ -1113,6 +1193,17 @@ class SmartOpsAgent:
         # 使用工具注册表执行
         return execute_tool(tool, params, ctx)
 
+    def _history_observation(self, observation: str, limit: int = 1500) -> str:
+        """写入对话历史的观察摘要：超长按「头+尾」保留，避免大结果撑爆历史字符预算。
+
+        全量观察仍经 SSE observing 事件展示给前端；history 只存摘要供模型链式推理。
+        """
+        obs = observation or ''
+        if len(obs) <= limit:
+            return obs
+        half = (limit - len('\n... [中间省略] ...\n')) // 2
+        return obs[:half] + '\n... [中间省略] ...\n' + obs[-half:]
+
     def _format_result(self, result: Dict) -> str:
         """格式化执行结果为文本"""
         if result.get('type') == 'batch_result':
@@ -1127,7 +1218,10 @@ class SmartOpsAgent:
                     if 'row_count' in r:
                         out_str = f"{r.get('row_count', 0)} 行"
                     else:
-                        out_str = str(r.get('output') or 'ok')[:120].replace('\n', ' ')
+                        # 变更类节点保留退出码 + 输出尾部（成功/失败标记常在尾部）
+                        out = str(r.get('output') or 'ok').replace('\n', ' ')
+                        tail = out[-200:]
+                        out_str = (out if len(out) <= 200 else '...' + tail)
                     lines.append(f"- ✅ {label}: {out_str}")
                 else:
                     lines.append(f"- ❌ {label}: {r.get('error', '失败')}")

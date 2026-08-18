@@ -35,7 +35,7 @@ python -c "from app import create_app; app = create_app(); print('OK')"
 
 - 首次启动会自动建库（`data/db_tool.db`）、执行 JSON→SQLite 迁移、扫描 `data/knowledge/` 同步新文件。
 - `temp_scripts/` 下是历史一次性调试脚本（`test_*.py`、`check_*.py` 等），**不是**正式测试，不要当测试套件使用。
-- 版本号以 `config.py` 的 `APP_VERSION` 为准（当前 3.0.17），README 里的版本号可能过期。
+- 版本号以 `config.py` 的 `APP_VERSION` 为准（当前 4.2.0），README 里的版本号可能过期。
 
 ## 架构总览
 
@@ -66,9 +66,10 @@ python -c "from app import create_app; app = create_app(); print('OK')"
 
 ### 智能运维 Agent（agent/）
 
-- `agent/engine.py`：`SmartOpsAgent`，ReAct 循环（Thought→Action→Observation），SSE 流式输出思考/工具执行/观察。
+- `agent/engine.py`：`SmartOpsAgent`，ReAct 循环（Thought→Action→Observation），SSE 流式输出思考/工具执行/观察。v4.2.0 起：变更操作执行后**强制验证**（`_pending_verification` 拦截 + 系统提示规则，覆盖"答案即止"）；大结果只存摘要进 history（`_history_observation`，全量经 SSE 展示）；工具 JSON 解析失败回喂纠正一次；死循环指纹按「工具名+参数键集合」归一化；主循环墙钟超时（`AGENT_MAX_WALL_CLOCK_SECONDS`）；结论生成显式 `max_tokens`（`MAX_LLM_TOKENS`）。
 - `agent/harness.py`：安全约束框架，**核心安全机制**。SQL 白名单（按 OperationLevel 分级，默认 READONLY：仅 SELECT/EXPLAIN/DESCRIBE/SHOW）+ 命令白名单（按数据库类型）+ 危险模式黑名单（DROP/DELETE/UPDATE/INSERT 等）。改 Agent 行为时必须经过 Harness 校验。
-- `agent/tools.py`：MCP 风格工具注册表（`register_tool` 装饰器 + `TOOLS` 字典），5 个标准工具。
+- `agent/tools.py`：MCP 风格工具注册表（`register_tool` 装饰器 + `TOOLS` 字典），7 个标准工具。v4.2.0 起 `execute_command` 返回 `exit_code/timed_out/truncated` 字段（超时不等于失败，内嵌"请用 ps/tail 复查"引导）；长输出按「头+尾」截断（`_truncate_head_tail`）。
+- `agent/connectors.py`：`run_ssh_command` 超时不再当纯错误——分块读取保留部分输出并带 `timed_out` 标记。
 - `agent/skills.py`：6 个内置技能（慢查询诊断、Oracle RAC、备份检查等）；`agent/state.py`：ReAct 状态机。
 - 连接配置存 `agent_ssh_connections` / `agent_db_connections` 表，由 `routes/agent_connections.py` 管理。
 

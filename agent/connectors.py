@@ -10,6 +10,7 @@
 """
 import io
 import re
+import socket
 from typing import Dict, List, Optional, Tuple
 
 from db.database import get_db
@@ -244,8 +245,10 @@ def _load_private_key(key_str: str, passphrase: Optional[str]) -> Optional[objec
 def run_ssh_command(conn_info: Dict, command: str, timeout: int = 30) -> Dict:
     """通过 SSH 执行命令
 
+    超时不再当作纯错误：返回已收集的部分输出并带 timed_out 标记，
+    供模型判断"命令可能仍在运行"，引导其用 ps / tail 复查。
     Returns:
-        {'stdout': ..., 'stderr': ..., 'exit_code': N} 或 {'error': ...}
+        {'stdout': ..., 'stderr': ..., 'exit_code': N, 'timed_out': bool} 或 {'error': ...}
     """
     try:
         import paramiko
@@ -272,10 +275,24 @@ def run_ssh_command(conn_info: Dict, command: str, timeout: int = 30) -> Dict:
         return {"error": f"SSH连接失败: {e}"}
     try:
         stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
-        out = stdout.read().decode('utf-8', errors='replace')
+        out = b''
+        timed_out = False
+        try:
+            # 分块读取并累积：命令未结束（如后台/长任务）超时后仍能拿到已产出的部分输出
+            while True:
+                chunk = stdout.channel.recv(8192)
+                if not chunk:
+                    break
+                out += chunk
+        except socket.timeout:
+            timed_out = True
+        out_text = out.decode('utf-8', errors='replace')
+        if timed_out:
+            return {"stdout": out_text, "stderr": "", "exit_code": -1,
+                    "timed_out": True}
         err = stderr.read().decode('utf-8', errors='replace')
         exit_code = stdout.channel.recv_exit_status()
-        return {"stdout": out, "stderr": err, "exit_code": exit_code}
+        return {"stdout": out_text, "stderr": err, "exit_code": exit_code}
     except Exception as e:
         return {"error": f"SSH命令执行失败: {e}"}
     finally:

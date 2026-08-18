@@ -672,12 +672,16 @@ data: [DONE]
 
 **装饰器：** `register_tool(name, description, parameters)`
 
-**已注册工具（5个，真实执行）：**
+**已注册工具（7个，真实执行）：**
 1. `query_database` — 执行SQL查询（只读，需 DB 连接，双重安全校验）
-2. `execute_command` — 通过SSH执行白名单数据库命令（需 SSH 连接）
+2. `execute_command` — 通过SSH执行白名单数据库命令（需 SSH 连接；返回 `exit_code/timed_out/truncated`，超时不等于失败、内嵌"请用 ps/tail 复查"引导）
 3. `get_schema_info` — 获取数据库Schema信息（表清单/表结构，按 db_type 生成查询）
 4. `get_performance_metrics` — 获取性能指标（sessions/locks/waits/sql_stats/table_stats）
-5. `retrieve_knowledge` — 从知识库检索相关文档（向量相似度）
+5. `get_monitor_metrics` — 查询外部监控平台落库的监控指标（蓝鲸等，CPU/内存/磁盘）
+6. `retrieve_check` — 检索运维检查项（专家检查知识库，含 SQL/命令/建议）
+7. `retrieve_knowledge` — 从知识库检索相关文档（向量相似度）
+
+**截断工具：** `_truncate_head_tail(text, limit=MAX_OUTPUT_CHARS)` — 超长命令输出按「头+尾」保留（成功/失败标记常在尾部），`MAX_OUTPUT_CHARS=3000`。
 
 **工具执行上下文：** `ToolContext(db_conn_id, ssh_conn_id, db_type, operation_level)`，由引擎 `_execute_action` 注入，`execute_tool(tool_name, parameters, ctx)`。
 
@@ -687,7 +691,7 @@ data: [DONE]
 | `load_db_conn(db_conn_id)` | 加载 DB 连接配置并解密密码 |
 | `load_ssh_conn(ssh_conn_id)` | 加载 SSH 连接配置并解密凭据 |
 | `run_sql(conn_info, sql, max_rows, timeout)` | 按 db_type 分发到 pymysql/oracledb/psycopg2/dmPython 执行 |
-| `run_ssh_command(conn_info, command, timeout)` | paramiko 执行命令，返回 stdout/stderr/exit_code |
+| `run_ssh_command(conn_info, command, timeout)` | paramiko 分块读取执行命令；超时返回部分输出 + `timed_out` 标记（不再当纯错误） |
 | `build_schema_query(db_type, table_name)` | 生成只读 schema 查询（表名经 `_safe_identifier` 白名单校验） |
 | `build_metric_query(db_type, metric_type)` | 生成只读性能指标查询 |
 
@@ -708,18 +712,24 @@ data: [DONE]
 | 方法 | 说明 |
 |------|------|
 | `run_stream(user_question)` | ReAct主循环（流式输出Generator，观察结果经对话历史回流实现链式推理） |
-| `_retrieve_knowledge_strict(query)` | 严格检索知识库（阈值 0.55/0.60，返回含 chunk_ids） |
+| `_retrieve_knowledge_strict(query)` | 严格检索知识库（阈值 0.75/0.80，返回含 chunk_ids） |
 | `_retrieve_kg_context(query, chunk_ids)` | 基于检索 chunk 获取知识图谱上下文（enhance_qa_context） |
-| `_build_system_prompt(knowledge_refs, skills, kg_context)` | 构建system prompt（注入知识库+知识图谱+Skills） |
-| `_think(system_prompt)` | LLM思考（基于完整对话历史） |
-| `_decide_action(thought)` | 提取工具调用 JSON（容错代码围栏/嵌套括号/字符串内大括号） |
+| `_build_system_prompt(knowledge_refs, skills, kg_context)` | 构建system prompt（注入知识库+知识图谱+Skills；含「变更操作执行后必须验证」规则） |
+| `_think(system_prompt)` / `_think_stream` | LLM思考（非流式/流式逐 token 产出 thinking_chunk） |
+| `_stream_llm(messages, event_type)` | 流式调用 LLM（推理模型 reasoning_content 兼容；流式失败回退非流式，双失败产警告事件；显式 `max_tokens`） |
+| `_extract_tool_calls(thought, max_calls)` | 提取工具调用 JSON（分步剥离全部代码围栏、容错尾部逗号、支持并行多调用；解析失败由调用方回喂纠正） |
+| `_looks_like_tool_json(thought)` | 判断思考文本是否明显在输出工具 JSON（解析失败回喂依据） |
+| `_action_fingerprint(actions)` | 死循环检测指纹：「工具名+参数键集合」（参数值微变不误判） |
+| `_history_observation(observation, limit)` | 写入对话历史的观察摘要（头+尾各半 1500 字符；全量仅经 SSE 展示） |
 | `_validate_action(action)` | 验证动作安全性 |
-| `_verify_knowledge_support(action, knowledge_refs)` | 验证操作是否有知识库支撑 |
 | `_execute_action(action)` | 执行工具（注入 ToolContext） |
-| `_format_result(result)` | 格式化执行结果 |
-| `_is_complete(observation)` | 判断任务是否完成 |
-| `_conclude(knowledge_refs)` | 生成最终结论 |
+| `_run_one_action(item)` | 执行单个已校验动作（异常兜底，不中断并行循环） |
+| `_execute_actions(actions, knowledge_refs)` | 批量执行（全部只读且 >1 时并行）；并行上限 `PARALLEL_MAX_WORKERS` |
+| `_format_result(result)` | 格式化执行结果（批量结果紧凑摘要，保留尾部 200 字符） |
+| `_conclude(knowledge_refs)` / `_conclude_stream` | 生成最终结论 |
 | `get_state()` | 获取Agent状态 |
+
+**变更验证机制（v4.2.0）：** 批准计划执行后置 `_pending_verification`，下一轮模型若想直接收敛（无工具调用）会被拦一次（`_verification_nudge_done` 防死循环），注入"请先用只读工具验证执行结果"引导；模型产出工具调用即解除标记。
 
 **ReAct事件类型：**
 - `retrieving_start` — 开始检索知识库

@@ -159,6 +159,18 @@ class Tool:
 # 工具注册表
 TOOLS = {}
 
+# 命令输出截断上限；超长时改「头+尾」保留（成功/失败标记常在尾部，不能只留头）
+MAX_OUTPUT_CHARS = 3000
+
+
+def _truncate_head_tail(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
+    """超长文本按「头 + 省略标记 + 尾」截断，避免丢失尾部判定信息"""
+    text = (text or '').strip()
+    if len(text) <= limit:
+        return text
+    half = (limit - len('\n... [中间省略] ...\n')) // 2
+    return text[:half] + '\n... [中间省略] ...\n' + text[-half:]
+
 
 def register_tool(name: str, description: str, parameters: Dict):
     """注册工具装饰器"""
@@ -227,7 +239,7 @@ def query_database(params: Dict, ctx: ToolContext) -> Dict:
 
 @register_tool(
     name="execute_command",
-    description="通过SSH执行数据库命令",
+    description="通过SSH执行数据库命令；执行变更类/长耗时命令后，应随后用只读命令（tail / ps / systemctl status）确认结果再结束",
     parameters={
         "type": "object",
         "properties": {
@@ -268,8 +280,16 @@ def execute_command(params: Dict, ctx: ToolContext) -> Dict:
         err_text = result.get('stderr', '')
         if err_text:
             out += f"\n[stderr] {err_text}"
-        return {"node": _node_label(t), "ok": (result.get('exit_code', 0) == 0),
-                "output": out.strip()[:3000]}
+        timed_out = result.get('timed_out', False)
+        if timed_out:
+            # 内嵌引导：超时不等于失败，命令可能仍在运行，模型无需推理就该去复查
+            out += "\n⚠️ 命令执行超时，可能仍在运行，请用 ps / tail 检查进程与日志。"
+        exit_code = result.get('exit_code', -1)
+        return {"node": _node_label(t), "ok": (not timed_out and exit_code == 0),
+                "exit_code": exit_code,
+                "timed_out": timed_out,
+                "truncated": len(out) > MAX_OUTPUT_CHARS,
+                "output": _truncate_head_tail(out)}
 
     if target:
         nodes, t_err = _select_nodes(ctx, 'ssh', target)

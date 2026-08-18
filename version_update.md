@@ -9,6 +9,33 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v4.2.0（2026-08-18）
+
+### Agent 智能化 + 范围树交互修复
+
+**结论空返回修复（多轮会话）**：
+- 前端结论块改为会话视图缓存引用（`view.conclusionDiv`），多轮/多循环不再因固定 id 首匹配把本次结论串进旧块；新增 `agentLatestConclusionDiv` 统一取最新实时结论块（反馈/重新生成/历史回放同源）。
+- 流式解析兼容推理模型：`call_llm_stream` 同时累积 `reasoning_content`（`content` 为空时），思考/结论不再整段丢失（`utils/__init__.py`）。
+- LLM 流式+非流式双失败时产出 `executing_warning`，不再静默空转；流中断残留的空结论块自动填占位。
+
+**变更操作执行后强制验证（长链路日志检查）**：
+- 系统提示新增「变更操作执行后必须验证」规则（覆盖"答案即止"）：启停查状态、有日志的操作 tail 确认无 ERROR、验证输出写入结论。
+- 引擎加 `_pending_verification` 拦截：批准计划执行后，模型若想直接收敛会被拦一次，注入验证引导强制先做只读验证。
+- `execute_command` 返回体扩展 `exit_code/timed_out/truncated`；SSH 超时不再当纯错误（分块读取保留部分输出 + `timed_out` 标记 + "请用 ps/tail 复查"内嵌引导）；计划操作超时默认 30→300s。
+- 输出截断改「头+尾」保留（`_truncate_head_tail`），成功/失败标记不再被切；批量结果摘要保留尾部 200 字符；失败节点 observation 追加排查引导。
+
+**上下文与鲁棒性**：
+- 大结果不进 history：新增 `_history_observation`（头尾各半 1500 字符摘要），全量仅经 SSE 展示；`AGENT_MAX_HISTORY_CHARS` 12000→20000。
+- 工具调用 JSON 解析失败回喂纠正一次（`_looks_like_tool_json` 检测）；代码围栏剥离改两步删除，多分段 JSON 不再丢后续调用。
+- 并行工具异常兜底（`_run_one_action` try/except）；死循环指纹归一化为「工具名+参数键集合」。
+- 主循环墙钟超时（`AGENT_MAX_WALL_CLOCK_SECONDS` 默认 300s，超时优雅收敛给结论）；思考/结论显式 `max_tokens=4096`。
+
+**操作范围树交互修复**（`static/js/agent.js` + `static/css/style.css` + `templates/index.html`）：
+- 修复根因：`.scope-panel > * { flex-shrink: 0 }`（与 `.agent-chat` 同款防线），多节点池展开不再挤扁其它树、面板出现滚动条。
+- 折叠初始化判据改一次性标志：全部展开后勾选不再塌回折叠态。
+- 新增节点搜索过滤（池/服务器/实例/端口三层剪枝，命中自动展开 + 匹配计数）；全部展开/折叠按钮；折叠状态 localStorage 持久化。
+- 重渲染保留滚动位置与焦点（勾选/折叠后不跳回顶部）。
+
 ## v4.1.0（2026-08-17）
 
 ### 智能运维 Agent 模块体验优化

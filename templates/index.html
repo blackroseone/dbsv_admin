@@ -435,6 +435,14 @@
                     <div class="agent-sidebar">
                         <div class="agent-section">
                             <h3>🎯 操作范围 <span id="agent-scope-count" class="scope-count"></span></h3>
+                            <div class="scope-toolbar">
+                                <input id="agent-scope-filter" class="scope-filter" type="text"
+                                       placeholder="🔍 搜索池/服务器/实例/端口..." autocomplete="off">
+                                <div class="scope-toolbar-actions">
+                                    <button class="scope-tool-btn" title="全部展开" onclick="expandAllScope()">↧ 展开</button>
+                                    <button class="scope-tool-btn" title="全部折叠" onclick="collapseAllScope()">↥ 折叠</button>
+                                </div>
+                            </div>
                             <div id="agent-scope-panel" class="scope-panel"></div>
                         </div>
                         <div class="agent-sidebar-hint">

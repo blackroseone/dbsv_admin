@@ -16,7 +16,7 @@ COMMANDS_DIR = os.path.join(DATA_DIR, 'commands')
 # ==================== 应用配置 ====================
 
 # 版本号
-APP_VERSION = '4.1.0'
+APP_VERSION = '4.2.0'
 
 # Secret Key（生产环境应从环境变量读取）
 SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dbsv-admin-dev-secret-key-change-in-production')
@@ -45,11 +45,15 @@ SYNC_INTERVAL_HOURS = int(os.environ.get('DB_TOOL_SYNC_INTERVAL_HOURS', '1'))
 # ReAct 最大执行步数（迭代预算；默认 6：收敛步数，防简单任务跑满步数，可用 env 覆盖）
 AGENT_MAX_STEPS = int(os.environ.get('DB_TOOL_AGENT_MAX_STEPS', '6'))
 
-# 对话历史字符预算：超过则强制收敛到结论（防超长 prompt）
-AGENT_MAX_HISTORY_CHARS = int(os.environ.get('DB_TOOL_AGENT_MAX_HISTORY_CHARS', '12000'))
+# 对话历史字符预算：超过则强制收敛到结论（防超长 prompt）；
+# 大观察已改摘要化入历史（engine._history_observation），预算可放宽以支持更长链路
+AGENT_MAX_HISTORY_CHARS = int(os.environ.get('DB_TOOL_AGENT_MAX_HISTORY_CHARS', '20000'))
 
 # 变更类操作计划审批超时（分钟）：DBA 未在时限内审批则计划置 expired
 AGENT_PLAN_TIMEOUT_MINUTES = int(os.environ.get('DB_TOOL_AGENT_PLAN_TIMEOUT_MINUTES', '15'))
+
+# ReAct 主循环总墙钟超时（秒）：LLM 慢或某步阻塞时 SSE 不会无限挂起，超时优雅收敛并给结论
+AGENT_MAX_WALL_CLOCK_SECONDS = int(os.environ.get('DB_TOOL_AGENT_MAX_WALL_CLOCK_SECONDS', '300'))
 
 # 命令安全融合判定：静态脚本判拒绝/未知的命令，是否额外发起独立 LLM 审查作第二意见。
 # 关闭时命令校验退化为纯静态（离线可用，未知命令走审批）。
