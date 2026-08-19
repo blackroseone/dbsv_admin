@@ -5181,7 +5181,7 @@ body {
 }
 
 .agent-sidebar {
-    width: 260px;
+    width: 320px;        /* v4.2.1 加宽：节点名/host 不再截断到无法辨认 */
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
@@ -5471,7 +5471,7 @@ body {
 }
 
 /* 历史抽屉：fixed 定位，左边缘对齐内容区（sidebar 展开 220px / 收起 60px） */
-.drawer-left { left: 220px; width: 340px; transform: translateX(-100%); }
+.drawer-left { left: 220px; width: 340px; transform: translateX(-100%); }  /* 覆盖操作范围栏并略宽 */
 .drawer-left.open { transform: translateX(0); }
 /* 管理抽屉：加宽到 380px */
 .drawer-right { right: 0; width: 380px; transform: translateX(100%); }

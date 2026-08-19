@@ -197,7 +197,7 @@ function renderAgentScopeTree() {
                     ? `<button class="scope-config-btn" onclick="quickConfigAgentNode('${escapeJsAttr(i.id)}','db')">配置</button>` : '';
                 return `<label class="scope-node scope-instance">
                     <input type="checkbox" data-target-key="${iKey}" ${it ? 'checked' : ''}>
-                    <span class="scope-node-name">${escapeHtml(i.name)}</span>
+                    <span class="scope-node-name" title="${escapeHtml(i.name)}:${escapeHtml(i.port || '')}">${escapeHtml(i.name)}</span>
                     <span class="scope-node-meta">:${escapeHtml(i.port || '')}</span>${ibadge}${icfg}
                 </label>`;
             }).join('');
@@ -206,7 +206,7 @@ function renderAgentScopeTree() {
                     ${hasInst ? `<button class="scope-toggle" title="展开/折叠" onclick="toggleScopeCollapse(event,'server','${escapeJsAttr(s.id)}')">${sArrow}</button>` : ''}
                     <label class="scope-node-label">
                         <input type="checkbox" data-target-key="${sKey}" ${st ? 'checked' : ''}>
-                        <span class="scope-node-name">${escapeHtml(s.name)}</span>
+                        <span class="scope-node-name" title="${escapeHtml(s.name)} ${escapeHtml(s.host || '')}">${escapeHtml(s.name)}</span>
                         <span class="scope-node-meta">${escapeHtml(s.host || '')}</span>
                     </label>
                     ${badge}${cfg}
