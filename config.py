@@ -16,7 +16,7 @@ COMMANDS_DIR = os.path.join(DATA_DIR, 'commands')
 # ==================== 应用配置 ====================
 
 # 版本号
-APP_VERSION = '4.2.1'
+APP_VERSION = '4.3.0'
 
 # Secret Key（生产环境应从环境变量读取）
 SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dbsv-admin-dev-secret-key-change-in-production')
@@ -63,6 +63,15 @@ COMMAND_JUDGE_TIMEOUT = int(os.environ.get('DB_TOOL_COMMAND_JUDGE_TIMEOUT', '20'
 # 命令 LLM 审查结果缓存时长（秒）：同一命令复用判读，避免重复调用
 COMMAND_JUDGE_CACHE_TTL = int(os.environ.get('DB_TOOL_COMMAND_JUDGE_CACHE_TTL', '600'))
 
+# ==================== 长期记忆配置 ====================
+
+# 记忆召回相似度阈值（低于知识库0.75，因记忆是环境事实而非精确知识；
+# 记忆库增大后过滤弱相关记忆，防止稀释 LLM 注意力）
+MEMORY_MIN_SIMILARITY = float(os.environ.get('DB_TOOL_MEMORY_MIN_SIMILARITY', '0.55'))
+
+# 记忆注入 prompt 的上限条数（与召回 limit=6 对齐，消除原 [:8] 冗余）
+MEMORY_INJECT_TOP_K = int(os.environ.get('DB_TOOL_MEMORY_INJECT_TOP_K', '6'))
+
 # ==================== RAG 配置 ====================
 
 # 嵌入模型名称
@@ -74,6 +83,11 @@ EMBED_MODEL_NAME = os.environ.get('DB_TOOL_EMBED_MODEL', 'moka-ai/m3e-base')
 # 改动此值后需全量重建索引并重调检索阈值（详见 version_update / rag_tuning.md）。
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50
+
+# 知识库 chunk 注入 prompt 的截断长度（原硬编码 200）。
+# 设为 1500 以容纳"命中块 + 前后相邻块"拼接（每块 500 × 3），
+# 解决块内后半段丢失 + 跨块后续内容丢弃；单块场景 [:1500] 不截断无副作用。
+KNOWLEDGE_CHUNK_INJECT_LIMIT = int(os.environ.get('DB_TOOL_KNOWLEDGE_CHUNK_INJECT_LIMIT', '1500'))
 
 # ==================== LLM 配置 ====================
 

@@ -9,6 +9,72 @@ let currentConversationId = null; // 当前会话ID
 // 智能滚动：用户在底部附近时自动跟随新内容，手动上滚则暂停跟随
 let qaAutoScroll = true;
 
+// ==================== qa 模型选择 + 输入框自适应 ====================
+let qaSelectedModelId = null;
+let _qaModelListCache = null;
+
+async function toggleQaModelPalette() {
+    const wrap = document.getElementById('qa-model-palette-wrap');
+    if (!wrap) return;
+    if (wrap.style.display === 'none') {
+        await renderQaModelPalette();
+        wrap.style.display = 'block';
+    } else {
+        wrap.style.display = 'none';
+    }
+}
+
+async function renderQaModelPalette() {
+    const box = document.getElementById('qa-model-palette');
+    if (!box) return;
+    if (!_qaModelListCache) {
+        try {
+            const resp = await fetch('/api/config/llm/models', { cache: 'no-cache' });
+            const data = await resp.json();
+            _qaModelListCache = data.models || [];
+        } catch (e) { _qaModelListCache = []; }
+    }
+    const models = _qaModelListCache;
+    let html = '<div class="skill-palette-header">选择模型</div>';
+    html += `<div class="skill-palette-item" onclick="selectQaModel(null)"><span class="sp-name">默认模型</span><span class="sp-desc">${qaSelectedModelId === null ? '✓' : ''}</span></div>`;
+    html += models.map(m => `
+        <div class="skill-palette-item" onclick="selectQaModel('${escapeJsAttr(m.id)}')">
+            <span class="sp-name">${escapeHtml(m.display_name || m.model_name)}${m.is_default ? ' (默认)' : ''}</span>
+            <span class="sp-desc">${String(m.id) === String(qaSelectedModelId) ? '✓' : ''}</span>
+        </div>`).join('');
+    box.innerHTML = html;
+}
+
+function selectQaModel(modelId) {
+    qaSelectedModelId = modelId || null;
+    const label = document.getElementById('qa-model-label');
+    if (label) {
+        if (!modelId) { label.textContent = '默认模型'; }
+        else {
+            const m = (_qaModelListCache || []).find(x => String(x.id) === String(modelId));
+            label.textContent = m ? (m.display_name || m.model_name) : '默认模型';
+        }
+    }
+    document.getElementById('qa-model-palette-wrap').style.display = 'none';
+    document.getElementById('qa-question').focus();
+}
+
+function autoGrowQaInput() {
+    const el = document.getElementById('qa-question');
+    if (!el) return;
+    el.style.height = 'auto';
+    const maxH = 200;
+    el.style.height = Math.min(el.scrollHeight, maxH) + 'px';
+    el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden';
+}
+
+function onQaInputKeydown(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendQuestion();
+    }
+}
+
 // 监听聊天区滚动，判断是否处于底部附近
 document.addEventListener('DOMContentLoaded', () => {
     const chatEl = document.getElementById('qa-chat');
@@ -88,7 +154,7 @@ async function loadConversations() {
 async function createNewConversation() {
     // 创建新会话，重置数据库类型为自动选择
     const dbType = 'auto';
-    const modelId = document.getElementById('qa-model-select').value;
+    const modelId = qaSelectedModelId || null;
 
     // 重置下拉框为自动选择
     document.getElementById('qa-db-type').value = 'auto';
@@ -278,6 +344,7 @@ function stopStreaming() {
     }
     document.getElementById('qa-send-btn').disabled = false;
     document.getElementById('qa-stop-btn').style.display = 'none';
+    document.getElementById('qa-send-btn').style.display = 'flex';   // 悬浮按钮用 display 切换
 }
 
 async function sendQuestion() {
@@ -285,7 +352,7 @@ async function sendQuestion() {
     const question = document.getElementById('qa-question').value.trim();
     const useRag = document.getElementById('qa-use-rag').checked;
     const useTopology = document.getElementById('qa-use-topology').checked;
-    const modelId = document.getElementById('qa-model-select').value;
+    const modelId = qaSelectedModelId || null;
 
     if (!question) {
         showToast('请输入问题', 'error');
@@ -334,9 +401,9 @@ async function sendQuestion() {
     document.getElementById('qa-question').value = '';
     chatContainer.scrollTop = chatContainer.scrollHeight;
 
-    // 禁用发送按钮，显示停止按钮
-    document.getElementById('qa-send-btn').disabled = true;
-    document.getElementById('qa-stop-btn').style.display = 'inline-block';
+    // 隐藏发送按钮，显示停止按钮（悬浮按钮 display 切换）
+    document.getElementById('qa-send-btn').style.display = 'none';
+    document.getElementById('qa-stop-btn').style.display = 'flex';
     isStreaming = true;
 
     // 创建 AbortController
@@ -634,10 +701,4 @@ function detectDBTypeFromQuestion(question) {
     return '';
 }
 
-// 回车发送
-document.getElementById('qa-question').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        sendQuestion();
-    }
-});
+// 回车发送已由 textarea onkeydown="onQaInputKeydown(event)" 处理

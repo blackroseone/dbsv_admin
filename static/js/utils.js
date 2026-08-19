@@ -16,10 +16,10 @@ function escapeHtml(text) {
     if (!text) return '';
     const div = document.createElement('div');
     div.textContent = text;
-    // 补充引号转义：文本内容与双引号属性上下文均安全
+    // 仅转义双引号（属性值上下文需要）；单引号在文本内容与双引号属性中均合法，
+    // 转义反而会在二次处理时暴露 &#39; 实体（escapeHtml 后再 escapeHtml 会变 &amp;#39;）
     return div.innerHTML
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+        .replace(/"/g, '&quot;');
 }
 
 function escapeJsAttr(text) {

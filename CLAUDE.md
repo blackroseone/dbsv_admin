@@ -35,7 +35,7 @@ python -c "from app import create_app; app = create_app(); print('OK')"
 
 - 首次启动会自动建库（`data/db_tool.db`）、执行 JSON→SQLite 迁移、扫描 `data/knowledge/` 同步新文件。
 - `temp_scripts/` 下是历史一次性调试脚本（`test_*.py`、`check_*.py` 等），**不是**正式测试，不要当测试套件使用。
-- 版本号以 `config.py` 的 `APP_VERSION` 为准（当前 4.2.0），README 里的版本号可能过期。
+- 版本号以 `config.py` 的 `APP_VERSION` 为准（当前 4.3.0），README 里的版本号可能过期。
 
 ## 架构总览
 
@@ -82,6 +82,7 @@ python -c "from app import create_app; app = create_app(); print('OK')"
 
 - 单页应用，无构建工具、无框架。`app.js` 入口（主题、导航、初始化）；`api.js` 封装 apiGet/apiPost/apiPut/apiDelete；各模块一个 JS 文件（`qa.js`、`topology.js` 等）。
 - 主题用 CSS 变量（`static/css/style.css`），暗色/亮色切换，localStorage 持久化。
+- v4.3.0 起 agent/qa 输入区为**悬浮布局**：`.agent-input-float`/`.qa-input-float`（absolute 底部居中，随 pane 滚动区定位），发送按钮 `.send-btn-float` 圆形↑，textarea `.input-box` 内自适应 8 行；模型选择为「按钮 + 上弹 palette」（复用 `.skill-palette`），agent 存 `view.selectedModelId`、qa 存 `qaSelectedModelId`。改输入区结构时注意：审批槽在 `.agent-input-float` 内、审批时用 `setAgentInputInteractive` 隐藏输入交互元素而非整个容器。
 - 新增模块时需要同时：在 `routes/` 建 Blueprint、`routes/__init__.py` 导出并注册、`static/js/` 加模块文件、`templates/index.html` 加导航。
 
 ## 注意事项

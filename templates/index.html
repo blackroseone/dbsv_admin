@@ -392,9 +392,6 @@
                             <select id="qa-db-type" class="select-db-type">
                                 <option value="auto" selected>🤖 自动选择</option>
                             </select>
-                            <select id="qa-model-select" class="select-db-type">
-                                <option value="">使用默认模型</option>
-                            </select>
                             <label class="checkbox-label">
                                 <input type="checkbox" id="qa-use-rag" checked> 使用知识库增强
                             </label>
@@ -414,14 +411,24 @@
                                 <p>支持 Shift+Enter 换行</p>
                             </div>
                         </div>
-                        <div class="qa-input-area">
-                            <textarea id="qa-question" placeholder="请输入你的问题... (Shift+Enter 换行)" rows="3"></textarea>
-                            <button class="btn btn-primary" id="qa-send-btn" onclick="sendQuestion()">
-                                发送 ➤
-                            </button>
-                            <button class="btn btn-danger" id="qa-stop-btn" onclick="stopStreaming()" style="display: none;">
-                                ⏹ 停止
-                            </button>
+                        <div class="qa-input-float">
+                            <div class="palette-stack">
+                                <div class="skill-palette-wrap" id="qa-model-palette-wrap" style="display:none;">
+                                    <div class="skill-palette" id="qa-model-palette"></div>
+                                </div>
+                            </div>
+                            <div class="input-box">
+                                <textarea id="qa-question" placeholder="请输入你的问题... (回车发送，Shift+Enter 换行)" rows="1"
+                                          oninput="autoGrowQaInput()" onkeydown="onQaInputKeydown(event)"></textarea>
+                                <button class="send-btn-float" id="qa-send-btn" onclick="sendQuestion()" aria-label="发送">↑</button>
+                                <button class="send-btn-float" id="qa-stop-btn" onclick="stopStreaming()" style="display:none;background:var(--btn-danger,#dc3545);" aria-label="停止">⏹</button>
+                            </div>
+                            <div class="input-toolbar">
+                                <button class="input-tool-btn" onclick="toggleQaModelPalette()" aria-label="选择模型">
+                                    🤖 <span id="qa-model-label">默认模型</span>
+                                </button>
+                                <span class="tool-hint">💡 Shift+Enter 换行</span>
+                            </div>
                         </div>
                     </div>
                 </div>

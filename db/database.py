@@ -2181,9 +2181,41 @@ def search_memory_semantic(query, limit=8):
     # 已 normalize，矩阵 @ 查询向量 = 全部余弦（一次 BLAS 运算）
     matrix = np.stack(vectors)
     scores = matrix @ emb
-    top_n = min(limit, len(scores))
-    idx = np.argsort(-scores)[:top_n]
-    return [_memory_from_row(valid_rows[i]) for i in idx]
+    # 按相似度阈值过滤，防止记忆库增大后弱相关记忆混入稀释 LLM 注意力；
+    # 过滤后不足 limit 由 engine._recall_memory 关键词兜底逻辑接管
+    from config import MEMORY_MIN_SIMILARITY
+    ranked_idx = np.argsort(-scores)
+    filtered = [valid_rows[i] for i in ranked_idx
+                if float(scores[i]) >= MEMORY_MIN_SIMILARITY][:limit]
+    return [_memory_from_row(r) for r in filtered]
+
+
+def get_chunk_neighbors(chunk_id, radius=1):
+    """取指定 chunk 的相邻块（同 file_id，chunk_index ± radius），用于检索后补全跨块上下文。
+
+    解决固定分块导致的跨块内容截断：检索命中某块时，其相邻块可能含后续相关内容。
+    返回 {'before': [chunk_text, ...], 'after': [chunk_text, ...]}，不含命中块自身。
+    """
+    conn = get_db()
+    row = conn.execute(
+        "SELECT file_id, chunk_index FROM kb_embeddings WHERE id=?", (chunk_id,)
+    ).fetchone()
+    if not row:
+        return {'before': [], 'after': []}
+    file_id, cur_idx = row['file_id'], row['chunk_index']
+    before = [r['chunk_text'] for r in conn.execute(
+        "SELECT chunk_text FROM kb_embeddings "
+        "WHERE file_id=? AND chunk_index BETWEEN ? AND ? "
+        "AND chunk_index < ? ORDER BY chunk_index",
+        (file_id, cur_idx - radius, cur_idx - 1, cur_idx)
+    ).fetchall()]
+    after = [r['chunk_text'] for r in conn.execute(
+        "SELECT chunk_text FROM kb_embeddings "
+        "WHERE file_id=? AND chunk_index BETWEEN ? AND ? "
+        "AND chunk_index > ? ORDER BY chunk_index",
+        (file_id, cur_idx + 1, cur_idx + radius, cur_idx)
+    ).fetchall()]
+    return {'before': before, 'after': after}
 
 
 def get_skills_by_source(source_session):

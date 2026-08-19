@@ -396,6 +396,22 @@ class SmartOpsAgent:
                 'chunk_ids': []
             }
 
+        # 检索后补相邻块上下文：固定分块可能导致跨块内容截断，
+        # 对每个命中块拼接其 chunk_index±1 同文件相邻块，避免后续相关部分丢失
+        try:
+            from db.database import get_chunk_neighbors
+            for r in filtered_results:
+                cid = r.get('chunk_id')
+                if not cid:
+                    continue
+                nb = get_chunk_neighbors(cid, radius=1)
+                if nb['before'] or nb['after']:
+                    r['chunk_text'] = '\n'.join(
+                        nb['before'] + [r.get('chunk_text', '')] + nb['after']
+                    )
+        except Exception as e:
+            print(f"[Agent] 补相邻块失败（不影响主流程）: {e}")
+
         max_similarity = max(r.get('similarity', 0) for r in filtered_results)
         if max_similarity < self.MIN_KNOWLEDGE_COVERAGE:
             return {
@@ -421,12 +437,13 @@ class SmartOpsAgent:
             return None
 
     def _format_knowledge_refs(self, results: List[Dict]) -> List[Dict]:
-        """格式化知识库引用"""
+        """格式化知识库引用（chunk 注入长度从 config 取，原硬编码 200 放宽到容纳相邻块拼接）"""
+        from config import KNOWLEDGE_CHUNK_INJECT_LIMIT
         refs = []
         for r in results:
             refs.append({
                 'file': r.get('filename', '未知'),
-                'chunk': r.get('chunk_text', '')[:200],
+                'chunk': r.get('chunk_text', '')[:KNOWLEDGE_CHUNK_INJECT_LIMIT],
                 'similarity': round(r.get('similarity', 0), 3)
             })
         return refs
@@ -553,7 +570,8 @@ class SmartOpsAgent:
         # 注入长期记忆（环境上下文，含图谱补充）
         if memory_refs:
             prompt += "\n## 环境上下文（历史记录，供参考）\n"
-            for mem in memory_refs[:8]:
+            from config import MEMORY_INJECT_TOP_K
+            for mem in memory_refs[:MEMORY_INJECT_TOP_K]:
                 entity = mem.get('entity_name') or '通用'
                 prompt += f"- [{mem.get('entity_type', 'general')}:{entity}] {mem.get('fact', '')[:150]}\n"
                 if mem.get('graph_context'):

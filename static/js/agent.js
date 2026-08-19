@@ -531,12 +531,82 @@ function clearSelectedSkill(sid) {
     if (tag) tag.style.display = 'none';
 }
 
-// 输入框自适应高度（1-5 行，约 120px 上限）
+// ==================== 模型选择（输入框左下方按钮，点击上弹，样式复用 skill-palette）====================
+let _agentModelListCache = null;
+
+async function toggleModelPalette(sid) {
+    const wrap = document.getElementById(`agent-model-palette-wrap-${sid}`);
+    if (!wrap) return;
+    if (wrap.style.display === 'none') {
+        await renderModelPalette(sid);
+        wrap.style.display = 'block';
+        // 关闭技能弹框避免重叠
+        closeSkillPalette(sid);
+    } else {
+        wrap.style.display = 'none';
+    }
+}
+
+async function renderModelPalette(sid) {
+    const box = document.getElementById(`agent-model-palette-${sid}`);
+    if (!box) return;
+    if (!_agentModelListCache) {
+        try {
+            const resp = await fetch('/api/config/llm/models', { cache: 'no-cache' });
+            const data = await resp.json();
+            _agentModelListCache = data.models || [];
+        } catch (e) { _agentModelListCache = []; }
+    }
+    const models = _agentModelListCache;
+    const view = agentView(sid);
+    const curId = view.selectedModelId;
+    let html = '<div class="skill-palette-header">选择模型</div>';
+    html += `<div class="skill-palette-item" onclick="selectAgentModel('${escapeJsAttr(sid)}', null)">
+        <span class="sp-name">默认模型</span>
+        <span class="sp-desc">${curId === null ? '✓' : ''}</span>
+    </div>`;
+    html += models.map(m => `
+        <div class="skill-palette-item" onclick="selectAgentModel('${escapeJsAttr(sid)}', '${escapeJsAttr(m.id)}')">
+            <span class="sp-name">${escapeHtml(m.display_name || m.model_name)}${m.is_default ? ' (默认)' : ''}</span>
+            <span class="sp-desc">${String(m.id) === String(curId) ? '✓' : ''}</span>
+        </div>`).join('');
+    box.innerHTML = html;
+}
+
+function selectAgentModel(sid, modelId) {
+    const view = agentView(sid);
+    view.selectedModelId = modelId || null;
+    const label = document.getElementById(`agent-model-label-${sid}`);
+    if (label) {
+        if (!modelId) { label.textContent = '默认模型'; }
+        else {
+            const m = (_agentModelListCache || []).find(x => String(x.id) === String(modelId));
+            label.textContent = m ? (m.display_name || m.model_name) : '默认模型';
+        }
+    }
+    const wrap = document.getElementById(`agent-model-palette-wrap-${sid}`);
+    if (wrap) wrap.style.display = 'none';
+    const input = document.getElementById(`agent-input-${sid}`);
+    if (input) input.focus();
+}
+
+// ==================== 历史记忆 toggle（按钮形态，状态存 view.useMemory）====================
+function toggleAgentMemory(sid) {
+    const view = agentView(sid);
+    view.useMemory = !(view.useMemory !== false);  // 默认 true，切换
+    const btn = document.getElementById(`agent-memory-btn-${sid}`);
+    if (btn) btn.classList.toggle('active', view.useMemory);
+    showToast(view.useMemory ? '已开启历史记忆' : '已关闭历史记忆', 'info');
+}
+
+// 输入框自适应高度（最多 8 行约 200px，超过滚动）
 function autoGrowAgentInput(sid) {
     const el = document.getElementById(`agent-input-${sid}`);
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+    const maxH = 200;  // 最多 8 行
+    el.style.height = Math.min(el.scrollHeight, maxH) + 'px';
+    el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden';
 }
 
 // 输入框按键：回车发送 / Shift+回车换行 / ↑↓ 历史导航
@@ -821,28 +891,50 @@ function createAgentPane(sid) {
     pane.dataset.sessionId = sid;
     pane.innerHTML = `
         <div class="agent-chat" id="agent-chat-${sid}"></div>
-        <div class="agent-approval-slot" id="agent-approval-slot-${sid}"></div>
-        <div class="agent-input-area" id="agent-input-area-${sid}">
-            <div class="skill-palette-wrap" id="agent-skill-palette-wrap-${sid}" style="display:none;">
-                <div class="skill-palette" id="agent-skill-palette-${sid}"></div>
+        <div class="agent-input-float" id="agent-input-area-${sid}">
+            <div class="agent-approval-slot" id="agent-approval-slot-${sid}"></div>
+            <div class="palette-stack">
+                <div class="skill-palette-wrap" id="agent-skill-palette-wrap-${sid}" style="display:none;">
+                    <div class="skill-palette" id="agent-skill-palette-${sid}"></div>
+                </div>
+                <div class="skill-palette-wrap" id="agent-model-palette-wrap-${sid}" style="display:none;">
+                    <div class="skill-palette" id="agent-model-palette-${sid}"></div>
+                </div>
             </div>
-            <div class="skill-active-tag" id="agent-skill-active-${sid}" style="display:none;"></div>
-            <div class="input-wrapper">
+            <div class="input-box">
+                <div class="skill-active-tag" id="agent-skill-active-${sid}" style="display:none;"></div>
                 <textarea id="agent-input-${sid}" rows="1" placeholder="输入指令，或 / 调用技能与指令（回车发送，Shift+回车换行）"
                        oninput="onAgentSkillInput('${escapeJsAttr(sid)}'); autoGrowAgentInput('${escapeJsAttr(sid)}')"
                        onkeydown="onAgentInputKeydown('${escapeJsAttr(sid)}', event)"></textarea>
-                <button class="btn btn-primary" onclick="sendAgentQuestion('${escapeJsAttr(sid)}')">发送</button>
+                <button class="send-btn-float" onclick="sendAgentQuestion('${escapeJsAttr(sid)}')" aria-label="发送">↑</button>
             </div>
-            <div class="input-hints">
-                <label class="checkbox-label" title="开启后注入历史诊断沉淀的长期记忆（环境上下文）；关闭则该会话完全独立">
-                    <input type="checkbox" id="agent-use-memory-${sid}" checked> 历史记忆
-                </label>
-                <span>💡 / 调用技能与指令 · 试试：对所选节点批量查询 max_connections</span>
+            <div class="input-toolbar">
+                <button class="input-tool-btn" onclick="toggleModelPalette('${escapeJsAttr(sid)}')" aria-label="选择模型">
+                    🤖 <span id="agent-model-label-${sid}">默认模型</span>
+                </button>
+                <button class="input-tool-btn active" id="agent-memory-btn-${sid}"
+                        onclick="toggleAgentMemory('${escapeJsAttr(sid)}')"
+                        title="开启后注入历史诊断沉淀的长期记忆（环境上下文）；关闭则该会话完全独立">🧠 历史记忆</button>
+                <span class="tool-hint">💡 / 调用技能与指令</span>
             </div>
         </div>
     `;
     panes.appendChild(pane);
+    // 初始化会话级状态：历史记忆默认开
+    const view = agentView(sid);
+    view.useMemory = true;
+    view.selectedModelId = null;
     clearAgentChat(sid);
+}
+
+// 审批期间隐藏输入区交互元素（input-box/toolbar），保留 input-float 容器使审批槽可显示
+function setAgentInputInteractive(sid, hidden) {
+    const area = document.getElementById(`agent-input-area-${sid}`);
+    if (!area) return;
+    ['input-box', 'input-toolbar'].forEach(cls => {
+        const el = area.querySelector('.' + cls);
+        if (el) el.style.display = hidden ? 'none' : '';
+    });
 }
 
 async function loadAgentSessionHistory(sid) {
@@ -1001,17 +1093,17 @@ async function sendAgentQuestion(sid) {
     updateAgentStopButton();
 
     try {
-        // v4.2.1 会话级历史记忆开关（默认开）
-        const memEl = document.getElementById(`agent-use-memory-${sid}`);
-        const useMemory = memEl ? memEl.checked : true;
+        // 会话级历史记忆开关（默认开，状态存 view.useMemory，按钮 toggle）
+        const useMemory = view.useMemory !== false;
         const response = await fetch('/api/agent/run', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 session_id: sid,
                 question,
-                skill_name: view.selectedSkill || null,   // v4.0 手动技能
-                disable_memory: !useMemory                // v4.2.1 关闭长期记忆召回
+                skill_name: view.selectedSkill || null,
+                model_id: view.selectedModelId || null,   // 会话级模型选择
+                disable_memory: !useMemory
             }),
             signal: view.controller.signal
         });
@@ -1645,8 +1737,7 @@ function renderAgentApproval(event, sid) {
                 </div>
                 <div class="approval-status" id="approval-status-${event.plan_id}"></div>
             </div>`;
-        const inputArea = document.getElementById(`agent-input-area-${sid}`);
-        if (inputArea) inputArea.style.display = 'none';
+        setAgentInputInteractive(sid, true);   // 隐藏输入交互元素，保留容器使审批槽可见
         return;
     }
     const riskBadge = ops.length
@@ -1696,9 +1787,8 @@ function renderAgentApproval(event, sid) {
         </div>
     `;
 
-    // 审批进行中：隐藏该会话输入框（审批框与输入框互斥）
-    const inputArea = document.getElementById(`agent-input-area-${sid}`);
-    if (inputArea) inputArea.style.display = 'none';
+    // 审批进行中：隐藏该会话输入交互元素（审批框与输入框互斥）
+    setAgentInputInteractive(sid, true);
 }
 
 function agentApprovalTarget(sid) {
@@ -1901,11 +1991,10 @@ function renderAgentApprovalExpired(event, sid) {
 }
 
 function clearApprovalSlot(sid) {
-    // 审批结束/会话收尾：清空该会话审批槽并恢复输入框显示
+    // 审批结束/会话收尾：清空该会话审批槽并恢复输入交互
     const slot = document.getElementById(`agent-approval-slot-${sid}`);
-    const inputArea = document.getElementById(`agent-input-area-${sid}`);
     if (slot) slot.innerHTML = '';
-    if (inputArea) inputArea.style.display = '';
+    setAgentInputInteractive(sid, false);
 }
 
 function renderPlanOperationResult(event, sid) {

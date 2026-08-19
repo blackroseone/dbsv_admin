@@ -9,6 +9,28 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v4.3.0（2026-08-19）
+
+### 输入框悬浮化 + 模型选择 + 检索增强
+
+**输入框悬浮化（agent + qa，VSCode Claude Code 样式）**：
+- 输入框改为对话区底部悬浮居中（max-width 720px 左右留白），不顶到两侧；对话区底部 padding 留白 + sticky 渐淡 mask，最后一条消息不被遮挡、形成"内容沉入输入框下方"视觉。
+- 发送按钮改输入框右下角圆形↑；textarea 自适应增高（最多 8 行约 200px，超过滚动）。
+- 输入时输入框边缘橙色高亮（`:focus-within`）。
+- skill chip 内嵌输入框最左侧；历史记忆由 checkbox 改 toggle 按钮（active 高亮态）。
+- 审批槽悬浮输入框上方、宽度跟随输入框。
+
+**模型选择按钮化**：
+- agent 新增会话级模型选择：输入框左下方「🤖 模型」按钮 + 上弹列表（复用 skill-palette 样式），`sendAgentQuestion` 携带 `model_id`（后端已支持）。
+- qa 移除顶部 `#qa-model-select` 下拉框，改同款按钮 + 上弹列表；`sendQuestion`/`createNewConversation` 读 `qaSelectedModelId`。
+
+**前端修复**：
+- `escapeHtml` 删除 `'`→`&#39;` 多余转义（文本内容中单引号合法，二次转义会暴露 `&amp;#39;` 实体；双引号属性上下文转义保留）。
+
+**后端检索增强**：
+- 长期记忆召回阈值/上限配置化：`MEMORY_MIN_SIMILARITY=0.55`、`MEMORY_INJECT_TOP_K=6`（`db/database.py` `search_memory_semantic` 过滤弱相关记忆）。
+- 知识库检索补相邻块：`get_chunk_neighbors` 拼接命中块前后相邻 chunk；chunk 注入截断放宽到 `KNOWLEDGE_CHUNK_INJECT_LIMIT=1500`（容纳"命中块 + 相邻块"整块编码），解决块内后半段丢失 + 跨块后续内容丢弃。
+
 ## v4.2.1（2026-08-19）
 
 ### Agent 范围交互与状态刷新修复

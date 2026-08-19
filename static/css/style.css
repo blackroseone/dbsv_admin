@@ -7045,3 +7045,176 @@ textarea:disabled {
 .tool-status .status-error {
     white-space: nowrap;
 }
+
+/* ==================== 输入框悬浮化（VSCode Claude Code 样式，v4.2.1） ==================== */
+
+/* pane 作为定位上下文，悬浮输入框 absolute 定位其内 */
+.agent-tab-pane { position: relative; }
+
+/* 对话区底部留白，避免最后一条消息被悬浮输入框遮挡（输入框+toolbar 约 150px） */
+.agent-chat { padding-bottom: 150px; }
+
+/* 下滑到输入框位置及下方内容渐淡（sticky overlay，不裁剪内容、不影响滚动） */
+.agent-chat::after {
+    content: '';
+    position: sticky;
+    bottom: 0;
+    height: 80px;
+    margin-top: -80px;
+    pointer-events: none;
+    z-index: 1;
+    background: linear-gradient(to top, var(--bg-chat), transparent);
+}
+
+/* 悬浮输入框：底部居中、左右留白、不顶到两侧 */
+.agent-input-float {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: 12px;
+    width: min(720px, calc(100% - 32px));
+    z-index: 30;
+}
+
+/* 弹框栈：技能/模型弹框在输入框上方弹出（复用 .skill-palette 的 bottom:100%） */
+.palette-stack { position: relative; }
+
+/* 输入框容器：圆角，chip 内嵌最左 + textarea + 右下角发送按钮 */
+.input-box {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 6px 8px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* 输入时输入框边缘橙色高亮 */
+.input-box:focus-within {
+    border-color: #ff8c00;
+    box-shadow: 0 0 0 3px rgba(255, 140, 0, 0.15);
+}
+
+/* skill chip 内嵌输入框最左 */
+.input-box .skill-active-tag {
+    margin: 0;
+    align-self: center;
+}
+
+/* textarea 融入容器，无边框 */
+.input-box textarea {
+    flex: 1;
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    font-family: inherit;
+    line-height: 1.5;
+    resize: none;
+    outline: none;
+    padding: 4px 4px 4px 0;
+    max-height: 200px;       /* 最多 8 行 */
+    overflow-y: auto;
+}
+
+/* 细滚动条（主题色） */
+.input-box textarea::-webkit-scrollbar { width: 6px; }
+.input-box textarea::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 3px;
+}
+.input-box textarea::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* 发送按钮改右下角圆形向上箭头 */
+.send-btn-float {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: none;
+    background: var(--primary-color);
+    color: #fff;
+    font-size: 1.1rem;
+    font-weight: bold;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.2s, transform 0.1s;
+}
+.send-btn-float:hover { opacity: 0.9; }
+.send-btn-float:active { transform: scale(0.95); }
+.send-btn-float:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* 输入框下方工具栏（模型按钮 | 历史记忆按钮 + 提示语） */
+.input-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+    padding: 0 4px;
+}
+
+.input-tool-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 14px;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.input-tool-btn:hover { border-color: var(--primary-color); color: var(--primary-color); }
+/* 历史记忆开启态高亮 */
+.input-tool-btn.active {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+    background: var(--bg-chat);
+}
+
+.tool-hint {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-left: 4px;
+}
+
+/* 审批槽悬浮在输入框上方，宽度跟随输入框（相对 .agent-input-float 定位） */
+.agent-input-float .agent-approval-slot {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: calc(100% + 8px);   /* 输入框上方 */
+    z-index: 35;
+    border-radius: 12px;
+    box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.1);
+}
+/* 原有 :empty 隐藏保留 */
+.agent-approval-slot:empty { display: none; }
+
+/* ==================== qa 输入区悬浮化（复用 .input-box / .send-btn-float / .input-toolbar） ==================== */
+.qa-main { position: relative; }
+.qa-chat { padding-bottom: 150px; }
+.qa-chat::after {
+    content: '';
+    position: sticky;
+    bottom: 0;
+    height: 80px;
+    margin-top: -80px;
+    pointer-events: none;
+    z-index: 1;
+    background: linear-gradient(to top, var(--bg-chat), transparent);
+}
+.qa-input-float {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: 12px;
+    width: min(720px, calc(100% - 32px));
+    z-index: 30;
+}
