@@ -5820,6 +5820,12 @@ body {
     background: var(--bg-hover);
 }
 
+/* v4.2.1 管理抽屉连接卡片纯展示不可点（范围只在左侧面板勾选） */
+#agent-ssh-conn-list .connection-item,
+#agent-db-conn-list .connection-item {
+    cursor: default;
+}
+
 .conn-name, .session-title {
     font-weight: 600;
     color: var(--text-primary);
@@ -6534,6 +6540,14 @@ body {
     margin-top: 6px;
     font-size: 0.78rem;
     color: var(--text-muted);
+}
+
+/* v4.2.1 输入区「历史记忆」开关：与提示文案同视觉层级 */
+.input-hints .checkbox-label {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
 }
 
 /* ==================== Agent 审批槽（贴近输入框，Claude Code 权限形态） ==================== */
