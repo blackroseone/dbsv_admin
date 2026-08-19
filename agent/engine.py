@@ -61,7 +61,8 @@ class SmartOpsAgent:
     def __init__(self, session_id: str, ssh_conn_id: Optional[str] = None,
                  db_conn_id: Optional[str] = None, model_id: Optional[str] = None,
                  scope: Optional[List[Dict]] = None,
-                 manual_skill_name: Optional[str] = None):
+                 manual_skill_name: Optional[str] = None,
+                 disable_memory: bool = False):
         self.session_id = session_id
         self.ssh_conn_id = ssh_conn_id
         self.db_conn_id = db_conn_id
@@ -91,6 +92,8 @@ class SmartOpsAgent:
         # 手动指定技能（v4.0）：注入完整 prompt_template（绕开自动匹配的截断预览）
         self.manual_skill = (self.skill_manager.get_skill(manual_skill_name)
                              if manual_skill_name else None)
+        # v4.2.1 会话级开关：关闭后不召回长期记忆（跨会话环境上下文）
+        self.disable_memory = disable_memory
         # 命令安全融合判定：静态判拒绝/未知的命令挂载独立 LLM 审查钩子（第二意见）。
         # 钩子在 harness 内部，引擎 _validate_action 与 tools.py 双重校验共用同一目标
         # + 同一 TTL 缓存，保证不会出现"引擎放行、工具层拦截"。
@@ -165,8 +168,8 @@ class SmartOpsAgent:
             matched_skills = [s for s in matched_skills
                               if s.get('name') != manual_name]
 
-        # 2.5 长期记忆召回（环境上下文）
-        memory_refs = self._recall_memory(user_question)
+        # 2.5 长期记忆召回（环境上下文）；会话级开关关闭时跳过（v4.2.1）
+        memory_refs = [] if self.disable_memory else self._recall_memory(user_question)
 
         # 3. 构建system prompt（注入知识库 + 知识图谱 + Skills + 环境上下文）
         kg_context = self._retrieve_kg_context(user_question, chunk_ids) if chunk_ids else None

@@ -7,8 +7,6 @@ let agentCurrentSession = null;      // 当前激活页签的会话 id
 let agentSSHConnections = [];
 let agentDBConnections = [];
 let agentSessions = [];
-let agentCurrentSSHConn = null;
-let agentCurrentDBConn = null;
 // 打开的页签（有序）
 let agentOpenTabs = [];
 // 每会话视图状态：{sid: {running, controller, thinkingText, conclusionText, lastPlan, loaded}}
@@ -224,7 +222,7 @@ function renderAgentScopeTree() {
                 <button class="scope-toggle" title="展开/折叠" onclick="toggleScopeCollapse(event,'pool','${escapeJsAttr(pool.id)}')">${poolArrow}</button>
                 <label class="scope-pool-label">
                     <input type="checkbox" data-pool-key="pool:${pool.id}" ${poolAll ? 'checked' : ''}>
-                    <span class="scope-pool-name">${escapeHtml(pool.name)}</span>
+                    <span class="scope-pool-name" title="${escapeHtml(pool.name)}">${escapeHtml(pool.name)}</span>
                     <span class="scope-pool-dbtype">${escapeHtml(pool.db_type || '')}</span>
                 </label>
             </div>
@@ -426,6 +424,7 @@ function updateAgentScopeBadge(sid) {
     const sshStatus = document.getElementById('agent-ssh-status');
     const dbStatus = document.getElementById('agent-db-status');
     if (!badge || !sshStatus || !dbStatus) return;
+    updateAgentConnectionStatus();   // v4.2.1 legacy 会话连接文案随页签切换刷新
     const sc = sessionScopeCount(agentSessions.find(x => x.id === sid));
     if (sc.ssh + sc.db > 0) {
         badge.textContent = `🎯 范围: ${sc.ssh} 节点 · ${sc.db} 实例`;
@@ -464,7 +463,7 @@ function sessionDbType(sid) {
             }
         } catch (e) {}
     }
-    const c = agentDBConnections.find(x => x.id === agentCurrentDBConn);
+    const c = agentDBConnections.find(x => x.id === (s && s.db_connection_id));
     return c ? c.db_type : '';
 }
 
@@ -575,10 +574,6 @@ async function loadAgentSSHConnections() {
         const response = await fetch('/api/agent/ssh-connections');
         const data = await response.json();
         agentSSHConnections = data.connections || [];
-        // 未选中时自动选中第一个，避免配置后还需手动点选才能开会话
-        if (!agentCurrentSSHConn && agentSSHConnections.length > 0) {
-            agentCurrentSSHConn = agentSSHConnections[0].id;
-        }
         renderAgentSSHConnections();
         updateAgentConnectionStatus();
     } catch (error) {
@@ -591,10 +586,6 @@ async function loadAgentDBConnections() {
         const response = await fetch('/api/agent/db-connections');
         const data = await response.json();
         agentDBConnections = data.connections || [];
-        // 未选中时自动选中第一个
-        if (!agentCurrentDBConn && agentDBConnections.length > 0) {
-            agentCurrentDBConn = agentDBConnections[0].id;
-        }
         renderAgentDBConnections();
         updateAgentConnectionStatus();
     } catch (error) {
@@ -612,8 +603,7 @@ function renderAgentSSHConnections() {
     }
 
     container.innerHTML = agentSSHConnections.map(conn => `
-        <div class="connection-item ${agentCurrentSSHConn === conn.id ? 'active' : ''}"
-             onclick="selectSSHConnection('${escapeJsAttr(conn.id)}')">
+        <div class="connection-item">   <!-- v4.2.1 管理抽屉纯管理，卡片不再选中；范围只在左侧面板勾选 -->
             <div class="conn-name">${escapeHtml(conn.name)}</div>
             <div class="conn-info">
                 <span class="conn-host">${escapeHtml(conn.host)}:${escapeHtml(conn.port)}</span>
@@ -634,8 +624,7 @@ function renderAgentDBConnections() {
     }
 
     container.innerHTML = agentDBConnections.map(conn => `
-        <div class="connection-item ${agentCurrentDBConn === conn.id ? 'active' : ''}"
-             onclick="selectDBConnection('${escapeJsAttr(conn.id)}')">
+        <div class="connection-item">   <!-- v4.2.1 管理抽屉纯管理，卡片不再选中；范围只在左侧面板勾选 -->
             <div class="conn-name">${escapeHtml(conn.name)}</div>
             <div class="conn-info">
                 <span class="conn-host">${escapeHtml(conn.host)}</span>
@@ -646,29 +635,19 @@ function renderAgentDBConnections() {
     `).join('');
 }
 
-function selectSSHConnection(connId) {
-    agentCurrentSSHConn = connId;
-    renderAgentSSHConnections();
-    updateAgentConnectionStatus();
-}
-
-function selectDBConnection(connId) {
-    agentCurrentDBConn = connId;
-    renderAgentDBConnections();
-    updateAgentConnectionStatus();
-}
-
+// v4.2.1 从当前会话的连接字段推导，不再依赖全局选中（范围唯一入口 = 左侧面板）
 function updateAgentConnectionStatus() {
     const sshStatus = document.getElementById('agent-ssh-status');
     const dbStatus = document.getElementById('agent-db-status');
+    const s = agentSessions.find(x => x.id === agentCurrentSession);
 
     if (sshStatus) {
-        const sshConn = agentSSHConnections.find(c => c.id === agentCurrentSSHConn);
+        const sshConn = agentSSHConnections.find(c => c.id === (s && s.ssh_connection_id));
         sshStatus.textContent = sshConn ? `🟢 ${sshConn.name}` : '🔴 SSH未连接';
     }
 
     if (dbStatus) {
-        const dbConn = agentDBConnections.find(c => c.id === agentCurrentDBConn);
+        const dbConn = agentDBConnections.find(c => c.id === (s && s.db_connection_id));
         dbStatus.textContent = dbConn ? `🟢 ${dbConn.name}` : '🔴 DB未连接';
     }
 }
@@ -855,6 +834,9 @@ function createAgentPane(sid) {
                 <button class="btn btn-primary" onclick="sendAgentQuestion('${escapeJsAttr(sid)}')">发送</button>
             </div>
             <div class="input-hints">
+                <label class="checkbox-label" title="开启后注入历史诊断沉淀的长期记忆（环境上下文）；关闭则该会话完全独立">
+                    <input type="checkbox" id="agent-use-memory-${sid}" checked> 历史记忆
+                </label>
                 <span>💡 / 调用技能与指令 · 试试：对所选节点批量查询 max_connections</span>
             </div>
         </div>
@@ -958,14 +940,12 @@ function updateAgentStopButton() {
 }
 
 async function newAgentSession() {
-    // v4.0：范围面板有勾选则建「范围会话」（多节点批量）；否则回退 legacy 单连接
-    const body = { title: '新会话' };
-    if (agentScopeTargets.length > 0) {
-        body.scope = agentScopeTargets;
-    } else {
-        body.ssh_connection_id = agentCurrentSSHConn;
-        body.db_connection_id = agentCurrentDBConn;
+    // v4.2.1 操作范围唯一入口 = 左侧面板；无勾选不再静默回退单连接
+    if (agentScopeTargets.length === 0) {
+        showToast('请先在左侧「操作范围」面板勾选节点，再创建新会话', 'warning');
+        return;
     }
+    const body = { title: '新会话', scope: agentScopeTargets };
     try {
         const response = await fetch('/api/agent/sessions', {
             method: 'POST',
@@ -1021,13 +1001,17 @@ async function sendAgentQuestion(sid) {
     updateAgentStopButton();
 
     try {
+        // v4.2.1 会话级历史记忆开关（默认开）
+        const memEl = document.getElementById(`agent-use-memory-${sid}`);
+        const useMemory = memEl ? memEl.checked : true;
         const response = await fetch('/api/agent/run', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 session_id: sid,
                 question,
-                skill_name: view.selectedSkill || null   // v4.0 手动技能
+                skill_name: view.selectedSkill || null,   // v4.0 手动技能
+                disable_memory: !useMemory                // v4.2.1 关闭长期记忆召回
             }),
             signal: view.controller.signal
         });
@@ -1723,13 +1707,14 @@ function agentApprovalTarget(sid) {
     if (sc.ssh + sc.db > 0) {
         return `🎯 范围: ${sc.ssh} 节点 · ${sc.db} 实例`;
     }
+    const s = agentSessions.find(x => x.id === sid);
     const parts = [];
-    if (agentCurrentSSHConn) {
-        const c = agentSSHConnections.find(x => x.id === agentCurrentSSHConn);
+    if (s && s.ssh_connection_id) {
+        const c = agentSSHConnections.find(x => x.id === s.ssh_connection_id);
         if (c) parts.push(`SSH: ${c.name}`);
     }
-    if (agentCurrentDBConn) {
-        const c = agentDBConnections.find(x => x.id === agentCurrentDBConn);
+    if (s && s.db_connection_id) {
+        const c = agentDBConnections.find(x => x.id === s.db_connection_id);
         if (c) parts.push(`DB: ${c.name}`);
     }
     return parts.length ? `🎯 ${parts.join(' / ')}` : '';
@@ -2316,6 +2301,7 @@ async function saveSSHConnection() {
             showToast('SSH连接添加成功', 'success');
             closeModal('modal-add-ssh');
             loadAgentSSHConnections();
+            refreshAgentScopeResolve();   // v4.2.1 立即重解析范围徽标（修复"仍显示未配置"）
         } else {
             showToast(data.error || '添加失败', 'error');
         }
@@ -2355,6 +2341,7 @@ async function saveDBConnection() {
             showToast('数据库连接添加成功', 'success');
             closeModal('modal-add-db');
             loadAgentDBConnections();
+            refreshAgentScopeResolve();   // v4.2.1 立即重解析范围徽标
         } else {
             showToast(data.error || '添加失败', 'error');
         }

@@ -173,6 +173,7 @@ def run_agent():
     question = data.get('question')
     model_id = data.get('model_id')
     skill_name = data.get('skill_name')  # 可选：手动指定技能（v4.0）
+    disable_memory = bool(data.get('disable_memory', False))  # v4.2.1 会话级关闭长期记忆召回
 
     if not session_id or not question:
         return jsonify({'error': '缺少session_id或question'}), 400
@@ -212,7 +213,8 @@ def run_agent():
             db_conn_id=db_conn_id,
             scope=scope,
             manual_skill_name=skill_name,
-            model_id=model_id
+            model_id=model_id,
+            disable_memory=disable_memory
         )
 
         try:
