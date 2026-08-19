@@ -5175,7 +5175,7 @@ body {
     position: relative;   /* 抽屉在此容器内定位（修复抽屉脱离模块、贴屏幕边缘） */
     display: flex;
     gap: 12px;
-    height: calc(100vh - 140px);   /* 与知识问答模块（.qa-container）保持一致 */
+    height: calc(100vh - 180px);   /* 与知识问答模块（.qa-container）保持一致 */
     min-height: 480px;
     overflow: hidden;              /* 裁剪滑出容器的抽屉，收起状态不可见 */
 }
