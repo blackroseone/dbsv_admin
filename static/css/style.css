@@ -7051,16 +7051,23 @@ textarea:disabled {
 /* pane 作为定位上下文，悬浮输入框 absolute 定位其内 */
 .agent-tab-pane { position: relative; }
 
-/* 对话区底部留白，避免最后一条消息被悬浮输入框遮挡（输入框+toolbar 约 150px） */
-.agent-chat { padding-bottom: 150px; }
+/* 对话区底部留白，避免最后一条消息被悬浮输入框遮挡（输入框+toolbar 约 150px）；
+   position: relative 作为底部渐淡 overlay（::after）的定位上下文 */
+.agent-chat {
+    position: relative;
+    padding-bottom: 150px;
+}
 
-/* 下滑到输入框位置及下方内容渐淡（sticky overlay，不裁剪内容、不影响滚动） */
+/* 下滑到输入框位置及下方内容渐淡：
+   absolute 固定在滚动容器可视底部（不随内容滚动、不裁剪滚动条），
+   overlay 从不透明 bg-chat（底部）渐变到透明（顶部），内容滚入即渐隐 */
 .agent-chat::after {
     content: '';
-    position: sticky;
+    position: absolute;
     bottom: 0;
+    left: 0;
+    right: 0;
     height: 80px;
-    margin-top: -80px;
     pointer-events: none;
     z-index: 1;
     background: linear-gradient(to top, var(--bg-chat), transparent);
@@ -7079,22 +7086,33 @@ textarea:disabled {
 /* 弹框栈：技能/模型弹框在输入框上方弹出（复用 .skill-palette 的 bottom:100%） */
 .palette-stack { position: relative; }
 
-/* 输入框容器：圆角，chip 内嵌最左 + textarea + 右下角发送按钮 */
+/* 输入外框：包住输入行 + 分隔线 + 工具栏行，圆角边框整体承担高亮 */
+.input-frame {
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    background: var(--bg-input);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* 输入时整个外框（输入行 + 工具栏行）橙色高亮 */
+.input-frame:focus-within {
+    border-color: #ff8c00;
+    box-shadow: 0 0 0 3px rgba(255, 140, 0, 0.15);
+}
+
+/* 输入行：chip 内嵌最左 + textarea（无边框，融入外框） */
 .input-box {
     display: flex;
     align-items: flex-end;
     gap: 6px;
-    background: var(--bg-input);
-    border: 1px solid var(--border-color);
-    border-radius: 12px;
-    padding: 6px 8px;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    padding: 6px 10px;
 }
 
-/* 输入时输入框边缘橙色高亮 */
-.input-box:focus-within {
-    border-color: #ff8c00;
-    box-shadow: 0 0 0 3px rgba(255, 140, 0, 0.15);
+/* 输入行与工具栏行之间的细灰线 */
+.input-divider {
+    height: 1px;
+    background: var(--border-color-light);
+    margin: 0 10px;
 }
 
 /* skill chip 内嵌输入框最左 */
@@ -7127,16 +7145,17 @@ textarea:disabled {
 }
 .input-box textarea::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
-/* 发送按钮改右下角圆形向上箭头 */
+/* 发送按钮：圆角矩形，位于工具栏行最右侧（margin-left: auto 推右） */
 .send-btn-float {
     flex-shrink: 0;
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
+    margin-left: auto;
+    height: 30px;
+    padding: 0 16px;
+    border-radius: 8px;
     border: none;
     background: var(--primary-color);
     color: #fff;
-    font-size: 1.1rem;
+    font-size: 0.95rem;
     font-weight: bold;
     cursor: pointer;
     display: flex;
@@ -7148,13 +7167,22 @@ textarea:disabled {
 .send-btn-float:active { transform: scale(0.95); }
 .send-btn-float:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* 输入框下方工具栏（模型按钮 | 历史记忆按钮 + 提示语） */
+/* 发送/停止按钮组（qa 用）：整体推最右，组内按钮不各自 auto 边距 */
+.send-group {
+    margin-left: auto;
+    display: flex;
+    gap: 4px;
+}
+.send-group .send-btn-float {
+    margin-left: 0;
+}
+
+/* 工具栏行（模型按钮 | 历史记忆按钮 + 提示语 + 发送按钮），位于分隔线下方 */
 .input-toolbar {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-top: 6px;
-    padding: 0 4px;
+    padding: 6px 10px;
 }
 
 .input-tool-btn {
@@ -7197,15 +7225,19 @@ textarea:disabled {
 /* 原有 :empty 隐藏保留 */
 .agent-approval-slot:empty { display: none; }
 
-/* ==================== qa 输入区悬浮化（复用 .input-box / .send-btn-float / .input-toolbar） ==================== */
+/* ==================== qa 输入区悬浮化（复用 .input-frame / .input-box / .send-btn-float / .input-toolbar） ==================== */
 .qa-main { position: relative; }
-.qa-chat { padding-bottom: 150px; }
+.qa-chat {
+    position: relative;
+    padding-bottom: 150px;
+}
 .qa-chat::after {
     content: '';
-    position: sticky;
+    position: absolute;
     bottom: 0;
+    left: 0;
+    right: 0;
     height: 80px;
-    margin-top: -80px;
     pointer-events: none;
     z-index: 1;
     background: linear-gradient(to top, var(--bg-chat), transparent);

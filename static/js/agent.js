@@ -901,21 +901,24 @@ function createAgentPane(sid) {
                     <div class="skill-palette" id="agent-model-palette-${sid}"></div>
                 </div>
             </div>
-            <div class="input-box">
-                <div class="skill-active-tag" id="agent-skill-active-${sid}" style="display:none;"></div>
-                <textarea id="agent-input-${sid}" rows="1" placeholder="输入指令，或 / 调用技能与指令（回车发送，Shift+回车换行）"
-                       oninput="onAgentSkillInput('${escapeJsAttr(sid)}'); autoGrowAgentInput('${escapeJsAttr(sid)}')"
-                       onkeydown="onAgentInputKeydown('${escapeJsAttr(sid)}', event)"></textarea>
-                <button class="send-btn-float" onclick="sendAgentQuestion('${escapeJsAttr(sid)}')" aria-label="发送">↑</button>
-            </div>
-            <div class="input-toolbar">
-                <button class="input-tool-btn" onclick="toggleModelPalette('${escapeJsAttr(sid)}')" aria-label="选择模型">
-                    🤖 <span id="agent-model-label-${sid}">默认模型</span>
-                </button>
-                <button class="input-tool-btn active" id="agent-memory-btn-${sid}"
-                        onclick="toggleAgentMemory('${escapeJsAttr(sid)}')"
-                        title="开启后注入历史诊断沉淀的长期记忆（环境上下文）；关闭则该会话完全独立">🧠 历史记忆</button>
-                <span class="tool-hint">💡 / 调用技能与指令</span>
+            <div class="input-frame">
+                <div class="input-box">
+                    <div class="skill-active-tag" id="agent-skill-active-${sid}" style="display:none;"></div>
+                    <textarea id="agent-input-${sid}" rows="1" placeholder="输入指令，或 / 调用技能与指令（回车发送，Shift+回车换行）"
+                           oninput="onAgentSkillInput('${escapeJsAttr(sid)}'); autoGrowAgentInput('${escapeJsAttr(sid)}')"
+                           onkeydown="onAgentInputKeydown('${escapeJsAttr(sid)}', event)"></textarea>
+                </div>
+                <div class="input-divider"></div>
+                <div class="input-toolbar">
+                    <button class="input-tool-btn" onclick="toggleModelPalette('${escapeJsAttr(sid)}')" aria-label="选择模型">
+                        🤖 <span id="agent-model-label-${sid}">默认模型</span>
+                    </button>
+                    <button class="input-tool-btn active" id="agent-memory-btn-${sid}"
+                            onclick="toggleAgentMemory('${escapeJsAttr(sid)}')"
+                            title="开启后注入历史诊断沉淀的长期记忆（环境上下文）；关闭则该会话完全独立">🧠 历史记忆</button>
+                    <span class="tool-hint">💡 / 调用技能与指令</span>
+                    <button class="send-btn-float" onclick="sendAgentQuestion('${escapeJsAttr(sid)}')" aria-label="发送">↑</button>
+                </div>
             </div>
         </div>
     `;
@@ -927,11 +930,11 @@ function createAgentPane(sid) {
     clearAgentChat(sid);
 }
 
-// 审批期间隐藏输入区交互元素（input-box/toolbar），保留 input-float 容器使审批槽可显示
+// 审批期间隐藏输入区交互元素（input-box/divider/toolbar），保留 input-float 容器使审批槽可显示
 function setAgentInputInteractive(sid, hidden) {
     const area = document.getElementById(`agent-input-area-${sid}`);
     if (!area) return;
-    ['input-box', 'input-toolbar'].forEach(cls => {
+    ['input-box', 'input-divider', 'input-toolbar'].forEach(cls => {
         const el = area.querySelector('.' + cls);
         if (el) el.style.display = hidden ? 'none' : '';
     });

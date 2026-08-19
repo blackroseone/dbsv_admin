@@ -417,17 +417,22 @@
                                     <div class="skill-palette" id="qa-model-palette"></div>
                                 </div>
                             </div>
-                            <div class="input-box">
-                                <textarea id="qa-question" placeholder="请输入你的问题... (回车发送，Shift+Enter 换行)" rows="1"
-                                          oninput="autoGrowQaInput()" onkeydown="onQaInputKeydown(event)"></textarea>
-                                <button class="send-btn-float" id="qa-send-btn" onclick="sendQuestion()" aria-label="发送">↑</button>
-                                <button class="send-btn-float" id="qa-stop-btn" onclick="stopStreaming()" style="display:none;background:var(--btn-danger,#dc3545);" aria-label="停止">⏹</button>
-                            </div>
-                            <div class="input-toolbar">
-                                <button class="input-tool-btn" onclick="toggleQaModelPalette()" aria-label="选择模型">
-                                    🤖 <span id="qa-model-label">默认模型</span>
-                                </button>
-                                <span class="tool-hint">💡 Shift+Enter 换行</span>
+                            <div class="input-frame">
+                                <div class="input-box">
+                                    <textarea id="qa-question" placeholder="请输入你的问题... (回车发送，Shift+Enter 换行)" rows="1"
+                                              oninput="autoGrowQaInput()" onkeydown="onQaInputKeydown(event)"></textarea>
+                                </div>
+                                <div class="input-divider"></div>
+                                <div class="input-toolbar">
+                                    <button class="input-tool-btn" onclick="toggleQaModelPalette()" aria-label="选择模型">
+                                        🤖 <span id="qa-model-label">默认模型</span>
+                                    </button>
+                                    <span class="tool-hint">💡 Shift+Enter 换行</span>
+                                    <div class="send-group">
+                                        <button class="send-btn-float" id="qa-send-btn" onclick="sendQuestion()" aria-label="发送">↑</button>
+                                        <button class="send-btn-float" id="qa-stop-btn" onclick="stopStreaming()" style="display:none;background:var(--btn-danger,#dc3545);" aria-label="停止">⏹</button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
