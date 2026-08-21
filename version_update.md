@@ -9,6 +9,35 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v4.4.0（2026-08-20）
+
+### 知识库分块策略优化：句子边界优先分块
+
+**分块算法（rag/embedder.py chunk_text）**：
+- 切块点从「段落边界」改为「句子边界优先 + 段落兜底」：段落累积超 500 时在超限范围内回溯最后一个句末标点（中文。！？；!?;，英文句点需后随空白），在句界切块（块末完整句、不加 overlap）；无句末标点（表格/代码/列表行）或句界位置 < chunk_size/2 时退回原字符边界切（保留 50 overlap）。
+- 解决 86% 块末非句末标点的语义切断问题（hy3 向量索引核查报告结论）。新增 `_rfind_sentence_end` 辅助函数；二次切分同样句界优先，保证块长 ≤500。
+- 已全量重建索引（向量 + 知识图谱，87 文件处理、85 文件向量化）。
+
+**块质量实测（temp_scripts/diag_chunk_tokens.py）**：
+- 块末非句末标点比例：86% → 40%（残余主要来自表格/代码/短行段落，无句末标点无法句界切，属预期）
+- token 分布：最大 497，超 512 上限 0 块
+
+**检索阈值重校准（temp_scripts/qa_similarity_sampling.py 30 问采样）**：
+- 新 top-1 分布：min 0.769 / P20 0.803 / 中位 0.838
+- 阈值：维持 0.75/0.80（满足 min≥0.75 且 P20≥0.80 判据，未动；routes/qa.py 与 agent/engine.py 两处注释已更新实测分布）
+
+### 发送/停止按钮 SVG 图标化
+- agent 发送按钮 `↑` → Feather `send` 纸飞机、qa 停止 `⏹` → Feather `square`，内联 SVG（`stroke="currentColor"` 双主题自动适配），跨平台字形一致；按钮改方形适配纯图标；补 `prefers-reduced-motion` 无障碍降级。
+
+### 专家功能 = skill 轻量扩展
+- 内置技能补 PostgreSQL 性能诊断 / Redis 状态检查（含关键词映射 postgres/pg/redis）；`agent_skills` 表加 `is_expert` 列（专家技能优先匹配，前端技能栏 ⚡ 标记）。
+- 激活死字段 `required_tools`：技能声明的工具白名单注入「工具使用约束」prompt；激活 `knowledge_tags`：技能标签对检索结果重排序（含 tag 的块优先）。
+
+### Plan 模式（先整体方案再执行）
+- 会话级开关：输入框工具栏「📋 Plan」按钮（active 高亮 + 输入外框变色），`/api/agent/run` 传 `plan_mode`。
+- 引擎 plan 模式：system prompt 引导先输出整体方案（探查/变更两步、desc+phase、变更需逐项审批），复用现有 plan 审批流确认后执行；`_execute_plan_operations` 扩展只读探查工具（get_schema_info/get_performance_metrics/retrieve_knowledge/retrieve_check/get_monitor_metrics 单次执行不 fan-out）。
+- `agent_plans` 表加 `kind` 列（overall_plan / change_approval），`create_plan` 透传。
+
 ## v4.3.0（2026-08-19）
 
 ### 输入框悬浮化 + 模型选择 + 检索增强

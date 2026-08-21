@@ -35,7 +35,7 @@ for f in files:
             continue
 
         update_knowledge_content(file_id, content)
-        chunks = chunk_text(content)  # 使用新的 chunk_size=2000
+        chunks = chunk_text(content)  # 使用 config 默认参数
         if not chunks:
             print(f'  无法分块')
             failed += 1

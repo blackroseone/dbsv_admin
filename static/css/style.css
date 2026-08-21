@@ -7145,18 +7145,17 @@ textarea:disabled {
 }
 .input-box textarea::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
-/* 发送按钮：圆角矩形，位于工具栏行最右侧（margin-left: auto 推右） */
+/* 发送按钮：方形适配纯 SVG 图标，位于工具栏行最右侧（margin-left: auto 推右） */
 .send-btn-float {
     flex-shrink: 0;
     margin-left: auto;
+    width: 30px;            /* 方形 */
     height: 30px;
-    padding: 0 16px;
+    padding: 0;             /* 纯图标，无需横向 padding */
     border-radius: 8px;
     border: none;
     background: var(--primary-color);
     color: #fff;
-    font-size: 0.95rem;
-    font-weight: bold;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -7166,6 +7165,55 @@ textarea:disabled {
 .send-btn-float:hover { opacity: 0.9; }
 .send-btn-float:active { transform: scale(0.95); }
 .send-btn-float:disabled { opacity: 0.4; cursor: not-allowed; }
+.send-btn-float svg { display: block; }   /* 消除行内 SVG 基线间隙 */
+
+/* 无障碍降级：用户偏好减弱动效时关闭过渡 */
+@media (prefers-reduced-motion: reduce) {
+    .send-btn-float { transition: none; }
+    .send-btn-float:active { transform: none; }
+}
+
+/* ==================== v4.4 Plan 模式视觉提示 ==================== */
+.plan-mode-btn.active {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+    background: var(--bg-chat);
+}
+.input-frame.plan-mode-active {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+/* plan 方案大纲渲染（复用审批槽） */
+.plan-ops {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 8px 0;
+}
+.plan-op {
+    display: flex;
+    gap: 8px;
+    font-size: 0.82rem;
+    padding: 4px 8px;
+    background: var(--bg-card);
+    border-radius: 4px;
+}
+.op-phase {
+    font-size: 0.7rem;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: var(--primary-color);
+    color: #fff;
+    white-space: nowrap;
+}
+.op-tool {
+    font-family: monospace;
+    color: var(--primary-color);
+}
+.op-desc {
+    color: var(--text-secondary);
+}
 
 /* 发送/停止按钮组（qa 用）：整体推最右，组内按钮不各自 auto 边距 */
 .send-group {

@@ -501,6 +501,18 @@ def init_db():
     ''')
     conn.commit()
 
+    # v4.4 agent_skills 加 is_expert 列（专家技能标记，兼容已建库）
+    try:
+        conn.execute("ALTER TABLE agent_skills ADD COLUMN is_expert INTEGER DEFAULT 0")
+    except Exception:
+        pass  # 列已存在
+
+    # v4.4 agent_plans 加 kind 列（区分整体方案 overall_plan vs 变更审批 change_approval）
+    try:
+        conn.execute("ALTER TABLE agent_plans ADD COLUMN kind TEXT DEFAULT 'change_approval'")
+    except Exception:
+        pass  # 列已存在
+
     # 初始化功能配置表
     _init_feature_config(conn)
 
@@ -2249,12 +2261,15 @@ def _plan_from_row(row) -> dict:
     return d
 
 
-def create_plan(session_id, title, plan) -> int:
-    """创建操作计划（初始 pending）。返回计划 id。"""
+def create_plan(session_id, title, plan, kind='change_approval') -> int:
+    """创建操作计划（初始 pending）。返回计划 id。
+
+    kind: 'change_approval'（变更审批，默认）/'overall_plan'（plan 模式整体方案）
+    """
     conn = get_db()
     cur = conn.execute(
-        "INSERT INTO agent_plans (session_id, title, plan_json) VALUES (?, ?, ?)",
-        (session_id, title, json.dumps(plan, ensure_ascii=False))
+        "INSERT INTO agent_plans (session_id, title, plan_json, kind) VALUES (?, ?, ?, ?)",
+        (session_id, title, json.dumps(plan, ensure_ascii=False), kind)
     )
     conn.commit()
     return cur.lastrowid

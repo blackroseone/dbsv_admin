@@ -113,12 +113,33 @@ def _get_model():
     return _model
 
 
+# 句末标点集合：中文绝对句末 + 英文句点（后者需后随空白，避免切 3.5 / v4.0 等小数与版本号）
+_SENT_END_CHARS = '。！？；!?;'
+
+
+def _rfind_sentence_end(s, limit):
+    """在 s[:limit] 范围内从后往前找最后一个句末标点的索引；找不到返回 -1。
+    英文句点 '.' 仅在后随空白/换行时视为句末。"""
+    end = min(limit, len(s))
+    for i in range(end - 1, -1, -1):
+        ch = s[i]
+        if ch in _SENT_END_CHARS:
+            return i
+        if ch == '.' and i + 1 < len(s) and s[i + 1] in (' ', '\n', '\t'):
+            return i
+    return -1
+
+
 def chunk_text(text, chunk_size=None, overlap=None):
-    """将文本按段落分块，每块约 chunk_size 字符，重叠 overlap 字符
+    """将文本按「句子边界优先 + 段落兜底」分块，每块约 chunk_size 字符
+
+    v4.4.0 句子边界优化：段落累积超限时，在超限范围内回溯最后一个句末标点，
+    在句界处切块（块末为完整句子，不加字符 overlap——语义已完整）；
+    无句末标点（表格/代码/列表行）或句界太靠前时，退回字符边界切并保留 overlap。
 
     参数:
         chunk_size: 每块目标大小（默认取 config.CHUNK_SIZE，当前500）
-        overlap: 相邻块重叠字符数（默认取 config.CHUNK_OVERLAP，当前50）
+        overlap: 相邻块重叠字符数（默认取 config.CHUNK_OVERLAP，当前50；仅字符边界切时生效）
     """
     if chunk_size is None or overlap is None:
         from config import CHUNK_SIZE, CHUNK_OVERLAP
@@ -136,45 +157,49 @@ def chunk_text(text, chunk_size=None, overlap=None):
     current_chunk = ""
 
     for para in paragraphs:
-        if len(current_chunk) + len(para) > chunk_size and current_chunk:
-            chunks.append(current_chunk.strip())
-            # 保留尾部 overlap 字符作为下一块的开头
-            if overlap > 0 and len(current_chunk) > overlap:
-                current_chunk = current_chunk[-overlap:] + "\n" + para
+        candidate = (current_chunk + "\n" + para) if current_chunk else para
+        if len(candidate) > chunk_size:
+            # 句子边界优先：在超限范围内回溯最后一个句末标点
+            cut = _rfind_sentence_end(candidate, chunk_size)
+            # 保护：切点至少在 chunk_size 一半之后，避免切出碎块
+            if cut >= chunk_size // 2:
+                chunks.append(candidate[:cut + 1].strip())
+                current_chunk = candidate[cut + 1:].strip()
+            elif current_chunk:
+                # 无有效句界（表格/代码等）：按字符边界切，保留尾部 overlap
+                chunks.append(current_chunk.strip())
+                if overlap > 0 and len(current_chunk) > overlap:
+                    current_chunk = current_chunk[-overlap:] + "\n" + para
+                else:
+                    current_chunk = para
             else:
-                current_chunk = para
+                # 首段即超限且无有效句界（单段长文本/表格）：直接按字符上限切，避免整段落入二次切分
+                chunks.append(para[:chunk_size].strip())
+                current_chunk = para[chunk_size:].strip()
         else:
-            if current_chunk:
-                current_chunk += "\n" + para
-            else:
-                current_chunk = para
+            current_chunk = candidate
 
     if current_chunk.strip():
         chunks.append(current_chunk.strip())
 
-    # 对超长块进行二次切分
+    # 对超长块进行二次切分（句子边界优先兜底：反复在句界切，保证块长 ≤ chunk_size）
     final_chunks = []
     for chunk in chunks:
-        if len(chunk) <= chunk_size * 2:
+        if len(chunk) <= chunk_size:
             final_chunks.append(chunk)
-        else:
-            # 按句号/换行切分
-            sentences = []
-            for sep in ['\n', '。', '；', '. ', ';\n']:
-                if sep in chunk:
-                    sentences = [s.strip() for s in chunk.split(sep) if s.strip()]
-                    break
-            if not sentences:
-                sentences = [chunk[i:i+chunk_size] for i in range(0, len(chunk), chunk_size)]
-            sub_chunk = ""
-            for sent in sentences:
-                if len(sub_chunk) + len(sent) > chunk_size and sub_chunk:
-                    final_chunks.append(sub_chunk.strip())
-                    sub_chunk = sent
-                else:
-                    sub_chunk = sub_chunk + "\n" + sent if sub_chunk else sent
-            if sub_chunk.strip():
-                final_chunks.append(sub_chunk.strip())
+            continue
+        remaining = chunk
+        while len(remaining) > chunk_size:
+            cut = _rfind_sentence_end(remaining, chunk_size)
+            if cut >= chunk_size // 2:
+                final_chunks.append(remaining[:cut + 1].strip())
+                remaining = remaining[cut + 1:].strip()
+            else:
+                # 无有效句界（表格/代码）：字符边界切
+                final_chunks.append(remaining[:chunk_size].strip())
+                remaining = remaining[chunk_size:].strip()
+        if remaining.strip():
+            final_chunks.append(remaining.strip())
 
     return final_chunks
 

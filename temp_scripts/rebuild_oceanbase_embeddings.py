@@ -58,7 +58,7 @@ def main():
             print(f"  [处理] file_id={file_id}, {filename}: 提取 {content_len} 字符")
 
             # Chunk text
-            chunks = chunk_text(content, chunk_size=2000, overlap=100)
+            chunks = chunk_text(content)
             if not chunks:
                 print(f"  [跳过] file_id={file_id}, {filename}: 分块结果为空")
                 failed += 1

@@ -38,7 +38,7 @@ def _is_cancelled(session_id: str) -> bool:
 class SmartOpsAgent:
     """智能运维Agent（第三代 - 自主决策模式）"""
 
-    # 知识库检索阈值（与 routes/qa.py 对齐，分块 500 后实测上调）
+    # 知识库检索阈值（与 routes/qa.py 对齐，v4.4.0 句界分块后实测校准维持）
     MIN_SIMILARITY_THRESHOLD = 0.75
     MIN_KNOWLEDGE_COVERAGE = 0.80
 
@@ -62,7 +62,8 @@ class SmartOpsAgent:
                  db_conn_id: Optional[str] = None, model_id: Optional[str] = None,
                  scope: Optional[List[Dict]] = None,
                  manual_skill_name: Optional[str] = None,
-                 disable_memory: bool = False):
+                 disable_memory: bool = False,
+                 plan_mode: bool = False):
         self.session_id = session_id
         self.ssh_conn_id = ssh_conn_id
         self.db_conn_id = db_conn_id
@@ -94,6 +95,8 @@ class SmartOpsAgent:
                              if manual_skill_name else None)
         # v4.2.1 会话级开关：关闭后不召回长期记忆（跨会话环境上下文）
         self.disable_memory = disable_memory
+        # v4.4 plan 模式：先输出整体执行方案，用户确认后再执行
+        self.plan_mode = plan_mode
         # 命令安全融合判定：静态判拒绝/未知的命令挂载独立 LLM 审查钩子（第二意见）。
         # 钩子在 harness 内部，引擎 _validate_action 与 tools.py 双重校验共用同一目标
         # + 同一 TTL 缓存，保证不会出现"引擎放行、工具层拦截"。
@@ -167,6 +170,18 @@ class SmartOpsAgent:
             manual_name = self.manual_skill.get('name')
             matched_skills = [s for s in matched_skills
                               if s.get('name') != manual_name]
+
+        # v4.4 激活 knowledge_tags：用技能标签对检索结果重排序（含 tag 的优先）
+        tag_set = set()
+        for sk in matched_skills:
+            kt = sk.get('knowledge_tags')
+            if kt:
+                tag_set.update(t.lower() for t in (kt if isinstance(kt, list) else [kt]))
+        if tag_set and knowledge_refs:
+            def _tag_score(ref):
+                text = (ref.get('chunk', '') + ' ' + ref.get('file', '')).lower()
+                return sum(1 for t in tag_set if t in text)
+            knowledge_refs = sorted(knowledge_refs, key=_tag_score, reverse=True)
 
         # 2.5 长期记忆召回（环境上下文）；会话级开关关闭时跳过（v4.2.1）
         memory_refs = [] if self.disable_memory else self._recall_memory(user_question)
@@ -511,6 +526,25 @@ class SmartOpsAgent:
 如果不需要工具，直接给出分析结论。
 """
 
+        # v4.4 plan 模式：先输出整体方案，用户确认后再执行
+        if self.plan_mode:
+            prompt += """
+## Plan 模式（当前启用）
+你当前处于 Plan 模式。请先输出**整体执行方案**，不要直接调用工具执行。方案格式：
+```json
+{"type":"plan","plan":{"title":"方案标题","operations":[
+  {"tool":"get_schema_info","parameters":{...},"phase":"探查","desc":"步骤说明"},
+  {"tool":"query_database","parameters":{"sql":"SELECT ..."},"phase":"探查","desc":"..."},
+  {"tool":"execute_command","parameters":{"command":"..."},"phase":"变更","desc":"..."}
+]}}
+```
+要求：
+- operations 含「探查」(只读) 与「变更」(写操作) 两类步骤，按执行顺序排列
+- 每步说明 desc 与所属 phase
+- 变更步骤在用户确认方案后仍需逐项审批（安全底线）
+- 输出方案后停止，等待用户确认
+"""
+
         # v4.0 会话操作范围注入（多节点批量；各节点 db_type 逐点列出，混型时按方言分别写 SQL）
         if self.targets:
             scope_lines = []
@@ -566,6 +600,19 @@ class SmartOpsAgent:
         if self.manual_skill and self.manual_skill.get('prompt_template'):
             prompt += (f"\n## 指定技能操作指南（必须严格遵循）\n"
                        f"{self.manual_skill['prompt_template']}\n")
+
+        # v4.4 激活 required_tools：技能声明的工具白名单约束本次工具调用
+        tool_whitelist = set()
+        for sk in skills:
+            rt = sk.get('required_tools')
+            if rt:
+                tool_whitelist.update(rt if isinstance(rt, list) else [rt])
+        if self.manual_skill and self.manual_skill.get('required_tools'):
+            tool_whitelist.update(self.manual_skill['required_tools'])
+        if tool_whitelist:
+            prompt += (f"\n## 工具使用约束\n"
+                       f"本次操作仅允许调用以下工具：{', '.join(sorted(tool_whitelist))}。"
+                       f"如需其他工具，先说明原因再调用。\n")
 
         # 注入长期记忆（环境上下文，含图谱补充）
         if memory_refs:
@@ -840,7 +887,9 @@ class SmartOpsAgent:
         from db.database import create_plan, get_plan, update_plan_status
         # 用命令真实危险性重算每个 op 的 risk（不信任模型自填），供审批条标注
         self._enrich_plan_risks(plan)
-        plan_id = create_plan(self.session_id, plan.get('title', '操作计划'), plan)
+        # v4.4 plan 模式下的整体方案标记 kind='overall_plan'，变更审批保持默认
+        plan_kind = 'overall_plan' if self.plan_mode else 'change_approval'
+        plan_id = create_plan(self.session_id, plan.get('title', '操作计划'), plan, kind=plan_kind)
         yield {"type": "approval_required", "plan_id": plan_id, "plan": plan}
 
         from config import AGENT_PLAN_TIMEOUT_MINUTES
@@ -912,7 +961,14 @@ class SmartOpsAgent:
             params = op.get('parameters') or {}
             op_targets = op.get('targets')  # 可选：计划操作限定的目标节点名列表
 
-            if tool == 'query_database':
+            # v4.4 只读探查类工具：直接执行，不走 fan-out 审批
+            READONLY_PLAN_TOOLS = {'get_schema_info', 'get_performance_metrics',
+                                   'retrieve_knowledge', 'retrieve_check',
+                                   'get_monitor_metrics'}
+            if tool in READONLY_PLAN_TOOLS:
+                ok, err = True, ''
+                conn_type = '__readonly__'   # 标记走只读执行路径
+            elif tool == 'query_database':
                 cls, err = Harness.classify_sql(params.get('sql', ''))
                 conn_type = 'db'
                 if cls == 'reject':
@@ -934,6 +990,23 @@ class SmartOpsAgent:
                 self.state.add_message('user', observation)
                 self._persist_plan_step(i, op, observation, None)
                 continue  # 收集语义：校验失败也继续剩余操作
+
+            # v4.4 只读探查工具：单次执行（不 fan-out），结果直接产出
+            if conn_type == '__readonly__':
+                try:
+                    ctx = ToolContext(db_conn_id=self.db_conn_id, ssh_conn_id=self.ssh_conn_id,
+                                      db_type=db_type, targets=self.targets,
+                                      session_id=self.session_id)
+                    result = execute_tool(tool, params, ctx)
+                    yield {"type": "plan_operation_result", "index": i, "tool": tool,
+                           "parameters": params, "status": "success", "result": result}
+                    obs = f"计划操作 {i}（只读探查）结果:\n{json.dumps(result, ensure_ascii=False)[:500]}"
+                    self.state.add_message('user', self._history_observation(obs))
+                    self._persist_plan_step(i, op, obs, result)
+                except Exception as e:
+                    yield {"type": "plan_operation_result", "index": i, "tool": tool,
+                           "parameters": params, "status": "error", "error": str(e)}
+                continue   # 只读工具不走下方 fan-out
 
             # 选定目标节点（默认全范围该类型；op.targets 限定子集）
             ctx = ToolContext(db_conn_id=self.db_conn_id, ssh_conn_id=self.ssh_conn_id,

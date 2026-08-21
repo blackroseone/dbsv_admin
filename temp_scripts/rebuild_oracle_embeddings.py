@@ -63,7 +63,7 @@ for file_id in FILE_IDS:
         update_knowledge_content(file_id, content)
         print(f"  已更新数据库中的content_text")
 
-        # 分块（使用默认参数 chunk_size=2000, overlap=100）
+        # 分块（使用 config 默认参数）
         print(f"  正在分块...")
         chunks = chunk_text(content)
         chunk_count = len(chunks)

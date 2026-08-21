@@ -110,6 +110,38 @@ class SkillManager:
 注意：只执行状态查询，禁止修改配置。""",
             "required_tools": ["query_database"],
             "knowledge_tags": ["dm", "status", "diagnosis"]
+        },
+        {
+            "name": "PostgreSQL性能诊断",
+            "db_type": "postgresql",
+            "category": "diagnosis",
+            "description": "诊断PostgreSQL性能问题",
+            "prompt_template": """你是一个PostgreSQL性能诊断专家。请按以下步骤分析：
+1. 查询pg_stat_activity分析当前会话与等待事件
+2. 查询pg_stat_statements找出耗时最长的SQL
+3. 分析相关表的执行计划（EXPLAIN ANALYZE）
+4. 检查索引使用情况与autovacuum状态
+5. 给出优化建议
+
+注意：只执行SELECT查询，禁止修改数据。""",
+            "required_tools": ["query_database"],
+            "knowledge_tags": ["postgresql", "performance", "optimization"]
+        },
+        {
+            "name": "Redis状态检查",
+            "db_type": "redis",
+            "category": "diagnosis",
+            "description": "检查Redis运行状态与内存",
+            "prompt_template": """你是一个Redis诊断专家。请按以下步骤检查：
+1. 执行INFO server/memory/clients/stats获取运行状态
+2. 执行SLOWLOG GET分析慢查询
+3. 执行CLIENT LIST检查连接分布
+4. 分析内存使用与淘汰策略（maxmemory-policy）
+5. 给出状态报告与优化建议
+
+注意：只执行只读命令，禁止FLUSHALL/CONFIG SET/SHUTDOWN等修改操作。""",
+            "required_tools": ["execute_command"],
+            "knowledge_tags": ["redis", "memory", "status"]
         }
     ]
 
@@ -167,6 +199,9 @@ class SkillManager:
             "状态": ["Oracle集群状态检查", "达梦数据库状态检查"],
             "达梦": ["达梦数据库状态检查"],
             "dm": ["达梦数据库状态检查"],
+            "postgres": ["PostgreSQL性能诊断"],
+            "pg": ["PostgreSQL性能诊断"],
+            "redis": ["Redis状态检查"],
         }
 
         for keyword, skill_names in keywords_map.items():
@@ -192,6 +227,8 @@ class SkillManager:
             if any(k in q for k in keywords):
                 matched.append(skill)
 
+        # v4.4 专家技能优先
+        matched.sort(key=lambda s: (not bool(s.get('is_expert')),))
         return matched
 
     def get_all_skills(self) -> List[Dict]:

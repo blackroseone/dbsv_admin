@@ -795,7 +795,8 @@ data: [DONE]
 |------|------|--------|------|
 | `_check_model_cached(cache_dir)` | `str` | `bool` | 检查模型是否已在本地缓存中存在 |
 | `_get_model()` | 无 | `SentenceTransformer` | 懒加载模型，检测到本地缓存时跳过网络下载，失败返回 None |
-| `chunk_text(text, chunk_size=2000, overlap=100)` | `str, int, int` | `list` | 将文本分块（段落优先，超长二次切分） |
+| `chunk_text(text, chunk_size=None, overlap=None)` | `str, int, int` | `list` | 将文本分块（句子边界优先+段落兜底，默认从 config 读 500/50，超长二次切分） |
+| `_rfind_sentence_end(s, limit)` | `str, int` | `int` | 在 s[:limit] 内从后往前找句末标点索引（英文句点需后随空白） |
 | `_embedding_to_bytes(embedding)` | `np.ndarray` | `bytes` | numpy 数组转 bytes（float32） |
 | `_bytes_to_embedding(data)` | `bytes` | `np.ndarray` | bytes 还原 numpy 数组 |
 
