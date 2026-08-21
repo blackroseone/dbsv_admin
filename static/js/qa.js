@@ -570,6 +570,7 @@ async function _doStreamResponse(conversationId, dbType, question, useRag, useTo
         }
         document.getElementById('qa-send-btn').disabled = false;
         document.getElementById('qa-stop-btn').style.display = 'none';
+        document.getElementById('qa-send-btn').style.display = 'flex';   // 恢复发送按钮（悬浮按钮 display 切换）
         isStreaming = false;
         currentAbortController = null;
     }

@@ -7166,6 +7166,7 @@ textarea:disabled {
 .send-btn-float:active { transform: scale(0.95); }
 .send-btn-float:disabled { opacity: 0.4; cursor: not-allowed; }
 .send-btn-float svg { display: block; }   /* 消除行内 SVG 基线间隙 */
+.send-btn-float { line-height: 0; }       /* flex 子项垂直对齐居中，不受内容行高影响 */
 
 /* 无障碍降级：用户偏好减弱动效时关闭过渡 */
 @media (prefers-reduced-motion: reduce) {
@@ -7173,16 +7174,9 @@ textarea:disabled {
     .send-btn-float:active { transform: none; }
 }
 
-/* ==================== v4.4 Plan 模式视觉提示 ==================== */
-.plan-mode-btn.active {
-    border-color: var(--primary-color);
-    color: var(--primary-color);
-    background: var(--bg-chat);
-}
-.input-frame.plan-mode-active {
-    border-color: var(--primary-color);
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
-}
+/* ==================== v4.4 操作模式 ==================== */
+/* 模式选择用 skill-palette 弹框（正常/plan），按钮展示当前模式，无 active 黑色框 */
+#agent-mode-palette .skill-palette-item { cursor: pointer; }
 
 /* plan 方案大纲渲染（复用审批槽） */
 .plan-ops {

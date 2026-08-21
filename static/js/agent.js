@@ -599,16 +599,57 @@ function toggleAgentMemory(sid) {
     showToast(view.useMemory ? '已开启历史记忆' : '已关闭历史记忆', 'info');
 }
 
-// v4.4 Plan 模式切换：先给整体方案再执行
-function togglePlanMode(sid) {
+// ==================== 操作模式选择（normal 直接执行 / plan 先给整体方案）====================
+// 模式弹框选项；view.mode 存当前模式
+const AGENT_MODES = {
+    'normal': { label: '✋ normal', title: '直接执行' },
+    'plan':   { label: '📄 plan',  title: '先给整体方案再执行' },
+};
+
+function toggleModePalette(sid) {
+    const wrap = document.getElementById(`agent-mode-palette-wrap-${sid}`);
+    if (!wrap) return;
+    if (wrap.style.display === 'none') {
+        renderModePalette(sid);
+        wrap.style.display = 'block';
+        // 关闭其它弹框避免重叠
+        document.getElementById(`agent-model-palette-wrap-${sid}`) && (document.getElementById(`agent-model-palette-wrap-${sid}`).style.display = 'none');
+        closeSkillPalette(sid);
+    } else {
+        wrap.style.display = 'none';
+    }
+}
+
+function renderModePalette(sid) {
+    const box = document.getElementById(`agent-mode-palette-${sid}`);
+    if (!box) return;
     const view = agentView(sid);
-    view.planMode = !view.planMode;
-    const btn = document.getElementById(`agent-plan-btn-${sid}`);
-    if (btn) btn.classList.toggle('active', view.planMode);
-    // 输入外框边框变色提示当前模式
-    const box = document.querySelector(`.agent-tab-pane[data-session-id="${sid}"] .input-frame`);
-    if (box) box.classList.toggle('plan-mode-active', view.planMode);
-    showToast(view.planMode ? '已开启 Plan 模式（先给整体方案再执行）' : '已关闭 Plan 模式', 'info');
+    const cur = view.mode || 'normal';
+    const items = Object.entries(AGENT_MODES).map(([mode, m]) => `
+        <div class="skill-palette-item" onclick="selectAgentMode('${escapeJsAttr(sid)}', '${mode}')">
+            <span class="sp-name">${m.label}</span>
+            <span class="sp-desc">${m.title}${mode === cur ? ' ✓' : ''}</span>
+        </div>`).join('');
+    box.innerHTML = '<div class="skill-palette-header">选择操作模式</div>' + items;
+}
+
+function selectAgentMode(sid, mode) {
+    const view = agentView(sid);
+    view.mode = mode === 'plan' ? 'plan' : 'normal';
+    updateAgentModeButton(sid);
+    document.getElementById(`agent-mode-palette-wrap-${sid}`).style.display = 'none';
+    const input = document.getElementById(`agent-input-${sid}`);
+    if (input) input.focus();
+}
+
+// 按钮文案随当前模式更新（plan 显示 📄 plan，normal 显示 ✋ normal）
+function updateAgentModeButton(sid) {
+    const btn = document.getElementById(`agent-mode-btn-${sid}`);
+    if (!btn) return;
+    const view = agentView(sid);
+    const m = AGENT_MODES[view.mode === 'plan' ? 'plan' : 'normal'];
+    btn.textContent = m.label;
+    btn.title = `${m.title}（点击切换）`;
 }
 
 // 输入框自适应高度（最多 8 行约 200px，超过滚动）
@@ -912,6 +953,9 @@ function createAgentPane(sid) {
                 <div class="skill-palette-wrap" id="agent-model-palette-wrap-${sid}" style="display:none;">
                     <div class="skill-palette" id="agent-model-palette-${sid}"></div>
                 </div>
+                <div class="skill-palette-wrap" id="agent-mode-palette-wrap-${sid}" style="display:none;">
+                    <div class="skill-palette" id="agent-mode-palette-${sid}"></div>
+                </div>
             </div>
             <div class="input-frame">
                 <div class="input-box">
@@ -929,20 +973,22 @@ function createAgentPane(sid) {
                             onclick="toggleAgentMemory('${escapeJsAttr(sid)}')"
                             title="开启后注入历史诊断沉淀的长期记忆（环境上下文）；关闭则该会话完全独立">🧠 历史记忆</button>
                     <span class="tool-hint">💡 / 调用技能与指令</span>
-                    <button class="input-tool-btn plan-mode-btn" id="agent-plan-btn-${sid}"
-                            onclick="togglePlanMode('${escapeJsAttr(sid)}')"
-                            title="Plan 模式：先给整体方案再执行">📋 Plan</button>
-                    <button class="send-btn-float" onclick="sendAgentQuestion('${escapeJsAttr(sid)}')" aria-label="发送"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
+                    <div class="send-group">
+                        <button class="input-tool-btn" id="agent-mode-btn-${sid}"
+                                onclick="toggleModePalette('${escapeJsAttr(sid)}')"
+                                title="操作模式：normal（直接执行）/ plan（先给整体方案再执行）">✋ normal</button>
+                        <button class="send-btn-float" onclick="sendAgentQuestion('${escapeJsAttr(sid)}')" aria-label="发送"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" style="transform:rotate(-45deg);margin-top:2px" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
+                    </div>
                 </div>
             </div>
         </div>
     `;
     panes.appendChild(pane);
-    // 初始化会话级状态：历史记忆默认开
+    // 初始化会话级状态：历史记忆默认开；操作模式默认 normal
     const view = agentView(sid);
     view.useMemory = true;
     view.selectedModelId = null;
-    view.planMode = false;
+    view.mode = 'normal';
     clearAgentChat(sid);
 }
 
@@ -1123,7 +1169,7 @@ async function sendAgentQuestion(sid) {
                 skill_name: view.selectedSkill || null,
                 model_id: view.selectedModelId || null,   // 会话级模型选择
                 disable_memory: !useMemory,
-                plan_mode: !!view.planMode                // v4.4 plan 模式
+                plan_mode: view.mode === 'plan'           // v4.4 plan 模式
             }),
             signal: view.controller.signal
         });
