@@ -84,6 +84,18 @@ document.addEventListener('DOMContentLoaded', () => {
             qaAutoScroll = nearBottom;
         });
     }
+    // 渐变遮罩高度跟随输入区动态高度（textarea 多行增高时写入 --qa-input-h）
+    if (typeof ResizeObserver !== 'undefined') {
+        const qaInput = document.querySelector('.qa-input-float');
+        const qaMain = document.querySelector('.qa-main');
+        if (qaInput && qaMain) {
+            new ResizeObserver(entries => {
+                entries.forEach(entry => {
+                    qaMain.style.setProperty('--qa-input-h', (entry.target.offsetHeight + 12) + 'px');
+                });
+            }).observe(qaInput);
+        }
+    }
 });
 
 function qaScrollIfNeeded() {

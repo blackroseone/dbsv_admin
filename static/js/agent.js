@@ -21,12 +21,15 @@ let agentScopeCollapsedInit = false;   // 首次默认折叠是否已执行（�
 let agentScopeCollapsedRestored = false; // 是否已从 localStorage 恢复过折叠状态（区分"无存储"与"存了空集合"）
 let agentScopeFilter = '';             // 范围树过滤关键字（池/服务器/实例/端口）
 let agentSkillList = null;             // / 技能栏的懒加载技能列表缓存
+let agentInputObserver = null;         // 监听交互窗口高度变化，同步遮罩高度 CSS 变量（--agent-input-h）
 
 // ==================== 模块初始化 ====================
 function initAgentModule() {
     restoreAgentScopeTargets();
     restoreAgentScopeCollapsed();
     bindScopeFilter();
+    bindAgentScopeBadge();
+    ensureAgentInputObserver();
     loadAgentScopeTree();
     loadAgentSSHConnections();
     loadAgentDBConnections();
@@ -193,14 +196,14 @@ function renderAgentScopeTree() {
                 const ibadge = scopeBadgeHtml(ist);
                 const icfg = ibadge && (!ist || !ist.resolved)
                     ? `<button class="scope-config-btn" onclick="quickConfigAgentNode('${escapeJsAttr(i.id)}','db')">配置</button>` : '';
-                return `<label class="scope-node scope-instance">
+                return `<label class="scope-node scope-instance${it ? ' selected' : ''}">
                     <input type="checkbox" data-target-key="${iKey}" ${it ? 'checked' : ''}>
                     <span class="scope-node-name" title="${escapeHtml(i.name)}:${escapeHtml(i.port || '')}">${escapeHtml(i.name)}</span>
                     <span class="scope-node-meta">:${escapeHtml(i.port || '')}</span>${ibadge}${icfg}
                 </label>`;
             }).join('');
             return `<div class="scope-server">
-                <div class="scope-node scope-server-row">
+                <div class="scope-node scope-server-row${st ? ' selected' : ''}">
                     ${hasInst ? `<button class="scope-toggle" title="展开/折叠" onclick="toggleScopeCollapse(event,'server','${escapeJsAttr(s.id)}')">${sArrow}</button>` : ''}
                     <label class="scope-node-label">
                         <input type="checkbox" data-target-key="${sKey}" ${st ? 'checked' : ''}>
@@ -217,7 +220,7 @@ function renderAgentScopeTree() {
         const checkedServers = poolServers.filter(s =>
             agentScopeTargets.find(t => t.type === 'ssh' && t.topo_id === s.id)).length;
         const poolAll = poolServers.length > 0 && checkedServers === poolServers.length;
-        return `<div class="scope-pool">
+        return `<div class="scope-pool${poolAll ? ' selected' : ''}">
             <div class="scope-pool-header">
                 <button class="scope-toggle" title="展开/折叠" onclick="toggleScopeCollapse(event,'pool','${escapeJsAttr(pool.id)}')">${poolArrow}</button>
                 <label class="scope-pool-label">
@@ -426,15 +429,96 @@ function updateAgentScopeBadge(sid) {
     if (!badge || !sshStatus || !dbStatus) return;
     updateAgentConnectionStatus();   // v4.2.1 legacy 会话连接文案随页签切换刷新
     const sc = sessionScopeCount(agentSessions.find(x => x.id === sid));
+    const pop = document.getElementById('agent-scope-pop');
     if (sc.ssh + sc.db > 0) {
         badge.textContent = `🎯 范围: ${sc.ssh} 节点 · ${sc.db} 实例`;
         badge.style.display = '';
         sshStatus.style.display = 'none';
         dbStatus.style.display = 'none';
+        if (pop) pop.hidden = true;   // 切换会话后收起浮层，下次点击重新渲染
     } else {
         badge.style.display = 'none';
+        if (pop) pop.hidden = true;
         sshStatus.style.display = '';
         dbStatus.style.display = '';
+    }
+}
+
+// 范围浮层：展示当前激活会话已提交（committed）的范围对象列表。
+// 与 `#agent-scope-badge` 同口径（读 session.scope_json），做只读可视化；
+// 移除/编辑仍在左侧范围树完成（勾选即高亮、取消勾选即移除）。
+function bindAgentScopeBadge() {
+    const badge = document.getElementById('agent-scope-badge');
+    if (!badge) return;
+    badge.addEventListener('click', e => {
+        e.stopPropagation();
+        toggleAgentScopePop();
+    });
+    document.addEventListener('click', onAgentScopeDocClick);
+}
+
+function activeSessionScopeTargets() {
+    const s = agentSessions.find(x => x.id === agentCurrentSession);
+    if (!s || !s.scope_json) return [];
+    try {
+        const a = JSON.parse(s.scope_json);
+        return Array.isArray(a) ? a : [];
+    } catch (e) { return []; }
+}
+
+function scopePopItemHtml(typeLabel, topoId, name) {
+    return `<div class="scope-pop-item">
+        <span class="scope-pop-type ${topoId.startsWith('ssh:') ? 'node' : 'db'}">${typeLabel}</span>
+        <span class="scope-pop-name" title="${escapeHtml(name || topoId)}">${escapeHtml(name || topoId)}</span>
+    </div>`;
+}
+
+function renderAgentScopePop() {
+    const pop = document.getElementById('agent-scope-pop');
+    if (!pop) return;
+    const targets = activeSessionScopeTargets();
+    if (targets.length === 0) {
+        pop.innerHTML = '<div class="scope-pop-empty">当前会话未选择范围对象</div>';
+        return;
+    }
+    const known = new Set();
+    const groups = [];
+    (agentScopeTree || []).forEach(pool => {
+        const ssh = targets.filter(t => t.type === 'ssh' && (pool.servers || []).some(s => s.id === t.topo_id));
+        const dbs = targets.filter(t => t.type === 'db' && (pool.servers || []).some(s => (s.instances || []).some(i => i.id === t.topo_id)));
+        if (ssh.length || dbs.length) groups.push({ name: pool.name, ssh, dbs });
+        ssh.forEach(t => known.add(t.type + ':' + t.topo_id));
+        dbs.forEach(t => known.add(t.type + ':' + t.topo_id));
+    });
+    const other = targets.filter(t => !known.has(t.type + ':' + t.topo_id));
+    let html = '';
+    groups.forEach(g => {
+        html += `<div class="scope-pop-group"><div class="scope-pop-group-title">${escapeHtml(g.name)}</div>`;
+        g.ssh.forEach(t => html += scopePopItemHtml('节点', 'ssh:' + t.topo_id, t.name || scopeTargetName('ssh', t.topo_id)));
+        g.dbs.forEach(t => html += scopePopItemHtml('实例', 'db:' + t.topo_id, t.name || scopeTargetName('db', t.topo_id)));
+        html += '</div>';
+    });
+    if (other.length) {
+        html += '<div class="scope-pop-group"><div class="scope-pop-group-title">其他</div>';
+        other.forEach(t => html += scopePopItemHtml(t.type === 'ssh' ? '节点' : '实例', t.type + ':' + t.topo_id, t.name || t.topo_id));
+        html += '</div>';
+    }
+    pop.innerHTML = html;
+}
+
+function toggleAgentScopePop() {
+    const pop = document.getElementById('agent-scope-pop');
+    if (!pop) return;
+    if (pop.hidden) { renderAgentScopePop(); pop.hidden = false; }
+    else pop.hidden = true;
+}
+
+function onAgentScopeDocClick(e) {
+    const pop = document.getElementById('agent-scope-pop');
+    const badge = document.getElementById('agent-scope-badge');
+    if (!pop || pop.hidden || !badge) return;
+    if (!pop.contains(e.target) && !badge.contains(e.target)) {
+        pop.hidden = true;
     }
 }
 
@@ -936,6 +1020,21 @@ async function openAgentTab(sid) {
     }
 }
 
+// 交互窗口高度随 textarea 行数动态增高，渐变遮罩高度需同步：
+// 共享一个 ResizeObserver 监听各会话的 .agent-input-float，把高度写入其所在
+// pane 的 --agent-input-h，.agent-tab-pane::after 读取该变量（含底部 12px 定位间隙，
+// 使遮罩带顶部与交互窗口顶部对齐）
+function ensureAgentInputObserver() {
+    if (agentInputObserver || typeof ResizeObserver === 'undefined') return;
+    agentInputObserver = new ResizeObserver(entries => {
+        entries.forEach(entry => {
+            const pane = entry.target.closest('.agent-tab-pane');
+            if (!pane) return;
+            pane.style.setProperty('--agent-input-h', (entry.target.offsetHeight + 12) + 'px');
+        });
+    });
+}
+
 function createAgentPane(sid) {
     const panes = document.getElementById('agent-tab-panes');
     if (!panes || document.querySelector(`.agent-tab-pane[data-session-id="${sid}"]`)) return;
@@ -985,6 +1084,11 @@ function createAgentPane(sid) {
     `;
     panes.appendChild(pane);
     // 初始化会话级状态：历史记忆默认开；操作模式默认 normal
+    ensureAgentInputObserver();
+    if (agentInputObserver) {
+        const area = document.getElementById(`agent-input-area-${sid}`);
+        if (area) agentInputObserver.observe(area);
+    }
     const view = agentView(sid);
     view.useMemory = true;
     view.selectedModelId = null;

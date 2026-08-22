@@ -468,9 +468,10 @@
                         <!-- 顶部工具栏：范围状态 | 会话页签 | 操作按钮 -->
                         <div class="agent-toolbar">
                             <div class="connection-status">
-                                <span id="agent-scope-badge" style="display:none;"></span>
+                                <button type="button" id="agent-scope-badge" class="scope-badge-btn" style="display:none;" title="查看已选范围"></button>
                                 <span id="agent-ssh-status">🔴 SSH未连接</span>
                                 <span id="agent-db-status">🔴 DB未连接</span>
+                                <div id="agent-scope-pop" class="scope-pop" hidden></div>
                             </div>
                             <div class="agent-tabs" id="agent-tabs"></div>
                             <div class="agent-actions">

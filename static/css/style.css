@@ -5359,6 +5359,18 @@ body {
     background: var(--bg-chat);
 }
 
+/* 勾选的节点/实例行高亮（JS 在渲染时按 agentScopeTargets 命中追加 selected 类；
+   只高亮不自动展开，保留默认折叠与筛选逻辑） */
+.scope-node.selected {
+    background: var(--bg-active, rgba(80, 140, 255, 0.12));
+    border-radius: 6px;
+}
+.scope-node.selected:hover { background: var(--bg-chat); }
+.scope-pool.selected .scope-pool-header {
+    background: var(--bg-active, rgba(80, 140, 255, 0.12));
+    border-radius: 6px;
+}
+
 .scope-node input[type="checkbox"] {
     flex-shrink: 0;
     accent-color: var(--primary-color);
@@ -5519,11 +5531,74 @@ body {
 }
 
 /* ==================== 范围徽标（工具栏/页签/会话列表） ==================== */
+/* 徽标已改为 <button>：重置浏览器默认 button 外观，保持原 span 视觉 */
 #agent-scope-badge {
     font-size: .8rem;
     color: var(--primary-color);
     font-weight: 600;
     white-space: nowrap;
+    border: none;
+    background: none;
+    padding: 0;
+    cursor: pointer;
+}
+#agent-scope-badge:hover { color: var(--text-primary); }
+
+/* 工具栏左区作为范围浮层（absolute）的定位上下文 */
+.connection-status { position: relative; }
+
+/* 范围弹出浮层：当前激活会话已提交范围对象的只读可视化列表 */
+.scope-pop {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    z-index: 40;
+    min-width: 260px;
+    max-height: 420px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color, rgba(0, 0, 0, .12));
+    background: var(--bg-card);
+    border-radius: 8px;
+    padding: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, .18);
+}
+.scope-pop-group { margin-bottom: 4px; }
+.scope-pop-group:last-child { margin-bottom: 0; }
+.scope-pop-group-title {
+    font-size: .72rem;
+    color: var(--text-secondary);
+    font-weight: 600;
+    padding: 2px 4px;
+}
+.scope-pop-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 4px;
+    font-size: .8rem;
+    color: var(--text-primary);
+}
+.scope-pop-type {
+    flex-shrink: 0;
+    font-size: .65rem;
+    padding: 0 5px;
+    border-radius: 8px;
+    color: #fff;
+}
+.scope-pop-type.node { background: var(--primary-color); }
+.scope-pop-type.db { background: var(--success-color, #67c23a); }
+.scope-pop-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.scope-pop-empty {
+    font-size: .78rem;
+    color: var(--text-secondary);
+    padding: 4px;
 }
 
 .tab-scope {
@@ -7051,25 +7126,25 @@ textarea:disabled {
 /* pane 作为定位上下文，悬浮输入框 absolute 定位其内 */
 .agent-tab-pane { position: relative; }
 
-/* 对话区底部留白，避免最后一条消息被悬浮输入框遮挡（输入框+toolbar 约 150px）；
-   position: relative 作为底部渐淡 overlay（::after）的定位上下文 */
+/* 对话区底部留白，避免最后一条消息被悬浮输入框遮挡（输入框+toolbar 约 150px） */
 .agent-chat {
-    position: relative;
     padding-bottom: 150px;
 }
 
-/* 下滑到输入框位置及下方内容渐淡：
-   absolute 固定在滚动容器可视底部（不随内容滚动、不裁剪滚动条），
-   overlay 从不透明 bg-chat（底部）渐变到透明（顶部），内容滚入即渐隐 */
-.agent-chat::after {
+/* 交互窗口悬浮区下方内容渐淡：遮罩定位在非滚动上下文 .agent-tab-pane 上，
+   bottom 对齐交互窗口位置、高度跟随交互窗口动态变化（textarea 多行增高时，
+   agent.js 的 ResizeObserver 把高度写入 pane 的 --agent-input-h），故不随
+   滚动内容移动；z-index(5) 低于交互窗口(.agent-input-float z-30)，遮罩永不
+   遮挡交互窗口。overlay 从不透明 bg-chat（底部）渐变到透明（顶部），内容滚入即渐隐 */
+.agent-tab-pane::after {
     content: '';
     position: absolute;
     bottom: 0;
     left: 0;
     right: 0;
-    height: 80px;
+    height: var(--agent-input-h, 150px);
     pointer-events: none;
-    z-index: 1;
+    z-index: 5;
     background: linear-gradient(to top, var(--bg-chat), transparent);
 }
 
@@ -7270,18 +7345,19 @@ textarea:disabled {
 /* ==================== qa 输入区悬浮化（复用 .input-frame / .input-box / .send-btn-float / .input-toolbar） ==================== */
 .qa-main { position: relative; }
 .qa-chat {
-    position: relative;
     padding-bottom: 150px;
 }
-.qa-chat::after {
+/* qa 同款遮罩：定位在非滚动上下文 .qa-main，高度跟随 .qa-input-float 动态高度
+   （qa.js ResizeObserver 写入 --qa-input-h），z-index 低于输入框 */
+.qa-main::after {
     content: '';
     position: absolute;
     bottom: 0;
     left: 0;
     right: 0;
-    height: 80px;
+    height: var(--qa-input-h, 150px);
     pointer-events: none;
-    z-index: 1;
+    z-index: 5;
     background: linear-gradient(to top, var(--bg-chat), transparent);
 }
 .qa-input-float {
