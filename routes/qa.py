@@ -226,7 +226,7 @@ def _build_qa_messages(db_type, question, use_rag, conversation_id=None, use_top
 
     # RAG检索：优先使用向量检索，回退到关键词检索
     # 严格的检索阈值控制，防止LLM幻觉
-    # 注意：v4.4.0 句界分块后实测（30 问采样 top-1: min=0.769 / P20=0.803 / 中位 0.838），
+    # 注意：v2.5.0 句界分块后实测（30 问采样 top-1: min=0.769 / P20=0.803 / 中位 0.838），
     # 阈值维持 0.75/0.80 不动。旧值 0.55/0.60 为分块 2000 时代的实测值（已失效）。
     MIN_SIMILARITY_THRESHOLD = 0.75  # 最低相似度阈值（句界分块实测 P20≈0.80）
     MIN_KNOWLEDGE_COVERAGE = 0.80    # 知识覆盖率要求（句界分块实测 top-1 中位 0.84）

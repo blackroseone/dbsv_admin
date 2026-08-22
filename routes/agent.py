@@ -26,7 +26,7 @@ def list_sessions():
 def create_session():
     """创建Agent会话
 
-    body 可选：scope=[{type,topo_id,conn_id,name}...]（v4.0 多节点范围），
+    body 可选：scope=[{type,topo_id,conn_id,name}...]（v2.1 多节点范围），
     或 legacy ssh_connection_id/db_connection_id。两者都缺则按旧行为创建。
     """
     from db.database import set_session_scope, get_session_scope
@@ -48,7 +48,7 @@ def create_session():
     )
     conn.commit()
 
-    # v4.0：带 scope 的会话写入范围（set_session_scope 同步旧列）；无 scope 走 legacy
+    # v2.1：带 scope 的会话写入范围（set_session_scope 同步旧列）；无 scope 走 legacy
     if isinstance(scope, list) and scope:
         set_session_scope(session_id, 'scope', scope)
 
@@ -69,7 +69,7 @@ def create_session():
 
 @agent_bp.route('/api/agent/sessions/<session_id>/scope', methods=['GET', 'PUT'])
 def session_scope(session_id):
-    """获取/更新会话范围（v4.0）
+    """获取/更新会话范围（v2.1）
 
     GET: 返回解析后的 targets + 会话状态（范围面板徽标/编辑回显用）。
     PUT: 更新范围；会话执行中拒绝（409）。scope 原样存储（含未配置节点，
@@ -140,7 +140,7 @@ def delete_session(session_id):
     return jsonify({'message': '删除成功'})
 
 
-# ==================== Agent会话范围（v4.0 多节点批量） ====================
+# ==================== Agent会话范围（v2.1 多节点批量） ====================
 
 @agent_bp.route('/api/agent/scope/resolve', methods=['POST'])
 def scope_resolve():
@@ -172,9 +172,9 @@ def run_agent():
     session_id = data.get('session_id')
     question = data.get('question')
     model_id = data.get('model_id')
-    skill_name = data.get('skill_name')  # 可选：手动指定技能（v4.0）
-    disable_memory = bool(data.get('disable_memory', False))  # v4.2.1 会话级关闭长期记忆召回
-    plan_mode = bool(data.get('plan_mode', False))  # v4.4 plan 模式：先给整体方案再执行
+    skill_name = data.get('skill_name')  # 可选：手动指定技能（v2.1）
+    disable_memory = bool(data.get('disable_memory', False))  # v2.3.1 会话级关闭长期记忆召回
+    plan_mode = bool(data.get('plan_mode', False))  # v2.5 plan 模式：先给整体方案再执行
 
     if not session_id or not question:
         return jsonify({'error': '缺少session_id或question'}), 400
@@ -192,7 +192,7 @@ def run_agent():
     ssh_conn_id = row['ssh_connection_id']
     db_conn_id = row['db_connection_id']
 
-    # v4.0：会话范围（多节点批量）。请求显式 scope 优先，否则从会话读取。
+    # v2.1：会话范围（多节点批量）。请求显式 scope 优先，否则从会话读取。
     from db.database import get_session_scope
     scope = data.get('scope')
     if scope is None:
@@ -457,7 +457,7 @@ def approve_plan():
     update_plan_status(plan_id, status, approved_by='dba', comment=comment)
     add_operation_log('Agent', '审批操作计划', f'{status} {plan.get("title", "")[:40]}')
 
-    # v4.4 白名单自学习：approve 时记录命令指纹，供统计反复批准的命令
+    # v2.5 白名单自学习：approve 时记录命令指纹，供统计反复批准的命令
     if action == 'approve':
         try:
             from agent.harness import Harness
@@ -577,7 +577,7 @@ def list_tools():
     })
 
 
-# ==================== Skill 效果追踪（v4.4） ====================
+# ==================== Skill 效果追踪（v2.5） ====================
 
 @agent_bp.route('/api/agent/skill-effect', methods=['GET'])
 def skill_effect_stats():
@@ -661,7 +661,7 @@ def quality_stats():
     })
 
 
-# ==================== 白名单自学习（v4.4） ====================
+# ==================== 白名单自学习（v2.5） ====================
 
 @agent_bp.route('/api/agent/whitelist-candidates', methods=['GET'])
 def whitelist_candidates():

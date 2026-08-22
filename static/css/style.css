@@ -2953,8 +2953,12 @@ body {
     margin-bottom: 15px;
 }
 
+/* 操作日志：仅表格区纵向滚动，上方页签/模块下拉/清空按钮保持固定不跟随滚动
+   （max-height 参照 .doc-content 的视口高度算法，另减 logs-header 高度） */
 .logs-table-container {
     overflow-x: auto;
+    overflow-y: auto;
+    max-height: calc(100vh - 290px);
 }
 
 .doc-content {

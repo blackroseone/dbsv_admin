@@ -1,7 +1,7 @@
 # DBSV Admin 数据库表结构文档
 
 > 用途：记录所有表结构，开发和修改函数前先阅读此文档，确保操作与表结构吻合
-> 版本：v3.0.11
+> 版本：v2.0.11
 > 更新时间：2026-08-13
 
 ---
@@ -535,10 +535,10 @@ CREATE TABLE IF NOT EXISTS log_analysis_files (
 | agent_db_connections | 全部 | 2026-07-24 | 新增（Agent数据库连接配置） |
 | agent_sessions | 全部 | 2026-07-24 | 新增（Agent会话管理） |
 | agent_steps | 全部 | 2026-07-24 | 新增（Agent执行步骤记录） |
-| agent_sessions | scope_type, scope_json | 2026-08-16 | 新增（v4.0 会话范围：多节点批量） |
-| agent_ssh_connections | topo_server_id | 2026-08-16 | 新增（v4.0 拓扑节点钉定） |
-| agent_db_connections | topo_instance_id | 2026-08-16 | 新增（v4.0 拓扑节点钉定） |
-| topo_instances | database, sid, service_name | 2026-08-16 | 新增（v4.0 同机多库解析消歧） |
+| agent_sessions | scope_type, scope_json | 2026-08-16 | 新增（v2.1 会话范围：多节点批量） |
+| agent_ssh_connections | topo_server_id | 2026-08-16 | 新增（v2.1 拓扑节点钉定） |
+| agent_db_connections | topo_instance_id | 2026-08-16 | 新增（v2.1 拓扑节点钉定） |
+| topo_instances | database, sid, service_name | 2026-08-16 | 新增（v2.1 同机多库解析消歧） |
 | agent_skills | 全部 | 2026-07-24 | 新增（Agent领域技能） |
 | kg_entities | 全部 | 2026-07-29 | 新增（知识图谱实体表，**44,467条实体**） |
 | kg_relationships | 全部 | 2026-07-29 | 新增（知识图谱关系表，**12,549条关系**） |

@@ -184,9 +184,9 @@ sudo firewall-cmd --reload
 
 ## 九、数据库迁移说明
 
-### v2.3.1 版本迁移
+### v1.4.1 版本迁移
 
-从 v2.3.0 升级到 v2.3.1 需要进行数据库迁移:
+从 v1.4.0 升级到 v1.4.1 需要进行数据库迁移:
 
 **clusters 表新增字段:**
 - `resource_pool_id`: 关联 resource_pools 表的外键

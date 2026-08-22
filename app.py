@@ -229,7 +229,7 @@ def init_scheduler():
             replace_existing=True
         )
 
-        # v4.4 每日技能库淘汰：usage_count=0 且超 30 天的自动沉淀技能标 deprecated，防止技能库只增不减
+        # v2.5 每日技能库淘汰：usage_count=0 且超 30 天的自动沉淀技能标 deprecated，防止技能库只增不减
         def skill_curator_job():
             try:
                 from agent.skills import SkillManager

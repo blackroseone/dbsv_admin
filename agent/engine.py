@@ -38,7 +38,7 @@ def _is_cancelled(session_id: str) -> bool:
 class SmartOpsAgent:
     """智能运维Agent（第三代 - 自主决策模式）"""
 
-    # 知识库检索阈值（与 routes/qa.py 对齐，v4.4.0 句界分块后实测校准维持）
+    # 知识库检索阈值（与 routes/qa.py 对齐，v2.5.0 句界分块后实测校准维持）
     MIN_SIMILARITY_THRESHOLD = 0.75
     MIN_KNOWLEDGE_COVERAGE = 0.80
 
@@ -72,7 +72,7 @@ class SmartOpsAgent:
         self.skill_manager = SkillManager()
         self.harness = Harness()
 
-        # v4.0 会话范围（多节点批量）：
+        # v2.1 会话范围（多节点批量）：
         # - 有 scope 时解析为 targets（含未配置节点，resolved=False）；
         # - 无 scope（legacy 单连接）时退化为 ssh/db 连接对。
         # targets 供工具 fan-out 逐节点执行；scope_labels 供范围外 target 检测。
@@ -90,12 +90,12 @@ class SmartOpsAgent:
             self.targets = resolve_scope(legacy)
         self.scope_labels = scope_labels(self.targets)
 
-        # 手动指定技能（v4.0）：注入完整 prompt_template（绕开自动匹配的截断预览）
+        # 手动指定技能（v2.1）：注入完整 prompt_template（绕开自动匹配的截断预览）
         self.manual_skill = (self.skill_manager.get_skill(manual_skill_name)
                              if manual_skill_name else None)
-        # v4.2.1 会话级开关：关闭后不召回长期记忆（跨会话环境上下文）
+        # v2.3.1 会话级开关：关闭后不召回长期记忆（跨会话环境上下文）
         self.disable_memory = disable_memory
-        # v4.4 plan 模式：先输出整体执行方案，用户确认后再执行
+        # v2.5 plan 模式：先输出整体执行方案，用户确认后再执行
         self.plan_mode = plan_mode
         # 命令安全融合判定：静态判拒绝/未知的命令挂载独立 LLM 审查钩子（第二意见）。
         # 钩子在 harness 内部，引擎 _validate_action 与 tools.py 双重校验共用同一目标
@@ -139,7 +139,7 @@ class SmartOpsAgent:
             self._persist_session(AgentStatus.ERROR)
             raise
 
-    # v4.4 简单事实查询特征：短问题 + 含"是什么/多少/默认/端口/参数"等询问词，无"诊断/检查/排查/执行"等动作词
+    # v2.5 简单事实查询特征：短问题 + 含"是什么/多少/默认/端口/参数"等询问词，无"诊断/检查/排查/执行"等动作词
     _SIMPLE_QUERY_PATTERNS = ('是什么', '多少', '默认', '端口', '参数', '含义', '作用',
                               '区别', '语法', '格式', '支持', '版本', '多少',
                               'what is', 'how many', 'default', 'port')
@@ -157,7 +157,7 @@ class SmartOpsAgent:
 
     def _react_loop(self, user_question: str) -> Generator[Dict, None, None]:
         """ReAct 主循环体（生成器）：检索 → 决策 → 执行 → 观察 → 总结"""
-        # v4.4 意图识别前置：简单事实查询短路到"知识库→直答"，不走工具执行，省步数预算
+        # v2.5 意图识别前置：简单事实查询短路到"知识库→直答"，不走工具执行，省步数预算
         if self._is_simple_fact_query(user_question):
             yield {"type": "retrieving_start", "message": "正在检索知识库..."}
             knowledge_result = self._retrieve_knowledge_strict(user_question)
@@ -197,13 +197,13 @@ class SmartOpsAgent:
         matched_skills = self.skill_manager.match_skills_by_intent(
             user_question, self._get_db_type()
         )
-        # v4.0 M7：手动指定技能时跳过同名自动匹配，避免同一技能模板重复注入
+        # v2.1 M7：手动指定技能时跳过同名自动匹配，避免同一技能模板重复注入
         if self.manual_skill:
             manual_name = self.manual_skill.get('name')
             matched_skills = [s for s in matched_skills
                               if s.get('name') != manual_name]
 
-        # v4.4 激活 knowledge_tags：用技能标签对检索结果重排序（含 tag 的优先）
+        # v2.5 激活 knowledge_tags：用技能标签对检索结果重排序（含 tag 的优先）
         tag_set = set()
         for sk in matched_skills:
             kt = sk.get('knowledge_tags')
@@ -215,7 +215,7 @@ class SmartOpsAgent:
                 return sum(1 for t in tag_set if t in text)
             knowledge_refs = sorted(knowledge_refs, key=_tag_score, reverse=True)
 
-        # v4.4 记录命中的 skill 名到会话（供效果追踪：命中后是否成功）
+        # v2.5 记录命中的 skill 名到会话（供效果追踪：命中后是否成功）
         try:
             from db.database import get_db
             matched_names = [s.get('name') for s in matched_skills if s.get('name')]
@@ -230,7 +230,7 @@ class SmartOpsAgent:
         except Exception:
             pass
 
-        # 2.5 长期记忆召回（环境上下文）；会话级开关关闭时跳过（v4.2.1）
+        # 2.5 长期记忆召回（环境上下文）；会话级开关关闭时跳过（v2.3.1）
         memory_refs = [] if self.disable_memory else self._recall_memory(user_question)
 
         # 3. 构建system prompt（注入知识库 + 知识图谱 + Skills + 环境上下文）
@@ -306,7 +306,7 @@ class SmartOpsAgent:
                 self.state.add_message('user', "⚠️ 检测到重复执行相同操作，请直接给出结论，不要再调用工具")
                 break
 
-            # v4.4 无进展止损：连续 3 步观察结果雷同或都空 → 主动建议换思路
+            # v2.5 无进展止损：连续 3 步观察结果雷同或都空 → 主动建议换思路
             # 比死循环检测更宽——动作不同但都在兜圈子也能抓住
             recent_obs = [s.observation or '' for s in self.state.steps[-3:]]
             if len(recent_obs) >= 3:
@@ -445,7 +445,7 @@ class SmartOpsAgent:
                     daemon=True,
                 ).start()
 
-            # v4.4 记录会话成功与否（供 skill 效果追踪）：无失败节点视为 completed，有失败节点标 partial
+            # v2.5 记录会话成功与否（供 skill 效果追踪）：无失败节点视为 completed，有失败节点标 partial
             try:
                 from db.database import get_db
                 success = not bool(self._plan_failed_nodes)
@@ -604,7 +604,7 @@ class SmartOpsAgent:
 如果不需要工具，直接给出分析结论。
 """
 
-        # v4.4 plan 模式：先输出整体方案，用户确认后再执行
+        # v2.5 plan 模式：先输出整体方案，用户确认后再执行
         if self.plan_mode:
             prompt += """
 ## Plan 模式（当前启用）
@@ -624,7 +624,7 @@ class SmartOpsAgent:
 - 输出方案后停止，等待用户确认
 """
 
-        # v4.0 会话操作范围注入（多节点批量；各节点 db_type 逐点列出，混型时按方言分别写 SQL）
+        # v2.1 会话操作范围注入（多节点批量；各节点 db_type 逐点列出，混型时按方言分别写 SQL）
         if self.targets:
             scope_lines = []
             for t in self.targets:
@@ -675,12 +675,12 @@ class SmartOpsAgent:
                 elif template:
                     prompt += f"  操作指南: {template[:200]}...\n"
 
-        # v4.0 手动指定技能：注入完整操作指南（绕开自动匹配的截断预览）
+        # v2.1 手动指定技能：注入完整操作指南（绕开自动匹配的截断预览）
         if self.manual_skill and self.manual_skill.get('prompt_template'):
             prompt += (f"\n## 指定技能操作指南（必须严格遵循）\n"
                        f"{self.manual_skill['prompt_template']}\n")
 
-        # v4.4 激活 required_tools：技能声明的工具白名单约束本次工具调用
+        # v2.5 激活 required_tools：技能声明的工具白名单约束本次工具调用
         tool_whitelist = set()
         for sk in skills:
             rt = sk.get('required_tools')
@@ -802,7 +802,7 @@ class SmartOpsAgent:
         total = 0
         for m in middle:
             content = m.get('content') or ''
-            # v4.4 截断阈值 120→300，避免链式推理中间结论丢失
+            # v2.5 截断阈值 120→300，避免链式推理中间结论丢失
             # assistant 思考取首句（通常是该步结论），observation 取前 300 字
             if m.get('role') == 'assistant':
                 first_sentence = re.split(r'[。\n]', content, 1)[0]
@@ -954,7 +954,7 @@ class SmartOpsAgent:
 
         return [self._run_one_action(v, knowledge_refs) for v in validated]
 
-    # v4.4 临时性错误关键词：命中则重试 1 次（SSH/DB 连接抖动等），非临时错误直接交 LLM
+    # v2.5 临时性错误关键词：命中则重试 1 次（SSH/DB 连接抖动等），非临时错误直接交 LLM
     _TRANSIENT_ERR_PATTERNS = ('timeout', 'timed out', 'connection', 'connect',
                                 'refused', 'reset', 'unreachable', 'broken pipe',
                                 'ECONNREFUSED', 'ETIMEDOUT', 'ECONNRESET')
@@ -967,7 +967,7 @@ class SmartOpsAgent:
     def _run_one_action(self, item: Dict, knowledge_refs: List[Dict]) -> Dict:
         """执行单个已校验动作：执行 + 格式化观察。
 
-        v4.4 临时性错误（超时/连接）自动重试 1 次，避免抖动导致误判方案行不通。
+        v2.5 临时性错误（超时/连接）自动重试 1 次，避免抖动导致误判方案行不通。
         """
         action = item['action']
         if not item['is_safe']:
@@ -1002,7 +1002,7 @@ class SmartOpsAgent:
         from db.database import create_plan, get_plan, update_plan_status
         # 用命令真实危险性重算每个 op 的 risk（不信任模型自填），供审批条标注
         self._enrich_plan_risks(plan)
-        # v4.4 plan 模式下的整体方案标记 kind='overall_plan'，变更审批保持默认
+        # v2.5 plan 模式下的整体方案标记 kind='overall_plan'，变更审批保持默认
         plan_kind = 'overall_plan' if self.plan_mode else 'change_approval'
         plan_id = create_plan(self.session_id, plan.get('title', '操作计划'), plan, kind=plan_kind)
         yield {"type": "approval_required", "plan_id": plan_id, "plan": plan}
@@ -1041,7 +1041,7 @@ class SmartOpsAgent:
 
         yield {"type": "approval_granted", "plan_id": plan_id}
         if plan.get('kind') == 'scope':
-            # v4.0 范围扩展计划：无命令/SQL，批准后直接扩展范围并返回 'scope_approved'
+            # v2.1 范围扩展计划：无命令/SQL，批准后直接扩展范围并返回 'scope_approved'
             # （React 循环据此把原动作重投本回合继续执行，避免二次审批）
             self._apply_scope_extension(plan.get('targets') or [])
             yield {"type": "scope_extended", "plan_id": plan_id,
@@ -1071,7 +1071,7 @@ class SmartOpsAgent:
         self._executed_change_plan = True
         self._plan_failed_nodes = set()
 
-        # v4.4 plan 操作间变量传递：${step_N.field} 引用前序步骤结果
+        # v2.5 plan 操作间变量传递：${step_N.field} 引用前序步骤结果
         step_results = {}  # {step_index: result_dict}
         for i, op in enumerate(operations, 1):
             tool = op.get('tool')
@@ -1080,7 +1080,7 @@ class SmartOpsAgent:
             params = self._substitute_plan_vars(params, step_results)
             op_targets = op.get('targets')  # 可选：计划操作限定的目标节点名列表
 
-            # v4.4 只读探查类工具：直接执行，不走 fan-out 审批
+            # v2.5 只读探查类工具：直接执行，不走 fan-out 审批
             READONLY_PLAN_TOOLS = {'get_schema_info', 'get_performance_metrics',
                                    'retrieve_knowledge', 'retrieve_check',
                                    'get_monitor_metrics'}
@@ -1110,7 +1110,7 @@ class SmartOpsAgent:
                 self._persist_plan_step(i, op, observation, None)
                 continue  # 收集语义：校验失败也继续剩余操作
 
-            # v4.4 只读探查工具：单次执行（不 fan-out），结果直接产出
+            # v2.5 只读探查工具：单次执行（不 fan-out），结果直接产出
             if conn_type == '__readonly__':
                 try:
                     ctx = ToolContext(db_conn_id=self.db_conn_id, ssh_conn_id=self.ssh_conn_id,
@@ -1119,7 +1119,7 @@ class SmartOpsAgent:
                     result = execute_tool(tool, params, ctx)
                     yield {"type": "plan_operation_result", "index": i, "tool": tool,
                            "parameters": params, "status": "success", "result": result}
-                    # v4.4 只读探查结果也记录供后续变量引用
+                    # v2.5 只读探查结果也记录供后续变量引用
                     step_results[i] = result
                     obs = f"计划操作 {i}（只读探查）结果:\n{json.dumps(result, ensure_ascii=False)[:500]}"
                     self.state.add_message('user', self._history_observation(obs))
@@ -1180,7 +1180,7 @@ class SmartOpsAgent:
                            "parameters": params, "node": label,
                            "status": "success", "result": r.get('result') or {}}
                     node_obs.append(f"✅ {label}")
-                    # v4.4 记录本步结果供后续步骤变量引用（取首个成功节点结果）
+                    # v2.5 记录本步结果供后续步骤变量引用（取首个成功节点结果）
                     if i not in step_results:
                         step_results[i] = r.get('result') or {}
                 else:
@@ -1248,7 +1248,7 @@ class SmartOpsAgent:
         tool = action.get("tool")
         params = action.get("parameters", {})
 
-        # v4.0 范围外 target：转审批（扩展操作范围后本回合重投执行）
+        # v2.1 范围外 target：转审批（扩展操作范围后本回合重投执行）
         target = params.get("target")
         if target and tool in ('execute_command', 'query_database'):
             tname = str(target).strip()
@@ -1266,7 +1266,7 @@ class SmartOpsAgent:
     def _build_approval_plan(self, action: Dict, reason: str = '') -> Optional[Dict]:
         """把单个待审批动作包装成操作计划，走审批流。
 
-        v4.0 范围扩展：reason 以「目标节点不在会话范围」开头时返回 kind:'scope' 计划
+        v2.1 范围扩展：reason 以「目标节点不在会话范围」开头时返回 kind:'scope' 计划
         （嵌入原动作，批准后由 React 循环重投执行）；目标节点未配置连接或拓扑中不存在
         则返回 None，调用方改发 executing_warning 指引补配，不弹审批。
         """
@@ -1431,7 +1431,7 @@ class SmartOpsAgent:
             print(f"[Agent] 会话状态持久化失败: {e}")
 
     def _execute_action(self, action: Dict) -> Dict:
-        """执行工具（注入连接上下文 + 会话范围 targets，v4.0 批量）"""
+        """执行工具（注入连接上下文 + 会话范围 targets，v2.1 批量）"""
         tool = action["tool"]
         params = action.get("parameters", {})
         ctx = ToolContext(
@@ -1448,7 +1448,7 @@ class SmartOpsAgent:
     def _history_observation(self, observation: str, limit: int = 800) -> str:
         """写入对话历史的观察摘要：超长按「结构化摘要 + 头尾样本」保留。
 
-        v4.4 阈值从 1500 降到 800（防止大结果集撑爆历史预算）；
+        v2.5 阈值从 1500 降到 800（防止大结果集撑爆历史预算）；
         对表格类结果（多行多列）提取列名+行数+前3行样本+省略提示。
         全量观察仍经 SSE observing 事件展示给前端；history 只存摘要供模型链式推理。
         """
@@ -1456,7 +1456,7 @@ class SmartOpsAgent:
         if len(obs) <= limit:
             return obs
 
-        # v4.4 表格类结果结构化摘要：检测多行表格，提取关键信息
+        # v2.5 表格类结果结构化摘要：检测多行表格，提取关键信息
         lines = obs.split('\n')
         if len(lines) > 10 and '|' in obs:
             # 疑似表格：保留表头 + 前3行 + 行数提示
@@ -1512,7 +1512,7 @@ class SmartOpsAgent:
                 text += f"\n[stderr] {result['stderr']}"
             return text
 
-        # 单目标/单节点执行：{node, ok, output} 包装（v4.0 逐节点执行返回形态）
+        # 单目标/单节点执行：{node, ok, output} 包装（v2.1 逐节点执行返回形态）
         if "output" in result and "node" in result:
             text = f"💻 {result['node']} 命令输出:\n{result['output']}"
             if result.get('ok') is False and result.get('error'):
@@ -1610,7 +1610,7 @@ class SmartOpsAgent:
 
 要求：不要罗列通用最佳实践（监控建设、流程规范等）、不要展开置信度说明、不要重复分析过程。若本次只执行了单次查询，直接给出一两句话的结论并包含关键结果，不要展开分析、不要罗列建议。"""
 
-            # v4.4 诊断类结论按子类型自适应结构
+            # v2.5 诊断类结论按子类型自适应结构
             tool_names = [s.action.get('tool') for s in tool_steps
                           if s.action and isinstance(s.action, dict)]
             is_perf = any('performance' in t or 'metric' in t for t in tool_names)
@@ -1738,7 +1738,7 @@ class SmartOpsAgent:
 
             self._write_memory(user_question, conclusion, knowledge_refs)
 
-            # v4.4 知识库反馈闭环：本次引用的 chunk 加权（缓慢调整防抖），未引用可 decay
+            # v2.5 知识库反馈闭环：本次引用的 chunk 加权（缓慢调整防抖），未引用可 decay
             try:
                 from db.database import bump_chunk_weight
                 ref_chunk_ids = [r.get('chunk_id') for r in knowledge_refs if r.get('chunk_id')]
@@ -1749,7 +1749,7 @@ class SmartOpsAgent:
             except Exception as e:
                 print(f"[Agent] 知识库权重调整失败（不影响主流程）: {e}")
 
-            # v4.4 skill 遵循度评估（探索性）：对比注入 skill 的步骤与实际执行步骤
+            # v2.5 skill 遵循度评估（探索性）：对比注入 skill 的步骤与实际执行步骤
             try:
                 import re as _re
                 from db.database import get_db as _get_db

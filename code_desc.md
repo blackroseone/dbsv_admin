@@ -1,7 +1,7 @@
 # DBSV Admin 代码结构文档
 
 > 生成时间: 2026-08-09
-> 版本: v3.0.3
+> 版本: v2.0.3
 > 用途: 快速了解项目代码结构和函数功能
 
 > 📌 配套文档：
@@ -729,7 +729,7 @@ data: [DONE]
 | `_conclude(knowledge_refs)` / `_conclude_stream` | 生成最终结论 |
 | `get_state()` | 获取Agent状态 |
 
-**变更验证机制（v4.2.0）：** 批准计划执行后置 `_pending_verification`，下一轮模型若想直接收敛（无工具调用）会被拦一次（`_verification_nudge_done` 防死循环），注入"请先用只读工具验证执行结果"引导；模型产出工具调用即解除标记。
+**变更验证机制（v2.3.0）：** 批准计划执行后置 `_pending_verification`，下一轮模型若想直接收敛（无工具调用）会被拦一次（`_verification_nudge_done` 防死循环），注入"请先用只读工具验证执行结果"引导；模型产出工具调用即解除标记。
 
 **ReAct事件类型：**
 - `retrieving_start` — 开始检索知识库
@@ -847,8 +847,8 @@ data: [DONE]
 ```
 
 **版本号：**
-- CSS: `v2.2.0`
-- JS: `v2.2.0`
+- CSS: `v1.3.0`
+- JS: `v1.3.0`
 
 ---
 

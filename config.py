@@ -16,7 +16,7 @@ COMMANDS_DIR = os.path.join(DATA_DIR, 'commands')
 # ==================== 应用配置 ====================
 
 # 版本号
-APP_VERSION = '4.4.3'
+APP_VERSION = '2.5.3'
 
 # Secret Key（生产环境应从环境变量读取）
 SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dbsv-admin-dev-secret-key-change-in-production')
@@ -78,7 +78,7 @@ MEMORY_INJECT_TOP_K = int(os.environ.get('DB_TOOL_MEMORY_INJECT_TOP_K', '6'))
 EMBED_MODEL_NAME = os.environ.get('DB_TOOL_EMBED_MODEL', 'moka-ai/m3e-base')
 
 # 文本分块配置（rag/embedder.chunk_text 默认值从此处读取）
-# v4.4.0：分块为「句子边界优先 + 段落兜底」——切块点优先落在句末标点（块末为完整
+# v2.5.0：分块为「句子边界优先 + 段落兜底」——切块点优先落在句末标点（块末为完整
 # 句子）；表格/代码等无标点内容退回字符边界切。CHUNK_SIZE 仍为字符上限（m3e-base
 # 为 BERT，max_position_embeddings=512 token，块长须 ≤500 字符）；CHUNK_OVERLAP 仅
 # 字符边界切时生效。改动后需全量重建索引并重调检索阈值（详见 version_update）。
