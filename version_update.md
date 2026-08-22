@@ -9,6 +9,34 @@
 > - `tables_desc.md` — 数据库表结构
 > - `deploy.md` — 部署指南
 
+## v4.4.3（2026-08-21）
+
+### Agent 智能化第一批 + 第二批
+
+对应 glu 优化方案（quantum-forging-turing.md），第一批（已确认）与第二批均落地。
+
+**技能生命周期**：
+- P0-1 激活 Curator 淘汰：app.py 每日调度，`usage_count=0` 且超 30 天自动沉淀技能标 deprecated（只标不删）。
+- P0-2 手动 SOP 沉淀设 `is_expert=1` + `priority=10`（`save_skill` 支持 is_expert）。
+- P0-3 命中效果追踪：`agent_sessions` 加 `matched_skills`，会话按成功与否（completed/partial）落库；`/api/agent/skill-effect` 统计命中次数与成功率。
+
+**鲁棒性与止损**：
+- ① 工具临时错误重试：`_run_one_action` 对超时/连接类错误（`_is_transient_error`）重试 1 次，防抖动误判。
+- ② 会话无进展止损：连续 3 步观察雷同或全空 → 主动建议换思路（`_obs_fingerprint` 归一化检测）。
+
+**上下文与效率**：
+- ⑤ 工具结果预处理：`_history_observation` 阈值降到 800，表格类结果结构化摘要。
+- ⑥ 意图识别前置：简单事实查询短路到知识库直答（`_is_simple_fact_query`），省步数预算。
+- P1-2 上下文压缩修复：截断阈值 120→300、摘要上限 2000，链式推理中间结论不丢失。
+- P1-1 主动澄清：system prompt 增加"主动澄清原则"（诊断/变更缺对象先问一句）。
+
+**知识库与审批闭环**：
+- ③ 知识库反馈闭环：`kb_embeddings` 加 `weight`，检索按权重加权重排（`similarity_search`）；引用进结论的 chunk 加权并清矩阵缓存，越用越准。
+- ④ 变更白名单自学习：`agent_plans` 加 `cmd_fingerprint`，批准时记录命令指纹（数字归一化）；`/api/agent/whitelist-candidates` + `/api/agent/whitelist`(POST) 供 DBA 查看/确认。**注**：`validate_command` 自动免审批降级未做（与"变更必须审批"安全底线冲突，保留 DBA 确认）。
+- P1-3 step 资产激活：`/api/agent/failure-patterns`（失败工具/命令聚合）、`/api/agent/quality-stats`（完成率/步数/死循环率）。
+
+**探索性**：P2-2 诊断类结论按性能/故障子类型自适应结构；P2-3 skill 遵循度评估（日志观察）。P2-1 trigger_keywords 语义匹配因性能风险未启用（需向量缓存方案另评）。
+
 ## v4.4.1（2026-08-21）
 
 ### 操作模式弹框 + 发送按钮优化 + 问答按钮修复

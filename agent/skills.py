@@ -346,7 +346,8 @@ class SkillManager:
                 source_session=merged.get('source_session', ''),
                 confidence=merged.get('confidence', 0.8),
                 status='active',
-                priority=merged.get('priority', 0),
+                priority=merged.get('priority', 10),   # 手动 SOP 高优先级（自动沉淀默认 0）
+                is_expert=1,                           # v4.4 手动 SOP 标记为专家技能，匹配时优先
             )
             db_skill = get_skill_by_name(name)
             if db_skill:

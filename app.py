@@ -228,6 +228,25 @@ def init_scheduler():
             id='auto_sync_knowledge',
             replace_existing=True
         )
+
+        # v4.4 每日技能库淘汰：usage_count=0 且超 30 天的自动沉淀技能标 deprecated，防止技能库只增不减
+        def skill_curator_job():
+            try:
+                from agent.skills import SkillManager
+                sm = SkillManager()
+                deprecated = sm.curator_deprecate_stale(days=30)
+                if deprecated:
+                    logger.info(f"[Skill Curator] 淘汰 {len(deprecated)} 个过期技能: {deprecated}")
+            except Exception as e:
+                logger.warning(f"[Skill Curator] 淘汰任务失败: {e}")
+
+        scheduler.add_job(
+            skill_curator_job,
+            trigger=IntervalTrigger(days=1),
+            id='skill_curator_deprecate',
+            replace_existing=True
+        )
+
         scheduler.start()
         logger.info(f"[自动同步] APScheduler 已启动，每{SYNC_INTERVAL_HOURS}小时自动同步一次")
 

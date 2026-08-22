@@ -456,6 +456,28 @@ def approve_plan():
               'revise': 'revised'}.get(action)
     update_plan_status(plan_id, status, approved_by='dba', comment=comment)
     add_operation_log('Agent', '审批操作计划', f'{status} {plan.get("title", "")[:40]}')
+
+    # v4.4 白名单自学习：approve 时记录命令指纹，供统计反复批准的命令
+    if action == 'approve':
+        try:
+            from agent.harness import Harness
+            plan_json = json.loads(plan['plan_json']) if isinstance(plan['plan_json'], str) else plan['plan_json']
+            ops = plan_json.get('operations') or []
+            fingerprints = []
+            for op in ops:
+                cmd = (op.get('parameters') or {}).get('command', '')
+                if cmd:
+                    fp = Harness.command_fingerprint(cmd)
+                    if fp:
+                        fingerprints.append(fp)
+            if fingerprints:
+                conn = get_db()
+                conn.execute("UPDATE agent_plans SET cmd_fingerprint=? WHERE id=?",
+                             (','.join(fingerprints), plan_id))
+                conn.commit()
+        except Exception:
+            pass
+
     return jsonify({'message': '审批已提交', 'plan_id': plan_id, 'status': status})
 
 
@@ -553,3 +575,113 @@ def list_tools():
     return jsonify({
         'tools': schemas
     })
+
+
+# ==================== Skill 效果追踪（v4.4） ====================
+
+@agent_bp.route('/api/agent/skill-effect', methods=['GET'])
+def skill_effect_stats():
+    """技能命中效果统计：每个被命中过的 skill 的命中次数 + 命中后会话成功率"""
+    from collections import defaultdict
+    conn = get_db()
+    # 聚合：matched_skills 非空的会话，按 skill 名拆分统计
+    rows = conn.execute(
+        "SELECT matched_skills, status FROM agent_sessions WHERE matched_skills != ''"
+    ).fetchall()
+    hit_count = defaultdict(int)
+    success_count = defaultdict(int)
+    for r in rows:
+        names = [n.strip() for n in (r['matched_skills'] or '').split(',') if n.strip()]
+        status = r['status'] or ''
+        for n in names:
+            hit_count[n] += 1
+            if status == 'completed':
+                success_count[n] += 1
+    result = [{
+        'name': n,
+        'hit_count': hit_count[n],
+        'success_count': success_count[n],
+        'success_rate': round(success_count[n] / hit_count[n], 2) if hit_count[n] else 0
+    } for n in sorted(hit_count, key=lambda x: -hit_count[x])]
+    return jsonify({'skills': result})
+
+
+@agent_bp.route('/api/agent/failure-patterns', methods=['GET'])
+def failure_patterns():
+    """失败模式分析：聚合哪些工具/SQL/命令常失败（从 observation 含 ❌ 的步骤）"""
+    import re as _re
+    from collections import defaultdict
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT action, observation FROM agent_steps "
+        "WHERE observation LIKE '%❌%' OR observation LIKE '%失败%'"
+    ).fetchall()
+    tool_fail = defaultdict(int)
+    cmd_fail = defaultdict(int)
+    for r in rows:
+        try:
+            action = json.loads(r['action']) if r['action'] else {}
+        except Exception:
+            action = {}
+        tool = action.get('tool', 'unknown')
+        tool_fail[tool] += 1
+        if tool == 'execute_command':
+            cmd = (action.get('parameters') or {}).get('command', '')
+            if cmd:
+                first = _re.split(r'\s+', cmd.strip())[0] if cmd.strip() else 'unknown'
+                cmd_fail[first] += 1
+    return jsonify({
+        'tool_failures': [{'tool': k, 'count': v} for k, v in sorted(tool_fail.items(), key=lambda x: -x[1])],
+        'cmd_failures': [{'cmd': k, 'count': v} for k, v in sorted(cmd_fail.items(), key=lambda x: -x[1])]
+    })
+
+
+@agent_bp.route('/api/agent/quality-stats', methods=['GET'])
+def quality_stats():
+    """agent 质量看板：步数/墙钟/重试/死循环率聚合"""
+    conn = get_db()
+    # 会话级统计（近 7 天）
+    sessions = conn.execute(
+        "SELECT status, current_step, max_steps FROM agent_sessions "
+        "WHERE updated_at > datetime('now', '-7 days')"
+    ).fetchall()
+    total = len(sessions)
+    completed = sum(1 for s in sessions if s['status'] == 'completed')
+    avg_steps = sum(s['current_step'] for s in sessions) / total if total else 0
+    # 步骤级统计（含死循环检测命中）
+    warning_steps = conn.execute(
+        "SELECT COUNT(*) as cnt FROM agent_steps WHERE observation LIKE '%检测到重复%'"
+    ).fetchone()['cnt']
+    return jsonify({
+        'total_sessions': total,
+        'completed_sessions': completed,
+        'completion_rate': round(completed / total, 2) if total else 0,
+        'avg_steps': round(avg_steps, 1),
+        'deadloop_hits': warning_steps
+    })
+
+
+# ==================== 白名单自学习（v4.4） ====================
+
+@agent_bp.route('/api/agent/whitelist-candidates', methods=['GET'])
+def whitelist_candidates():
+    """查看反复批准的命令指纹（白名单自学习候选）"""
+    from agent.harness import Harness
+    return jsonify({'candidates': Harness.get_whitelist_candidates(threshold=3)})
+
+
+@agent_bp.route('/api/agent/whitelist', methods=['POST'])
+def add_to_whitelist():
+    """DBA 确认将某命令指纹加入白名单（后续同类命令降级为免审批）"""
+    data = request.get_json() or {}
+    fingerprint = data.get('fingerprint')
+    db_type = data.get('db_type') or ''
+    if not fingerprint:
+        return jsonify({'error': '缺少 fingerprint'}), 400
+    conn = get_db()
+    conn.execute(
+        "INSERT OR REPLACE INTO sys_config (key, value) VALUES (?, ?)",
+        (f'whitelist_cmd:{db_type}:{fingerprint}', '1'))
+    conn.commit()
+    add_operation_log('Agent', '白名单自学习', f'加入 {fingerprint}')
+    return jsonify({'message': '已加入白名单候选，后续同类命令将降级为免审批'})

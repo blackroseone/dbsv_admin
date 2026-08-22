@@ -889,6 +889,34 @@ class Harness:
         return False, f"命令含注入/扩展向量且未获判读放行: {reason or ''}"
 
     @classmethod
+    def command_fingerprint(cls, command: str) -> str:
+        """命令指纹：首词（命令名）+ 规范化参数键，用于统计反复批准的同类命令"""
+        import re
+        parts = re.split(r'\s+', command.strip())
+        if not parts or not parts[0]:
+            return ''
+        cmd = parts[0]
+        # 取参数中的关键标识（如服务名、实例名），路径与纯数字跳过
+        key_args = [p for p in parts[1:5] if p and not p.startswith('-') and not p.startswith('/')
+                    and not re.match(r'^[\d.]+$', p)]
+        # 数字归一化（mysql-3306 → mysql-N），使同类命令（端口/序号不同）指纹一致
+        norm_args = [re.sub(r'\d+', 'N', p) for p in key_args]
+        return f"{cmd}:{'_'.join(norm_args[:2])}"
+
+    @classmethod
+    def get_whitelist_candidates(cls, threshold: int = 3) -> list:
+        """统计反复批准的命令指纹（≥threshold 次），作为白名单候选"""
+        from db.database import get_db
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT cmd_fingerprint, COUNT(*) as cnt FROM agent_plans "
+            "WHERE status='approved' AND cmd_fingerprint != '' "
+            "GROUP BY cmd_fingerprint HAVING cnt >= ? ORDER BY cnt DESC",
+            (threshold,)
+        ).fetchall()
+        return [{'fingerprint': r['cmd_fingerprint'], 'count': r['cnt']} for r in rows]
+
+    @classmethod
     def estimate_command_risk(cls, command: str,
                               db_type: Optional[str] = None) -> str:
         """估算命令危险级别（high/medium/low），供审批条标注提醒。

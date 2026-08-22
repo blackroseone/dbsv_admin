@@ -513,6 +513,24 @@ def init_db():
     except Exception:
         pass  # 列已存在
 
+    # v4.4 agent_sessions 加 matched_skills（记录会话命中的技能名，供 skill 效果追踪）
+    try:
+        conn.execute("ALTER TABLE agent_sessions ADD COLUMN matched_skills TEXT DEFAULT ''")
+    except Exception:
+        pass  # 列已存在
+
+    # v4.4 kb_embeddings 加 weight（随 agent 使用动态调整，知识库反馈闭环）
+    try:
+        conn.execute("ALTER TABLE kb_embeddings ADD COLUMN weight REAL DEFAULT 1.0")
+    except Exception:
+        pass  # 列已存在
+
+    # v4.4 agent_plans 加 cmd_fingerprint（统计反复批准的命令，供白名单自学习）
+    try:
+        conn.execute("ALTER TABLE agent_plans ADD COLUMN cmd_fingerprint TEXT DEFAULT ''")
+    except Exception:
+        pass  # 列已存在
+
     # 初始化功能配置表
     _init_feature_config(conn)
 
@@ -1663,14 +1681,14 @@ def get_embeddings_matrix(db_type=None):
     conn = get_db()
     if db_type:
         rows = conn.execute(
-            "SELECT e.id, e.chunk_text, e.embedding, k.filename "
+            "SELECT e.id, e.chunk_text, e.embedding, e.weight, k.filename "
             "FROM kb_embeddings e JOIN kb_files k ON e.file_id = k.id "
             "WHERE k.db_type=?",
             (db_type,)
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT e.id, e.chunk_text, e.embedding, k.filename "
+            "SELECT e.id, e.chunk_text, e.embedding, e.weight, k.filename "
             "FROM kb_embeddings e JOIN kb_files k ON e.file_id = k.id"
         ).fetchall()
     if not rows:
@@ -1700,9 +1718,31 @@ def get_embeddings_matrix(db_type=None):
         'chunk_ids': [r['id'] for r in keep_rows],
         'filenames': [r['filename'] for r in keep_rows],
         'chunk_texts': [r['chunk_text'] for r in keep_rows],
+        'weights': [float(r['weight'] or 1.0) for r in keep_rows],
         'count': len(keep_rows),
         'max_id': max(r['id'] for r in keep_rows),
     }
+
+
+def bump_chunk_weight(chunk_id, delta=0.1, cap=2.0):
+    """chunk 权重上调（被 agent 引用进结论时）"""
+    conn = get_db()
+    conn.execute(
+        "UPDATE kb_embeddings SET weight = MIN(?, weight + ?) WHERE id=?",
+        (cap, delta, chunk_id))
+    conn.commit()
+
+
+def decay_chunk_weights(chunk_ids, factor=0.99, floor=0.3):
+    """指定 chunk 权重衰减（未被本次会话引用时）"""
+    if not chunk_ids:
+        return
+    conn = get_db()
+    placeholders = ','.join('?' * len(chunk_ids))
+    conn.execute(
+        f"UPDATE kb_embeddings SET weight = MAX(?, weight * ?) WHERE id IN ({placeholders})",
+        (floor, factor, *chunk_ids))
+    conn.commit()
 
 
 def get_embeddings_by_db_type(db_type):
@@ -1960,7 +2000,7 @@ def _skill_from_row(row) -> dict:
 def save_skill(name, db_type=None, category='diagnosis', description='',
                prompt_template='', required_tools=None, knowledge_tags=None,
                trigger_keywords=None, source_session='', confidence=0.8,
-               status='active', priority=0):
+               status='active', priority=0, is_expert=0):
     """新增或更新技能（按 name 幂等 upsert）。
 
     更新时保留 usage_count；其余字段覆盖。返回技能 id。
@@ -1975,10 +2015,10 @@ def save_skill(name, db_type=None, category='diagnosis', description='',
         conn.execute(
             """UPDATE agent_skills SET db_type=?, category=?, description=?, prompt_template=?,
                required_tools=?, knowledge_tags=?, trigger_keywords=?, source_session=?,
-               confidence=?, status=?, priority=? WHERE name=?""",
+               confidence=?, status=?, priority=?, is_expert=? WHERE name=?""",
             (db_type, category, description, prompt_template, required_tools_json,
              knowledge_tags_json, trigger_keywords_json, source_session, confidence,
-             status, priority, name)
+             status, priority, is_expert, name)
         )
         conn.commit()
         return row['id']
@@ -1986,11 +2026,11 @@ def save_skill(name, db_type=None, category='diagnosis', description='',
     conn.execute(
         """INSERT INTO agent_skills
            (name, db_type, category, description, prompt_template, required_tools,
-            knowledge_tags, trigger_keywords, source_session, confidence, status, priority)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            knowledge_tags, trigger_keywords, source_session, confidence, status, priority, is_expert)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (name, db_type, category, description, prompt_template, required_tools_json,
          knowledge_tags_json, trigger_keywords_json, source_session, confidence,
-         status, priority)
+         status, priority, is_expert)
     )
     conn.commit()
     return conn.execute(

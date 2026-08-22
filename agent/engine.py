@@ -53,7 +53,7 @@ class SmartOpsAgent:
     # 上下文压缩：对话历史超过该条数触发中间摘要，保留头尾逐字
     HISTORY_COMPRESS_THRESHOLD = 10
     HISTORY_KEEP_TAIL = 6
-    HISTORY_SUMMARY_MAX_CHARS = 1500
+    HISTORY_SUMMARY_MAX_CHARS = 2000
 
     # 思考/结论生成显式 max_tokens：防弱模型长结论被提供商默认上限截断
     MAX_LLM_TOKENS = 4096
@@ -139,8 +139,40 @@ class SmartOpsAgent:
             self._persist_session(AgentStatus.ERROR)
             raise
 
+    # v4.4 简单事实查询特征：短问题 + 含"是什么/多少/默认/端口/参数"等询问词，无"诊断/检查/排查/执行"等动作词
+    _SIMPLE_QUERY_PATTERNS = ('是什么', '多少', '默认', '端口', '参数', '含义', '作用',
+                              '区别', '语法', '格式', '支持', '版本', '多少',
+                              'what is', 'how many', 'default', 'port')
+    _ACTION_QUERY_PATTERNS = ('诊断', '检查', '排查', '执行', '修复', '优化', '调整',
+                              '创建', '删除', '修改', '重启', '扩容', '迁移', '备份')
+
+    def _is_simple_fact_query(self, question: str) -> bool:
+        """判断是否为简单事实查询（可短路到知识库直答，不走工具执行）"""
+        q = question.strip().lower()
+        if len(q) > 100:   # 长问题大概率复杂
+            return False
+        has_simple = any(p in q for p in self._SIMPLE_QUERY_PATTERNS)
+        has_action = any(p in q for p in self._ACTION_QUERY_PATTERNS)
+        return has_simple and not has_action
+
     def _react_loop(self, user_question: str) -> Generator[Dict, None, None]:
         """ReAct 主循环体（生成器）：检索 → 决策 → 执行 → 观察 → 总结"""
+        # v4.4 意图识别前置：简单事实查询短路到"知识库→直答"，不走工具执行，省步数预算
+        if self._is_simple_fact_query(user_question):
+            yield {"type": "retrieving_start", "message": "正在检索知识库..."}
+            knowledge_result = self._retrieve_knowledge_strict(user_question)
+            if knowledge_result['status'] == 'sufficient':
+                yield {"type": "knowledge_refs", "refs": knowledge_result['results']}
+                # 直接用知识库内容生成结论，不走 ReAct 工具循环
+                conclusion = yield from self._conclude_stream(knowledge_result['results'])
+                yield {"type": "done"}
+                # 学习闭环仍执行（记忆写入）
+                threading.Thread(target=self._crystallize_after_success,
+                                 args=(user_question, conclusion, knowledge_result['results']),
+                                 daemon=True).start()
+                return
+            # 知识库不足，降级走完整 ReAct
+
         # 1. 检索知识库（自动）
         yield {"type": "retrieving_start", "message": "正在检索知识库..."}
         knowledge_result = self._retrieve_knowledge_strict(user_question)
@@ -182,6 +214,21 @@ class SmartOpsAgent:
                 text = (ref.get('chunk', '') + ' ' + ref.get('file', '')).lower()
                 return sum(1 for t in tag_set if t in text)
             knowledge_refs = sorted(knowledge_refs, key=_tag_score, reverse=True)
+
+        # v4.4 记录命中的 skill 名到会话（供效果追踪：命中后是否成功）
+        try:
+            from db.database import get_db
+            matched_names = [s.get('name') for s in matched_skills if s.get('name')]
+            if self.manual_skill and self.manual_skill.get('name'):
+                matched_names.append(self.manual_skill['name'])
+            if matched_names:
+                conn = get_db()
+                conn.execute(
+                    "UPDATE agent_sessions SET matched_skills=? WHERE id=?",
+                    (','.join(matched_names), self.session_id))
+                conn.commit()
+        except Exception:
+            pass
 
         # 2.5 长期记忆召回（环境上下文）；会话级开关关闭时跳过（v4.2.1）
         memory_refs = [] if self.disable_memory else self._recall_memory(user_question)
@@ -258,6 +305,20 @@ class SmartOpsAgent:
                        "warning": "⚠️ 检测到重复执行相同操作，停止继续，直接给出结论"}
                 self.state.add_message('user', "⚠️ 检测到重复执行相同操作，请直接给出结论，不要再调用工具")
                 break
+
+            # v4.4 无进展止损：连续 3 步观察结果雷同或都空 → 主动建议换思路
+            # 比死循环检测更宽——动作不同但都在兜圈子也能抓住
+            recent_obs = [s.observation or '' for s in self.state.steps[-3:]]
+            if len(recent_obs) >= 3:
+                obs_fingerprints = [self._obs_fingerprint(o) for o in recent_obs]
+                empty_count = sum(1 for o in recent_obs if not o.strip() or o.strip() in ('无结果', '空', '[]'))
+                if (len(set(obs_fingerprints)) == 1 or empty_count >= 3):
+                    yield {"type": "executing_warning",
+                           "warning": "⚠️ 连续多步未取得有效进展，建议换个思路或请用户补充信息"}
+                    self.state.add_message('user',
+                        "⚠️ 连续多步未取得有效进展。请直接给出当前结论与需要的补充信息，"
+                        "不要再用相似方式继续尝试。")
+                    break
 
             # 变更类：识别操作计划 → 审批暂停 → 获批执行 / 拒绝继续 / 超时收尾
             plan_obj = next((a.get('plan') for a in actions if a.get('type') == 'plan'), None)
@@ -383,6 +444,18 @@ class SmartOpsAgent:
                     args=(user_question, conclusion, knowledge_refs),
                     daemon=True,
                 ).start()
+
+            # v4.4 记录会话成功与否（供 skill 效果追踪）：无失败节点视为 completed，有失败节点标 partial
+            try:
+                from db.database import get_db
+                success = not bool(self._plan_failed_nodes)
+                conn = get_db()
+                conn.execute(
+                    "UPDATE agent_sessions SET status=?, current_step=? WHERE id=?",
+                    ('completed' if success else 'partial', self.state.current_step, self.session_id))
+                conn.commit()
+            except Exception:
+                pass
         else:
             yield {"type": "cancelled", "message": "⏹ 已取消"}
             self.state.set_status(AgentStatus.CANCELLED)
@@ -478,6 +551,11 @@ class SmartOpsAgent:
 4. **操作确认**：涉及操作时列出知识库引用来源（仅当确实有引用时）
 5. **只读工具原则**：所有工具调用只读（变更 SQL/命令会被安全校验拦截）；**变更操作统一走"操作计划审批"执行，不通过工具直接执行**
 
+## 主动澄清原则
+- 若用户指令**缺乏具体对象**（未指明实例名/主机名/库名/表名）且属**诊断/变更类**（非事实查询），**先问一个聚焦问题**再执行，不要盲目对范围外或不确定的对象操作
+- 澄清只问一个最关键问题（如"请确认目标实例名"），不要连续追问
+- 事实查询（如"端口是多少"）无需澄清，直接回答
+
 ## 可用工具
 - query_database: 执行SQL查询（只读）
 - execute_command: 通过SSH执行数据库命令
@@ -542,6 +620,7 @@ class SmartOpsAgent:
 - operations 含「探查」(只读) 与「变更」(写操作) 两类步骤，按执行顺序排列
 - 每步说明 desc 与所属 phase
 - 变更步骤在用户确认方案后仍需逐项审批（安全底线）
+- 步骤间可引用前序结果：参数值用 ${step_N.field} 引用第 N 步结果（如 step_1 查出表名，step_2 的 sql 用 ${step_1.table_name} 引用）
 - 输出方案后停止，等待用户确认
 """
 
@@ -722,7 +801,14 @@ class SmartOpsAgent:
         summary_lines = []
         total = 0
         for m in middle:
-            snippet = (m.get('content') or '')[:120]
+            content = m.get('content') or ''
+            # v4.4 截断阈值 120→300，避免链式推理中间结论丢失
+            # assistant 思考取首句（通常是该步结论），observation 取前 300 字
+            if m.get('role') == 'assistant':
+                first_sentence = re.split(r'[。\n]', content, 1)[0]
+                snippet = first_sentence[:300] if first_sentence else content[:300]
+            else:
+                snippet = content[:300]
             summary_lines.append(f"[{m.get('role')}] {snippet}")
             total += len(snippet) + 8
             if total > self.HISTORY_SUMMARY_MAX_CHARS:
@@ -816,6 +902,17 @@ class SmartOpsAgent:
         return json.dumps([norm(a) for a in actions], ensure_ascii=False)
 
     @staticmethod
+    def _obs_fingerprint(obs: str) -> str:
+        """观察结果指纹：归一化（去数字/空白/取首尾）用于检测雷同观察"""
+        if not obs:
+            return 'empty'
+        import re
+        norm = re.sub(r'\d+', 'N', re.sub(r'\s+', ' ', obs.strip()))
+        if len(norm) <= 90:
+            return norm
+        return norm[:60] + '...' + norm[-30:]
+
+    @staticmethod
     def _looks_like_tool_json(thought: str) -> bool:
         """判断思考文本是否明显在输出工具调用 JSON（带引号的键），用于解析失败时回喂纠正"""
         return '"tool"' in thought and '"parameters"' in thought
@@ -857,25 +954,43 @@ class SmartOpsAgent:
 
         return [self._run_one_action(v, knowledge_refs) for v in validated]
 
+    # v4.4 临时性错误关键词：命中则重试 1 次（SSH/DB 连接抖动等），非临时错误直接交 LLM
+    _TRANSIENT_ERR_PATTERNS = ('timeout', 'timed out', 'connection', 'connect',
+                                'refused', 'reset', 'unreachable', 'broken pipe',
+                                'ECONNREFUSED', 'ETIMEDOUT', 'ECONNRESET')
+
+    @classmethod
+    def _is_transient_error(cls, err: Exception) -> bool:
+        msg = str(err).lower()
+        return any(p.lower() in msg for p in cls._TRANSIENT_ERR_PATTERNS)
+
     def _run_one_action(self, item: Dict, knowledge_refs: List[Dict]) -> Dict:
         """执行单个已校验动作：执行 + 格式化观察。
 
-        不再输出「缺乏知识库支撑」警告：该启发式对 OS 级/诊断类命令几乎必然误报
-        （命令首词不在检索到的知识块里就告警），噪音大于价值，已移除。
+        v4.4 临时性错误（超时/连接）自动重试 1 次，避免抖动导致误判方案行不通。
         """
         action = item['action']
         if not item['is_safe']:
             return {**item, 'observation': f"❌ 安全验证失败: {item['error']}",
                     'result': None, 'warning': None}
-        try:
-            result = self._execute_action(action)
-            return {**item, 'observation': self._format_result(result),
-                    'result': result, 'warning': None}
-        except Exception as e:
-            # 单个工具异常兜底：转观察结果，避免并行线程内异常中断整个 ReAct 循环
-            return {**item,
-                    'observation': f"❌ 工具执行出错: {e}",
-                    'result': None, 'warning': None}
+        for attempt in range(2):  # 最多 2 次（初试 + 1 次重试）
+            try:
+                result = self._execute_action(action)
+                return {**item, 'observation': self._format_result(result),
+                        'result': result, 'warning': None}
+            except Exception as e:
+                if attempt == 0 and self._is_transient_error(e):
+                    # 临时性错误：重试 1 次
+                    import time
+                    time.sleep(1)
+                    continue
+                # 非临时错误 或 重试仍失败：转观察结果交 LLM
+                retry_note = '（重试后仍失败）' if attempt > 0 else ''
+                return {**item,
+                        'observation': f"❌ 工具执行出错{retry_note}: {e}",
+                        'result': None, 'warning': None}
+        # 兜底（理论上不会到这）
+        return {**item, 'observation': '❌ 工具执行异常', 'result': None, 'warning': None}
 
     # ==================== 变更类操作：审批流 ====================
 
@@ -956,9 +1071,13 @@ class SmartOpsAgent:
         self._executed_change_plan = True
         self._plan_failed_nodes = set()
 
+        # v4.4 plan 操作间变量传递：${step_N.field} 引用前序步骤结果
+        step_results = {}  # {step_index: result_dict}
         for i, op in enumerate(operations, 1):
             tool = op.get('tool')
             params = op.get('parameters') or {}
+            # 变量替换：把 ${step_N.field} 替换为前序步骤结果的实际值
+            params = self._substitute_plan_vars(params, step_results)
             op_targets = op.get('targets')  # 可选：计划操作限定的目标节点名列表
 
             # v4.4 只读探查类工具：直接执行，不走 fan-out 审批
@@ -1000,6 +1119,8 @@ class SmartOpsAgent:
                     result = execute_tool(tool, params, ctx)
                     yield {"type": "plan_operation_result", "index": i, "tool": tool,
                            "parameters": params, "status": "success", "result": result}
+                    # v4.4 只读探查结果也记录供后续变量引用
+                    step_results[i] = result
                     obs = f"计划操作 {i}（只读探查）结果:\n{json.dumps(result, ensure_ascii=False)[:500]}"
                     self.state.add_message('user', self._history_observation(obs))
                     self._persist_plan_step(i, op, obs, result)
@@ -1059,6 +1180,9 @@ class SmartOpsAgent:
                            "parameters": params, "node": label,
                            "status": "success", "result": r.get('result') or {}}
                     node_obs.append(f"✅ {label}")
+                    # v4.4 记录本步结果供后续步骤变量引用（取首个成功节点结果）
+                    if i not in step_results:
+                        step_results[i] = r.get('result') or {}
                 else:
                     self._plan_failed_nodes.add(label)
                     yield {"type": "plan_operation_result", "index": i, "tool": tool,
@@ -1073,6 +1197,40 @@ class SmartOpsAgent:
                                 "定位原因后再决定下一步（如仅对失败节点重试）。")
             self.state.add_message('user', self._history_observation(observation))
             self._persist_plan_step(i, op, observation, results)
+
+    def _substitute_plan_vars(self, params: Dict, step_results: Dict) -> Dict:
+        """替换 plan 操作参数中的 ${step_N.field} 变量引用为前序步骤结果值。
+
+        step_results: {step_index: result_dict}，由 _execute_plan_operations 逐 step 填充。
+        支持 ${step_1.table_name}、${step_2.rows.0.host} 等点路径；找不到时保留原样不报错。
+        """
+        import re
+        var_pattern = re.compile(r'\$\{step_(\d+)\.([^}]+)\}')
+
+        def resolve(val):
+            if isinstance(val, str):
+                def replacer(m):
+                    step_idx = int(m.group(1))
+                    path = m.group(2).split('.')
+                    obj = step_results.get(step_idx)
+                    for p in path:
+                        if obj is None:
+                            return m.group(0)  # 找不到保留原样
+                        if isinstance(obj, list) and p.isdigit() and int(p) < len(obj):
+                            obj = obj[int(p)]
+                        elif isinstance(obj, dict):
+                            obj = obj.get(p)
+                        else:
+                            return m.group(0)
+                    return str(obj) if obj is not None else m.group(0)
+                return var_pattern.sub(replacer, val)
+            if isinstance(val, dict):
+                return {k: resolve(v) for k, v in val.items()}
+            if isinstance(val, list):
+                return [resolve(v) for v in val]
+            return val
+
+        return resolve(params)
 
     def _persist_plan_step(self, index: int, op: Dict,
                            observation: str, result: Optional[Dict]) -> None:
@@ -1287,14 +1445,26 @@ class SmartOpsAgent:
         # 使用工具注册表执行
         return execute_tool(tool, params, ctx)
 
-    def _history_observation(self, observation: str, limit: int = 1500) -> str:
-        """写入对话历史的观察摘要：超长按「头+尾」保留，避免大结果撑爆历史字符预算。
+    def _history_observation(self, observation: str, limit: int = 800) -> str:
+        """写入对话历史的观察摘要：超长按「结构化摘要 + 头尾样本」保留。
 
+        v4.4 阈值从 1500 降到 800（防止大结果集撑爆历史预算）；
+        对表格类结果（多行多列）提取列名+行数+前3行样本+省略提示。
         全量观察仍经 SSE observing 事件展示给前端；history 只存摘要供模型链式推理。
         """
         obs = observation or ''
         if len(obs) <= limit:
             return obs
+
+        # v4.4 表格类结果结构化摘要：检测多行表格，提取关键信息
+        lines = obs.split('\n')
+        if len(lines) > 10 and '|' in obs:
+            # 疑似表格：保留表头 + 前3行 + 行数提示
+            header = lines[0] if lines else ''
+            sample = '\n'.join(lines[1:4])
+            return f"[结果摘要: 共{len(lines)}行]\n{header}\n{sample}\n... [省略 {len(lines)-4} 行] ..."
+
+        # 非表格：头尾保留
         half = (limit - len('\n... [中间省略] ...\n')) // 2
         return obs[:half] + '\n... [中间省略] ...\n' + obs[-half:]
 
@@ -1439,6 +1609,18 @@ class SmartOpsAgent:
 2. 具体建议（与本次观察/操作直接相关；若建议下一步操作，直接给，不要泛泛而谈）
 
 要求：不要罗列通用最佳实践（监控建设、流程规范等）、不要展开置信度说明、不要重复分析过程。若本次只执行了单次查询，直接给出一两句话的结论并包含关键结果，不要展开分析、不要罗列建议。"""
+
+            # v4.4 诊断类结论按子类型自适应结构
+            tool_names = [s.action.get('tool') for s in tool_steps
+                          if s.action and isinstance(s.action, dict)]
+            is_perf = any('performance' in t or 'metric' in t for t in tool_names)
+            is_fault = any('❌' in (s.observation or '') or 'error' in (s.observation or '').lower()
+                           for s in tool_steps)
+            if is_perf:
+                prompt += "\n（性能诊断场景：重点给指标基线对比 + 瓶颈定位 + 优化建议优先级）"
+            elif is_fault:
+                prompt += "\n（故障排查场景：重点给故障现象 + 根因分析 + 临时缓解 + 根治方案）"
+
             system = "你是一个数据库运维专家，请基于分析结果给出专业建议，保持简洁，避免冗余。"
 
         messages = [
@@ -1555,6 +1737,47 @@ class SmartOpsAgent:
                 print(f"[Agent] 已沉淀技能: {skill_name}")
 
             self._write_memory(user_question, conclusion, knowledge_refs)
+
+            # v4.4 知识库反馈闭环：本次引用的 chunk 加权（缓慢调整防抖），未引用可 decay
+            try:
+                from db.database import bump_chunk_weight
+                ref_chunk_ids = [r.get('chunk_id') for r in knowledge_refs if r.get('chunk_id')]
+                for cid in ref_chunk_ids:
+                    bump_chunk_weight(cid, delta=0.1, cap=2.0)   # 上限 2.0
+                # 权重已变：清矩阵缓存，使后续检索取新权重
+                self.embedder.clear_matrix_cache()
+            except Exception as e:
+                print(f"[Agent] 知识库权重调整失败（不影响主流程）: {e}")
+
+            # v4.4 skill 遵循度评估（探索性）：对比注入 skill 的步骤与实际执行步骤
+            try:
+                import re as _re
+                from db.database import get_db as _get_db
+                _row = _get_db().execute(
+                    "SELECT matched_skills FROM agent_sessions WHERE id=?",
+                    (self.session_id,)).fetchone()
+                _m_names = [n.strip() for n in (_row['matched_skills'] or '').split(',') if n.strip()]
+                _actual_tools = [s.action.get('tool') for s in tool_steps
+                                 if s.action and isinstance(s.action, dict)]
+                for _name in _m_names:
+                    _sk = self.skill_manager.get_skill(_name)
+                    if not _sk:
+                        continue
+                    _template = _sk.get('prompt_template', '')
+                    if not _template:
+                        continue
+                    _tsteps = _re.findall(r'\d+\.\s*(.+?)(?=\n\d+\.|$)', _template, _re.S)
+                    _mentioned = []
+                    for _ts in _tsteps:
+                        for _t in ['query_database', 'execute_command', 'get_schema_info',
+                                   'get_performance_metrics']:
+                            if _t in _ts and _t not in _mentioned:
+                                _mentioned.append(_t)
+                    if _mentioned:
+                        _followed = sum(1 for _t in _mentioned if _t in _actual_tools)
+                        print(f"[Skill] {_name} 遵循度: {_followed/len(_mentioned):.0%}")
+            except Exception:
+                pass
         except Exception as e:
             print(f"[Agent] 学习闭环失败（不影响诊断）: {e}")
 

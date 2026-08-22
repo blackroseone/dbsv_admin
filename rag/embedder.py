@@ -309,13 +309,21 @@ class Embedder:
         else:
             idx = np.argsort(-scores)[:k]
 
+        # v4.4 知识库反馈闭环：按 weight 加权相似度后重排
+        # weight 默认 1.0，被 agent 引用进结论的 chunk 加权，无用 chunk 降权
+        weights = data.get('weights') or [1.0] * n
+        weighted = [(i, float(scores[i]) * weights[i]) for i in idx]
+        weighted.sort(key=lambda x: -x[1])
+        final_idx = [i for i, _ in weighted[:top_k]]
+
         results = []
-        for i in idx:
+        for i in final_idx:
             results.append({
                 'chunk_id': data['chunk_ids'][i],
                 'filename': data['filenames'][i],
                 'chunk_text': data['chunk_texts'][i],
                 'similarity': float(scores[i]),
+                'weight': weights[i],
             })
         return results
 
